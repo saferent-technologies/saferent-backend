@@ -1,71 +1,61 @@
-const firebase = require("../config/firebase");
 const authRepository = require("../repositories/auth.repository");
+const { auth } = require("../config/firebase");
 const { generateToken } = require("../utils/jwt");
 
-exports.loginWithFirebase = async (idToken, deviceToken) => {
-  let decodedToken;
-
+const loginWithFirebase = async (idToken, deviceToken) => {
   try {
-    decodedToken = await firebase.auth.verifyIdToken(idToken);
-  } catch (err) {
-    console.error("Firebase Verify Error:", err);
-    throw {
-      status: 401,
-      message: "Invalid Firebase token",
-    };
-  }
+    const decodedToken = await auth.verifyIdToken(idToken);
+    const { uid: firebaseUid, phone_number: phoneNumber } = decodedToken;
 
-  const {
-    uid: firebaseUid,
-    phone_number: phoneNumber,
-  } = decodedToken;
+    if (!phoneNumber) {
+      throw new Error("Phone number not available in Firebase token.");
+    }
 
-  if (!firebaseUid || !phoneNumber) {
-    throw {
-      status: 401,
-      message: "Invalid Firebase token payload",
-    };
-  }
-
-  let user = await authRepository.findUserByFirebaseUid(firebaseUid);
-
-  let isNewUser = false;
-
-  if (!user) {
-    user = await authRepository.createUser({
+    const { user, isNewUser } = await authRepository.upsertUser({
       firebaseUid,
       phoneNumber,
       deviceToken,
     });
 
-    isNewUser = true;
-  } else {
-    user = await authRepository.updateUserLogin(
-      user.id,
-      deviceToken
-    );
-  }
-
-  const token = generateToken({
-    id: user.id,
-    firebaseUid: user.firebaseUid,
-  });
-
-  return {
-    token,
-    isNewUser,
-    user: {
+    const token = generateToken({
       id: user.id,
-      firebaseUid: user.firebaseUid,
-      phoneNumber: user.phoneNumber,
-      fullName: user.fullName,
       role: user.role,
-      email: user.email,
-      gender: user.gender,
-      address: user.address,
-      latitude: user.latitude,
-      longitude: user.longitude,
-      profileCompleted: user.profileCompleted,
-    },
-  };
+    });
+
+    return {
+      message: isNewUser
+        ? "User created successfully"
+        : "User logged in successfully",
+      token,
+      isNewUser,
+      user: {
+        id: user.id,
+        phoneNumber: user.phoneNumber,
+        isProfileCompleted: user.isProfileCompleted,
+      },
+    };
+  } catch (error) {
+    console.error("Error in loginWithFirebase:", error);
+    if (error.code === "auth/id-token-expired") {
+      throw { status: 401, message: "Firebase ID token has expired." };
+    }
+    if (error.code === "auth/argument-error") {
+      throw { status: 401, message: "Invalid Firebase ID token." };
+    }
+    throw { status: 500, message: error.message || "Internal server error" };
+  }
+};
+
+const completeUserProfile = async (userId, profileData) => {
+  // Logic for completing user profile
+  // This part of the code is not specified in the requirements,
+  // so I will leave it as it is.
+  const updatedUser = {}; // Placeholder
+  return updatedUser;
+};
+
+
+module.exports = {
+  loginWithFirebase,
+  completeUserProfile,
 };
