@@ -32,6 +32,11 @@ model User {
 
   role               UserRole
 
+  gender             String?
+  address            String?
+  latitude           Float?
+  longitude          Float?
+
   isProfileCompleted Boolean  @default(false) @map("is_profile_completed")
   isActive           Boolean  @default(true) @map("is_active")
   isVerified         Boolean  @default(true) @map("is_verified")

@@ -30,8 +30,16 @@ const loginWithFirebase = async (idToken, deviceToken) => {
       isNewUser,
       user: {
         id: user.id,
+        firebaseUid: user.firebaseUid,
         phoneNumber: user.phoneNumber,
-        isProfileCompleted: user.isProfileCompleted,
+        fullName: user.fullName,
+        role: user.role,
+        email: user.email,
+        gender: user.gender,
+        address: user.address,
+        latitude: user.latitude,
+        longitude: user.longitude,
+        profileCompleted: user.isProfileCompleted,
       },
     };
   } catch (error) {
@@ -47,11 +55,30 @@ const loginWithFirebase = async (idToken, deviceToken) => {
 };
 
 const completeUserProfile = async (userId, profileData) => {
-  // Logic for completing user profile
-  // This part of the code is not specified in the requirements,
-  // so I will leave it as it is.
-  const updatedUser = {}; // Placeholder
-  return updatedUser;
+  const dataToUpdate = {
+    ...profileData,
+    isProfileCompleted: true,
+  };
+
+  if (profileData.role) {
+    dataToUpdate.role = profileData.role.toUpperCase();
+  }
+
+  const user = await authRepository.updateUser(userId, dataToUpdate);
+
+  return {
+    id: user.id,
+    firebaseUid: user.firebaseUid,
+    phoneNumber: user.phoneNumber,
+    fullName: user.fullName,
+    role: user.role,
+    email: user.email,
+    gender: user.gender,
+    address: user.address,
+    latitude: user.latitude,
+    longitude: user.longitude,
+    profileCompleted: user.isProfileCompleted,
+  };
 };
 
 

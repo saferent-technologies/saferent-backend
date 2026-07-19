@@ -21,9 +21,15 @@ const login = async (req, res) => {
 
   try {
     const result = await authService.loginWithFirebase(idToken, deviceToken);
+    const { message, token, isNewUser, user } = result;
     return res.status(200).json({
       success: true,
-      ...result,
+      message,
+      data: {
+        token,
+        isNewUser,
+        user,
+      },
     });
   } catch (err) {
     return error(res, err.message, err.status || 500);

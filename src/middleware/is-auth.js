@@ -21,7 +21,7 @@ module.exports = (req, res, next) => {
     }
 
     // Attach user ID to the request for use in subsequent controllers
-    req.userId = decodedToken.userId;
+    req.userId = decodedToken.id;
     next();
   } catch (err) {
     // Catches errors from jwt.verify (e.g., expired token)
