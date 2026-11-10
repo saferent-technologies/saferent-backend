@@ -1,5 +1,33 @@
-node_modules
-# Keep environment variables out of version control
-.env
+# Dependencies
+node_modules/
 
-/generated/prisma
+# Builds
+web/dist/
+server/dist/
+*.tsbuildinfo
+
+# Environment and secrets — NEVER commit these
+# (patterns without a slash apply in every folder: root, web/, server/)
+.env
+.env.*
+!.env.example
+.secret.local
+*.local
+service-account*.json
+*-firebase-adminsdk-*.json
+server/service-account.json
+
+# Firebase
+.firebase/
+.firebaserc
+firebase-debug.log*
+
+# Test output
+coverage/
+
+# OS / editor
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+server/uploads/

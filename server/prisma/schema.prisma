@@ -1,0 +1,908 @@
+// SafeRent — MySQL schema (Prisma ORM)
+// Firebase is used ONLY for authentication (users.firebase_uid links the two).
+//   npm run db:migrate     -> create/update tables in your local MySQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── Enums ───────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  FINANCE_ADMIN
+  PROPERTY_MANAGER
+  SUPPORT
+  MODERATOR
+  VIEWER
+  LANDLORD
+  TENANT
+  PROPERTY_AGENT
+  SERVICE_PROVIDER
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+/// ALL = every record, ASSIGNED = records assigned to the user, OWN = records the user owns / is party to
+enum PermissionScope {
+  OWN
+  ASSIGNED
+  ALL
+}
+
+enum SessionMethod {
+  EMAIL_OTP
+  PHONE_OTP
+}
+
+enum AuditOutcome {
+  SUCCESS
+  FAILURE
+}
+
+enum PropertyType {
+  APARTMENT
+  INDEPENDENT_HOUSE
+  VILLA
+  PG_HOSTEL
+  COMMERCIAL
+}
+
+enum Furnishing {
+  UNFURNISHED
+  SEMI_FURNISHED
+  FULLY_FURNISHED
+}
+
+enum PropertyStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  REJECTED
+  RENTED
+  INACTIVE
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum DocumentType {
+  OWNERSHIP_DEED
+  TAX_RECEIPT
+  UTILITY_BILL
+  ID_PROOF
+  OTHER
+}
+
+enum AssignmentType {
+  MANAGER
+  AGENT
+}
+
+enum InspectionStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
+}
+
+enum LeaseStatus {
+  ACTIVE
+  ENDED
+  TERMINATED
+}
+
+enum RentStatus {
+  DUE
+  PAID
+  OVERDUE
+  WAIVED
+}
+
+enum TransactionType {
+  RENT_PAYMENT
+  REFUND
+  COMMISSION
+  SERVICE_CHARGE
+  SUBSCRIPTION
+  ADJUSTMENT
+}
+
+enum TransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REVERSED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+  VOID
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  PROCESSED
+}
+
+enum MaintenanceStatus {
+  OPEN
+  ASSIGNED
+  ACCEPTED
+  IN_PROGRESS
+  COMPLETED
+  DECLINED
+  CANCELLED
+  CLOSED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketCategory {
+  TENANT_COMPLAINT
+  LANDLORD_COMPLAINT
+  PAYMENT
+  ACCOUNT
+  PROPERTY
+  OTHER
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum EnquiryStatus {
+  NEW
+  CONTACTED
+  VISIT_SCHEDULED
+  CLOSED
+}
+
+enum VisitStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum FraudStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  DISMISSED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  EXPIRED
+}
+
+// ───────────────────────────── Identity & RBAC ─────────────────────────────
+
+/// Every SafeRent account. firebase_uid links the row to the Firebase Authentication user (no duplicates).
+model User {
+  id                 String        @id @default(uuid()) @db.Char(36)
+  firebaseUid        String        @unique @map("firebase_uid") @db.VarChar(128)
+  fullName           String        @map("full_name") @db.VarChar(120)
+  email              String?       @unique @db.VarChar(254)
+  pendingEmail       String?       @map("pending_email") @db.VarChar(254)
+  phoneNumber        String?       @unique @map("phone_number") @db.VarChar(20)
+  profileImage       String?       @map("profile_image") @db.VarChar(255)
+  role               Role
+  accountStatus      AccountStatus @default(ACTIVE) @map("account_status")
+  isFounder          Boolean       @default(false) @map("is_founder")
+  emailVerified      Boolean       @default(false) @map("email_verified")
+  phoneVerified      Boolean       @default(false) @map("phone_verified")
+  mustChangePassword Boolean       @default(false) @map("must_change_password")
+  passwordChangedAt  DateTime?     @map("password_changed_at")
+  lastLoginAt        DateTime?     @map("last_login_at")
+  createdById        String?       @map("created_by_id") @db.Char(36)
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+
+  otpChallenge    OtpChallenge?
+  session         AuthSession?
+  permissions     UserPermission[]
+  landlordProfile LandlordProfile?
+  tenantProfile   TenantProfile?
+  agentProfile    AgentProfile?
+  providerProfile ServiceProviderProfile?
+  auditLogs       AuditLog[]
+
+  ownedProperties     Property[]           @relation("PropertyOwner")
+  assignments         PropertyAssignment[] @relation("AssignmentUser")
+  applications        RentalApplication[]  @relation("ApplicationTenant")
+  tenantLeases        Lease[]              @relation("LeaseTenant")
+  landlordLeases      Lease[]              @relation("LeaseLandlord")
+  raisedMaintenance   MaintenanceRequest[] @relation("MaintenanceRaisedBy")
+  assignedMaintenance MaintenanceRequest[] @relation("MaintenanceProvider")
+  tickets             SupportTicket[]      @relation("TicketRaisedBy")
+  assignedTickets     SupportTicket[]      @relation("TicketAssignee")
+  notifications       Notification[]
+
+  @@index([role, accountStatus])
+  @@map("users")
+}
+
+model RoleDefinition {
+  key         String           @id @db.VarChar(32)
+  name        String           @db.VarChar(60)
+  description String           @db.VarChar(255)
+  rank        Int
+  isStaff     Boolean          @map("is_staff")
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  key         String           @id @db.VarChar(64)
+  category    String           @db.VarChar(40)
+  description String           @db.VarChar(255)
+  reserved    Boolean          @default(false)
+  roles       RolePermission[]
+  users       UserPermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  role          String          @db.VarChar(32)
+  permissionKey String          @map("permission_key") @db.VarChar(64)
+  scope         PermissionScope
+
+  roleDef    RoleDefinition @relation(fields: [role], references: [key], onDelete: Cascade)
+  permission Permission     @relation(fields: [permissionKey], references: [key], onDelete: Cascade)
+
+  @@id([role, permissionKey])
+  @@map("role_permissions")
+}
+
+/// Individual overrides: granted=true adds a permission, granted=false removes one the role gives.
+model UserPermission {
+  userId        String          @map("user_id") @db.Char(36)
+  permissionKey String          @map("permission_key") @db.VarChar(64)
+  granted       Boolean
+  scope         PermissionScope @default(OWN)
+  grantedById   String          @map("granted_by_id") @db.Char(36)
+  createdAt     DateTime        @default(now()) @map("created_at")
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionKey], references: [key], onDelete: Cascade)
+
+  @@id([userId, permissionKey])
+  @@map("user_permissions")
+}
+
+// ───────────────────────────── Auth support ─────────────────────────────
+
+model OtpChallenge {
+  userId            String    @id @map("user_id") @db.Char(36)
+  challengeId       String    @unique @map("challenge_id") @db.Char(36)
+  otpHash           String    @map("otp_hash") @db.Char(64)
+  authTime          Int       @map("auth_time")
+  attempts          Int       @default(0)
+  maxAttempts       Int       @map("max_attempts")
+  consumed          Boolean   @default(false)
+  expiresAt         DateTime  @map("expires_at")
+  resendAvailableAt DateTime  @map("resend_available_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  consumedAt        DateTime? @map("consumed_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("otp_challenges")
+}
+
+/// Proof that the second factor (email OTP or phone OTP) was completed for ONE Firebase sign-in.
+model AuthSession {
+  userId     String        @id @map("user_id") @db.Char(36)
+  authTime   Int           @map("auth_time")
+  method     SessionMethod
+  verifiedAt DateTime      @default(now()) @map("verified_at")
+  expiresAt  DateTime      @map("expires_at")
+  revoked    Boolean       @default(false)
+  revokedAt  DateTime?     @map("revoked_at")
+  ip         String?       @db.VarChar(64)
+  userAgent  String?       @map("user_agent") @db.VarChar(300)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("auth_sessions")
+}
+
+model RateLimit {
+  key         String   @id @map("rate_key") @db.Char(64)
+  count       Int
+  windowStart DateTime @map("window_start")
+  expiresAt   DateTime @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("rate_limits")
+}
+
+/// security_audit_logs: sign-ins, OTPs, password/email/phone changes, permission denials.
+model AuditLog {
+  id          BigInt       @id @default(autoincrement())
+  userId      String?      @map("user_id") @db.Char(36)
+  firebaseUid String?      @map("firebase_uid") @db.VarChar(128)
+  action      String       @db.VarChar(64)
+  outcome     AuditOutcome
+  reason      String?      @db.VarChar(64)
+  email       String?      @db.VarChar(254)
+  ip          String?      @db.VarChar(64)
+  userAgent   String?      @map("user_agent") @db.VarChar(300)
+  metadata    Json?
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@map("security_audit_logs")
+}
+
+/// admin_activity_logs: who changed what (users, roles, permissions, finance, moderation).
+model AdminActivityLog {
+  id         BigInt   @id @default(autoincrement())
+  actorId    String   @map("actor_id") @db.Char(36)
+  action     String   @db.VarChar(64)
+  targetType String   @map("target_type") @db.VarChar(40)
+  targetId   String?  @map("target_id") @db.VarChar(64)
+  changes    Json?
+  ip         String?  @db.VarChar(64)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+  @@map("admin_activity_logs")
+}
+
+model SystemLock {
+  name      String   @id @db.VarChar(64)
+  status    String   @db.VarChar(32)
+  data      Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_locks")
+}
+
+// ───────────────────────────── Role profiles ─────────────────────────────
+
+model LandlordProfile {
+  userId       String   @id @map("user_id") @db.Char(36)
+  businessName String?  @map("business_name") @db.VarChar(120)
+  address      String?  @db.VarChar(255)
+  city         String?  @db.VarChar(80)
+  state        String?  @db.VarChar(80)
+  pincode      String?  @db.VarChar(10)
+  kycStatus    ReviewStatus @default(PENDING) @map("kyc_status")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("landlord_profiles")
+}
+
+model TenantProfile {
+  userId                String    @id @map("user_id") @db.Char(36)
+  occupation            String?   @db.VarChar(80)
+  employer              String?   @db.VarChar(120)
+  currentCity           String?   @map("current_city") @db.VarChar(80)
+  familySize            Int?      @map("family_size")
+  preferredMoveIn       DateTime? @map("preferred_move_in") @db.Date
+  emergencyContactName  String?   @map("emergency_contact_name") @db.VarChar(120)
+  emergencyContactPhone String?   @map("emergency_contact_phone") @db.VarChar(20)
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_profiles")
+}
+
+model AgentProfile {
+  userId          String   @id @map("user_id") @db.Char(36)
+  agencyName      String?  @map("agency_name") @db.VarChar(120)
+  licenseNumber   String?  @map("license_number") @db.VarChar(60)
+  serviceAreas    String?  @map("service_areas") @db.VarChar(255)
+  experienceYears Int?     @map("experience_years")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("agent_profiles")
+}
+
+model ServiceProviderProfile {
+  userId       String   @id @map("user_id") @db.Char(36)
+  businessName String?  @map("business_name") @db.VarChar(120)
+  categories   String?  @db.VarChar(255)
+  serviceAreas String?  @map("service_areas") @db.VarChar(255)
+  available    Boolean  @default(true)
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("service_provider_profiles")
+}
+
+// ───────────────────────────── Properties ─────────────────────────────
+
+model Property {
+  id             String         @id @default(uuid()) @db.Char(36)
+  ownerId        String         @map("owner_id") @db.Char(36)
+  title          String         @db.VarChar(150)
+  description    String         @db.Text
+  propertyType   PropertyType   @map("property_type")
+  addressLine    String         @map("address_line") @db.VarChar(255)
+  locality       String?        @db.VarChar(120)
+  city           String         @db.VarChar(80)
+  state          String         @db.VarChar(80)
+  pincode        String         @db.VarChar(10)
+  bedrooms       Int            @default(0)
+  bathrooms      Int            @default(0)
+  areaSqft       Int?           @map("area_sqft")
+  furnishing     Furnishing     @default(UNFURNISHED)
+  monthlyRent    Decimal        @map("monthly_rent") @db.Decimal(12, 2)
+  securityDeposit Decimal       @default(0) @map("security_deposit") @db.Decimal(12, 2)
+  availableFrom  DateTime?      @map("available_from") @db.Date
+  isAvailable    Boolean        @default(true) @map("is_available")
+  status         PropertyStatus @default(DRAFT)
+  moderationNote String?        @map("moderation_note") @db.VarChar(500)
+  reviewedById   String?        @map("reviewed_by_id") @db.Char(36)
+  reviewedAt     DateTime?      @map("reviewed_at")
+  verified       Boolean        @default(false)
+  createdById    String         @map("created_by_id") @db.Char(36)
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  owner        User                 @relation("PropertyOwner", fields: [ownerId], references: [id])
+  images       PropertyImage[]
+  documents    PropertyDocument[]
+  assignments  PropertyAssignment[]
+  inspections  PropertyInspection[]
+  applications RentalApplication[]
+  leases       Lease[]
+  maintenance  MaintenanceRequest[]
+  enquiries    Enquiry[]
+  visits       PropertyVisit[]
+
+  @@index([ownerId])
+  @@index([status, city])
+  @@index([status, monthlyRent])
+  @@map("properties")
+}
+
+model PropertyImage {
+  id           String       @id @default(uuid()) @db.Char(36)
+  propertyId   String       @map("property_id") @db.Char(36)
+  filePath     String       @map("file_path") @db.VarChar(255)
+  mimeType     String       @map("mime_type") @db.VarChar(60)
+  status       ReviewStatus @default(PENDING)
+  reviewedById String?      @map("reviewed_by_id") @db.Char(36)
+  uploadedById String       @map("uploaded_by_id") @db.Char(36)
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, status])
+  @@map("property_images")
+}
+
+model PropertyDocument {
+  id           String       @id @default(uuid()) @db.Char(36)
+  propertyId   String       @map("property_id") @db.Char(36)
+  docType      DocumentType @map("doc_type")
+  filePath     String       @map("file_path") @db.VarChar(255)
+  originalName String       @map("original_name") @db.VarChar(200)
+  mimeType     String       @map("mime_type") @db.VarChar(60)
+  status       ReviewStatus @default(PENDING)
+  note         String?      @db.VarChar(500)
+  reviewedById String?      @map("reviewed_by_id") @db.Char(36)
+  uploadedById String       @map("uploaded_by_id") @db.Char(36)
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, status])
+  @@map("property_documents")
+}
+
+/// property_assignments: links property managers and agents to the properties they may access.
+model PropertyAssignment {
+  id          String         @id @default(uuid()) @db.Char(36)
+  propertyId  String         @map("property_id") @db.Char(36)
+  userId      String         @map("user_id") @db.Char(36)
+  type        AssignmentType
+  createdById String         @map("created_by_id") @db.Char(36)
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  user     User     @relation("AssignmentUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, userId, type])
+  @@index([userId])
+  @@map("property_assignments")
+}
+
+model PropertyInspection {
+  id          String           @id @default(uuid()) @db.Char(36)
+  propertyId  String           @map("property_id") @db.Char(36)
+  inspectorId String           @map("inspector_id") @db.Char(36)
+  scheduledAt DateTime         @map("scheduled_at")
+  status      InspectionStatus @default(SCHEDULED)
+  notes       String?          @db.Text
+  result      String?          @db.VarChar(40)
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId])
+  @@map("property_inspections")
+}
+
+// ───────────────────────────── Rentals ─────────────────────────────
+
+model RentalApplication {
+  id             String            @id @default(uuid()) @db.Char(36)
+  propertyId     String            @map("property_id") @db.Char(36)
+  tenantId       String            @map("tenant_id") @db.Char(36)
+  message        String?           @db.VarChar(1000)
+  proposedMoveIn DateTime          @map("proposed_move_in") @db.Date
+  occupants      Int               @default(1)
+  status         ApplicationStatus @default(PENDING)
+  decisionNote   String?           @map("decision_note") @db.VarChar(500)
+  decidedById    String?           @map("decided_by_id") @db.Char(36)
+  decidedAt      DateTime?         @map("decided_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  tenant   User     @relation("ApplicationTenant", fields: [tenantId], references: [id], onDelete: Cascade)
+  lease    Lease?
+
+  @@index([propertyId, status])
+  @@index([tenantId, status])
+  @@map("rental_applications")
+}
+
+model Lease {
+  id              String      @id @default(uuid()) @db.Char(36)
+  propertyId      String      @map("property_id") @db.Char(36)
+  landlordId      String      @map("landlord_id") @db.Char(36)
+  tenantId        String      @map("tenant_id") @db.Char(36)
+  applicationId   String?     @unique @map("application_id") @db.Char(36)
+  startDate       DateTime    @map("start_date") @db.Date
+  endDate         DateTime    @map("end_date") @db.Date
+  monthlyRent     Decimal     @map("monthly_rent") @db.Decimal(12, 2)
+  securityDeposit Decimal     @map("security_deposit") @db.Decimal(12, 2)
+  rentDueDay      Int         @default(5) @map("rent_due_day")
+  terms           String?     @db.Text
+  status          LeaseStatus @default(ACTIVE)
+  endedAt         DateTime?   @map("ended_at")
+  createdById     String      @map("created_by_id") @db.Char(36)
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  property     Property           @relation(fields: [propertyId], references: [id])
+  landlord     User               @relation("LeaseLandlord", fields: [landlordId], references: [id])
+  tenant       User               @relation("LeaseTenant", fields: [tenantId], references: [id])
+  application  RentalApplication? @relation(fields: [applicationId], references: [id])
+  rentPayments RentPayment[]
+
+  @@index([tenantId, status])
+  @@index([landlordId, status])
+  @@index([propertyId, status])
+  @@map("leases")
+}
+
+// ───────────────────────────── Finance ─────────────────────────────
+
+model RentPayment {
+  id            String     @id @default(uuid()) @db.Char(36)
+  leaseId       String     @map("lease_id") @db.Char(36)
+  propertyId    String     @map("property_id") @db.Char(36)
+  tenantId      String     @map("tenant_id") @db.Char(36)
+  landlordId    String     @map("landlord_id") @db.Char(36)
+  period        String     @db.Char(7) // YYYY-MM
+  amount        Decimal    @db.Decimal(12, 2)
+  dueDate       DateTime   @map("due_date") @db.Date
+  status        RentStatus @default(DUE)
+  paidAt        DateTime?  @map("paid_at")
+  method        String?    @db.VarChar(30)
+  receiptNumber String?    @unique @map("receipt_number") @db.VarChar(40)
+  recordedById  String?    @map("recorded_by_id") @db.Char(36)
+  createdAt     DateTime   @default(now()) @map("created_at")
+
+  lease        Lease         @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([leaseId, period])
+  @@index([tenantId, status])
+  @@index([landlordId, status])
+  @@map("rent_payments")
+}
+
+model Transaction {
+  id             String            @id @default(uuid()) @db.Char(36)
+  type           TransactionType
+  status         TransactionStatus @default(PENDING)
+  amount         Decimal           @db.Decimal(12, 2)
+  payerId        String?           @map("payer_id") @db.Char(36)
+  payeeId        String?           @map("payee_id") @db.Char(36)
+  propertyId     String?           @map("property_id") @db.Char(36)
+  rentPaymentId  String?           @map("rent_payment_id") @db.Char(36)
+  invoiceId      String?           @map("invoice_id") @db.Char(36)
+  method         String            @db.VarChar(30)
+  reference      String            @unique @db.VarChar(60)
+  notes          String?           @db.VarChar(500)
+  isTest         Boolean           @default(false) @map("is_test")
+  reconciled     Boolean           @default(false)
+  reconciledById String?           @map("reconciled_by_id") @db.Char(36)
+  reconciledAt   DateTime?         @map("reconciled_at")
+  createdById    String?           @map("created_by_id") @db.Char(36)
+  createdAt      DateTime          @default(now()) @map("created_at")
+
+  rentPayment RentPayment? @relation(fields: [rentPaymentId], references: [id])
+  invoice     Invoice?     @relation(fields: [invoiceId], references: [id])
+  refunds     Refund[]
+
+  @@index([type, status, createdAt])
+  @@index([payerId])
+  @@index([payeeId])
+  @@map("transactions")
+}
+
+model Invoice {
+  id          String        @id @default(uuid()) @db.Char(36)
+  number      String        @unique @db.VarChar(30)
+  issuedToId  String        @map("issued_to_id") @db.Char(36)
+  propertyId  String?       @map("property_id") @db.Char(36)
+  description String        @db.VarChar(255)
+  amount      Decimal       @db.Decimal(12, 2)
+  tax         Decimal       @default(0) @db.Decimal(12, 2)
+  total       Decimal       @db.Decimal(12, 2)
+  status      InvoiceStatus @default(DRAFT)
+  dueDate     DateTime?     @map("due_date") @db.Date
+  issuedAt    DateTime?     @map("issued_at")
+  createdById String        @map("created_by_id") @db.Char(36)
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  transactions Transaction[]
+
+  @@index([issuedToId])
+  @@map("invoices")
+}
+
+model Refund {
+  id            String       @id @default(uuid()) @db.Char(36)
+  transactionId String       @map("transaction_id") @db.Char(36)
+  amount        Decimal      @db.Decimal(12, 2)
+  reason        String       @db.VarChar(500)
+  status        RefundStatus @default(REQUESTED)
+  requestedById String       @map("requested_by_id") @db.Char(36)
+  decidedById   String?      @map("decided_by_id") @db.Char(36)
+  decidedAt     DateTime?    @map("decided_at")
+  processedAt   DateTime?    @map("processed_at")
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+
+  @@index([status])
+  @@map("refunds")
+}
+
+model SubscriptionPlan {
+  id            String         @id @default(uuid()) @db.Char(36)
+  name          String         @unique @db.VarChar(60)
+  audience      Role
+  priceMonthly  Decimal        @map("price_monthly") @db.Decimal(12, 2)
+  features      String?        @db.Text
+  active        Boolean        @default(true)
+  createdAt     DateTime       @default(now()) @map("created_at")
+  subscriptions Subscription[]
+
+  @@map("subscription_plans")
+}
+
+model Subscription {
+  id        String             @id @default(uuid()) @db.Char(36)
+  userId    String             @map("user_id") @db.Char(36)
+  planId    String             @map("plan_id") @db.Char(36)
+  status    SubscriptionStatus @default(ACTIVE)
+  startsAt  DateTime           @map("starts_at")
+  endsAt    DateTime?          @map("ends_at")
+  createdAt DateTime           @default(now()) @map("created_at")
+
+  plan SubscriptionPlan @relation(fields: [planId], references: [id])
+
+  @@index([userId])
+  @@map("subscriptions")
+}
+
+model PlatformSetting {
+  key         String   @id @db.VarChar(64)
+  value       String   @db.VarChar(500)
+  updatedById String?  @map("updated_by_id") @db.Char(36)
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_settings")
+}
+
+// ───────────────────────────── Operations ─────────────────────────────
+
+model MaintenanceRequest {
+  id                 String            @id @default(uuid()) @db.Char(36)
+  propertyId         String            @map("property_id") @db.Char(36)
+  leaseId            String?           @map("lease_id") @db.Char(36)
+  raisedById         String            @map("raised_by_id") @db.Char(36)
+  landlordId         String            @map("landlord_id") @db.Char(36)
+  category           String            @db.VarChar(40)
+  title              String            @db.VarChar(150)
+  description        String            @db.Text
+  priority           Priority          @default(MEDIUM)
+  status             MaintenanceStatus @default(OPEN)
+  assignedProviderId String?           @map("assigned_provider_id") @db.Char(36)
+  serviceCharge      Decimal?          @map("service_charge") @db.Decimal(12, 2)
+  providerNote       String?           @map("provider_note") @db.VarChar(500)
+  completedAt        DateTime?         @map("completed_at")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+
+  property Property           @relation(fields: [propertyId], references: [id])
+  raisedBy User               @relation("MaintenanceRaisedBy", fields: [raisedById], references: [id])
+  provider User?              @relation("MaintenanceProvider", fields: [assignedProviderId], references: [id])
+  photos   MaintenancePhoto[]
+
+  @@index([landlordId, status])
+  @@index([assignedProviderId, status])
+  @@index([raisedById])
+  @@map("maintenance_requests")
+}
+
+model MaintenancePhoto {
+  id           String   @id @default(uuid()) @db.Char(36)
+  requestId    String   @map("request_id") @db.Char(36)
+  filePath     String   @map("file_path") @db.VarChar(255)
+  mimeType     String   @map("mime_type") @db.VarChar(60)
+  uploadedById String   @map("uploaded_by_id") @db.Char(36)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  request MaintenanceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@map("maintenance_photos")
+}
+
+model SupportTicket {
+  id           String         @id @default(uuid()) @db.Char(36)
+  raisedById   String         @map("raised_by_id") @db.Char(36)
+  category     TicketCategory
+  subject      String         @db.VarChar(150)
+  description  String         @db.Text
+  priority     Priority       @default(MEDIUM)
+  status       TicketStatus   @default(OPEN)
+  assignedToId String?        @map("assigned_to_id") @db.Char(36)
+  propertyId   String?        @map("property_id") @db.Char(36)
+  resolvedAt   DateTime?      @map("resolved_at")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  raisedBy   User            @relation("TicketRaisedBy", fields: [raisedById], references: [id])
+  assignedTo User?           @relation("TicketAssignee", fields: [assignedToId], references: [id])
+  messages   TicketMessage[]
+
+  @@index([raisedById])
+  @@index([status, assignedToId])
+  @@map("support_tickets")
+}
+
+model TicketMessage {
+  id        String   @id @default(uuid()) @db.Char(36)
+  ticketId  String   @map("ticket_id") @db.Char(36)
+  authorId  String   @map("author_id") @db.Char(36)
+  body      String   @db.Text
+  internal  Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+  @@map("ticket_messages")
+}
+
+model Enquiry {
+  id         String        @id @default(uuid()) @db.Char(36)
+  propertyId String        @map("property_id") @db.Char(36)
+  tenantId   String        @map("tenant_id") @db.Char(36)
+  message    String        @db.VarChar(1000)
+  status     EnquiryStatus @default(NEW)
+  followUpAt DateTime?     @map("follow_up_at")
+  notes      String?       @db.VarChar(1000)
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, status])
+  @@index([tenantId])
+  @@map("enquiries")
+}
+
+model PropertyVisit {
+  id          String      @id @default(uuid()) @db.Char(36)
+  propertyId  String      @map("property_id") @db.Char(36)
+  enquiryId   String?     @map("enquiry_id") @db.Char(36)
+  agentId     String      @map("agent_id") @db.Char(36)
+  tenantId    String?     @map("tenant_id") @db.Char(36)
+  scheduledAt DateTime    @map("scheduled_at")
+  status      VisitStatus @default(SCHEDULED)
+  notes       String?     @db.VarChar(500)
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, scheduledAt])
+  @@map("property_visits")
+}
+
+model FraudReport {
+  id           String      @id @default(uuid()) @db.Char(36)
+  propertyId   String?     @map("property_id") @db.Char(36)
+  reportedById String      @map("reported_by_id") @db.Char(36)
+  reason       String      @db.VarChar(80)
+  details      String      @db.Text
+  status       FraudStatus @default(OPEN)
+  handledById  String?     @map("handled_by_id") @db.Char(36)
+  resolution   String?     @db.VarChar(500)
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("fraud_reports")
+}
+
+model Notification {
+  id        String    @id @default(uuid()) @db.Char(36)
+  userId    String    @map("user_id") @db.Char(36)
+  title     String    @db.VarChar(150)
+  body      String    @db.VarChar(500)
+  link      String?   @db.VarChar(255)
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}

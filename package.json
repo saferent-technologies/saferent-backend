@@ -1,31 +1,24 @@
 {
-  "name": "saferent-backend",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "saferent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SafeRent Super Admin portal \u2014 React web app + Express/MySQL API, Firebase for authentication",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "dependencies": {
-    "@prisma/client": "^6.19.0",
-    "bcryptjs": "^3.0.3",
-    "cors": "^2.8.6",
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "express-validator": "^7.3.2",
-    "firebase-admin": "^14.2.0",
-    "jsonwebtoken": "^9.0.3",
-    "multer": "^2.2.0",
-    "mysql2": "^3.23.0",
-    "prisma": "^6.19.0"
+    "install:all": "npm install && npm --prefix server install && npm --prefix web install",
+    "dev": "concurrently -n api,web -c yellow,cyan \"npm --prefix server run dev\" \"npm --prefix web run dev\"",
+    "dev:api": "npm --prefix server run dev",
+    "dev:web": "npm --prefix web run dev",
+    "db:migrate": "npm --prefix server run db:migrate",
+    "db:studio": "npm --prefix server run db:studio",
+    "bootstrap:super-admin": "npm --prefix server run bootstrap:super-admin",
+    "build": "npm --prefix server run build && npm --prefix web run build",
+    "typecheck": "npm --prefix server run typecheck && npm --prefix web run typecheck",
+    "test": "npm --prefix server test && npm --prefix web test"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "concurrently": "^9.2.1"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
