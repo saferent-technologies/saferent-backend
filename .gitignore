@@ -31,3 +31,4 @@ coverage/
 !.vscode/extensions.json
 .idea/
 server/uploads/
+service-account.json
