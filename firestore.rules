@@ -1,0 +1,11 @@
+rules_version = '2';
+// SafeRent stores ALL application data in MySQL behind the SafeRent API.
+// Android, iOS and the Admin Panel never read or write Firestore directly, so everything is denied.
+// If Firestore is enabled later, add rules here that mirror the API's authorization — never trust client-sent roles.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

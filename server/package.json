@@ -9,12 +9,15 @@
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "start": "node --env-file=.env dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --exclude \"test/integration/**\"",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "bootstrap:super-admin": "tsx --env-file=.env src/bootstrap/cli.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test:integration": "vitest run test/integration",
+    "openapi": "tsx --env-file=.env src/scripts/export-openapi.ts",
+    "test:migrate": "node --env-file=.env scripts/test-db-reset.cjs"
   },
   "engines": {
     "node": ">=22"

@@ -13,12 +13,13 @@ import { isSessionValid } from "../lib/session";
 import { isAllowedEmailDomain, normalizeEmail, parseInput, passwordResetInputSchema, rebindSessionInputSchema, verifyOtpInputSchema } from "../lib/validation";
 import { me as currentUser, requireRecentAuth, signInProvider, syncRoleClaim } from "../middleware/auth";
 import { ROLE_INFO, type RoleKey } from "../rbac/catalog";
-import { effectivePermissionsFor } from "../rbac/service";
+import { effectivePermissionsFor, rolesFor } from "../rbac/service";
 import { z } from "zod";
 import { notify } from "../lib/notify";
 import { sendEmail } from "../services/email";
 import { otpEmail, passwordResetEmail } from "../services/templates";
 import { toProfile, toSession } from "./serializers";
+import { attributeOnRegistration } from "../services/referral.service";
 
 const appOrigin = () => env.APP_ORIGIN.split(",")[0].trim();
 
@@ -49,11 +50,13 @@ export async function me(req: Request, res: Response): Promise<void> {
 
   const session = await prisma.authSession.findUnique({ where: { userId: user.id } });
   const sessionValid = isSessionValid(session, token.auth_time, Date.now());
+  const roles = await rolesFor(user);
   res.json({
     registrationRequired: false,
-    user: toProfile(user),
+    user: { ...toProfile(user), roles },
     roleInfo: { key: user.role, ...ROLE_INFO[user.role as RoleKey] },
-    permissions: sessionValid ? await effectivePermissionsFor(user) : {},
+    roles: roles.map((key) => ({ key, ...ROLE_INFO[key] })),
+    permissions: sessionValid ? await effectivePermissionsFor(user, roles) : {},
     session: sessionValid && session ? toSession(session) : null,
     secondFactorRequired: !sessionValid,
     signInProvider: signInProvider(req) ?? null,
@@ -266,6 +269,8 @@ export async function completePhoneLogin(req: Request, res: Response): Promise<v
 const registerSchema = z.object({
   fullName: z.string().trim().min(2, "Enter your full name.").max(120),
   role: z.enum(["LANDLORD", "TENANT"]),
+  /** Referral code from a /ref link opened before sign-up. Attribution is decided and locked here, server-side. */
+  referralCode: z.string().trim().toUpperCase().max(20).optional(),
   email: z
     .string()
     .trim()
@@ -321,7 +326,9 @@ export async function register(req: Request, res: Response): Promise<void> {
   });
   await syncRoleClaim(token.uid, role);
 
-  await writeAuditLog({ action: "auth.register", outcome: "success", userId: user.id, metadata: { role }, ...meta });
+  await writeAuditLog({ action: "auth.register", outcome: "success", userId: user.id, metadata: { role, referral: !!input.referralCode }, ...meta });
+  // A bad or ineligible referral code never blocks sign-up.
+  await attributeOnRegistration({ id: user.id, role, fullName: user.fullName }, input.referralCode).catch((err) => console.error("[referrals] attribution failed", err));
   await notify(user.id, `Welcome to SafeRent, ${user.fullName.split(" ")[0]}!`, role === "LANDLORD" ? "Add your first property to start receiving tenant applications." : "Browse verified rental properties and apply in a few taps.", role === "LANDLORD" ? "/properties/new" : "/browse");
   res.status(201).json({ ok: true });
 }

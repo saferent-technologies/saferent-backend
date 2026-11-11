@@ -11,6 +11,7 @@ import { Spinner } from "@/components/ui/Spinner";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Tabs } from "@/components/ui/Tabs";
 import { useAuth } from "@/hooks/useAuth";
+import { UserOverviewTab } from "./UserOverview";
 import { useQuery } from "@/hooks/useQuery";
 import { Avatar } from "@/layouts/DashboardLayout";
 import { request } from "@/services/api";
@@ -24,19 +25,23 @@ interface UserDetail {
   permissions: Permissions;
   overrides: Array<{ permissionKey: string; granted: boolean; scope: Scope }>;
   session: { method: string; verifiedAt: string; expiresAt: string; revoked: boolean } | null;
-  can: { manage: boolean; assignRole: boolean; setPermissions: boolean };
+  landlordKyc: { kycStatus: string; kycNote: string | null; kycReviewedAt: string | null } | null;
+  can: { manage: boolean; assignRole: boolean; setPermissions: boolean; addRoles: string[]; removeRoles: string[] };
 }
 
 interface Catalog {
   permissions: Array<{ key: string; category: string; description: string; reserved?: boolean }>;
 }
 
-type Tab = "overview" | "permissions" | "activity";
+type Tab = "overview" | "data" | "permissions" | "activity";
 
 export function UserDetailPage() {
   const { id = "" } = useParams();
-  const [tab, setTab] = useState<Tab>("overview");
+  const { can: canDo } = useAuth();
+  // Staff without users.view (e.g. Finance) land straight on the user's records.
+  const [tab, setTab] = useState<Tab>(() => (canDo("users.view") ? "overview" : "data"));
   const { data, loading, error, reload } = useQuery(() => request<UserDetail>(`/users/${id}`), [id]);
+  const { can } = useAuth();
   const [message, setMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const { confirm, dialog } = useConfirm();
 
@@ -92,6 +97,20 @@ export function UserDetailPage() {
         }
       />
       {message && <Alert kind={message.kind} className="mb-4">{message.text}</Alert>}
+      {data.landlordKyc && (
+        <section className="card mb-4 flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-semibold">Landlord identity verification <StatusBadge status={data.landlordKyc.kycStatus} /></p>
+            <p className="text-sm text-muted">{data.landlordKyc.kycNote ?? "Check the landlord's government ID offline, then record the decision here. Verification unlocks referral rewards."}</p>
+          </div>
+          {can("users.manage") && data.landlordKyc.kycStatus !== "APPROVED" && (
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={() => confirm({ title: "Reject identity", message: "The landlord is told the reason.", tone: "danger", confirmLabel: "Reject", reason: { label: "Reason", required: true, minLength: 5 }, onConfirm: async (r) => { await request(`/users/${u.id}/kyc`, { method: "POST", body: { decision: "REJECTED", note: r } }); setMessage({ kind: "success", text: "Identity rejected." }); await reload(); } })}>Reject</Button>
+              <Button onClick={() => confirm({ title: "Verify identity", message: `Confirm you have checked ${u.fullName}'s identity documents.`, confirmLabel: "Verify", onConfirm: async () => { await request(`/users/${u.id}/kyc`, { method: "POST", body: { decision: "APPROVED" } }); setMessage({ kind: "success", text: "Identity verified." }); await reload(); } })}>Verify identity</Button>
+            </div>
+          )}
+        </section>
+      )}
       {u.isFounder && <Alert kind="info" className="mb-4">The founder account cannot be demoted, deactivated or have its permissions changed.</Alert>}
 
       <Tabs<Tab>
@@ -101,8 +120,8 @@ export function UserDetailPage() {
         onChange={setTab}
         items={[
           { value: "overview", label: "Overview" },
-          { value: "permissions", label: "Permissions" },
-          { value: "activity", label: "Activity" },
+          { value: "data", label: "All data" },
+          ...(canDo("users.view") ? [{ value: "permissions" as Tab, label: "Permissions" }, { value: "activity" as Tab, label: "Activity" }] : []),
         ]}
       />
 
@@ -122,12 +141,31 @@ export function UserDetailPage() {
               <Item label="Phone verified" value={u.phoneVerified ? "Yes" : "No"} />
               <Item label="Current session" value={data.session && !data.session.revoked ? `${labelize(data.session.method)} · until ${formatTimestamp(data.session.expiresAt)}` : "None"} />
             </dl>
+            <div className="mt-6 border-t border-line pt-5">
+              <h3 className="mb-2 text-sm font-semibold text-ink">All roles</h3>
+              <div className="flex flex-wrap items-center gap-2">
+                {(u.roles ?? [u.role]).map((r) => (
+                  <Badge key={r} tone={r === u.role ? "brand" : "neutral"}>
+                    {ROLE_LABELS[r]}{r === u.role ? " (primary)" : ""}
+                    {data.can.removeRoles.includes(r) && (
+                      <button type="button" aria-label={`Remove ${ROLE_LABELS[r]}`} className="ml-1" onClick={() => confirm({ title: `Remove ${ROLE_LABELS[r]} role`, message: `${u.fullName} will lose ${ROLE_LABELS[r]} access.`, tone: "danger", confirmLabel: "Remove", onConfirm: async () => { await request(`/users/${u.id}/roles/${r}`, { method: "DELETE" }); setMessage({ kind: "success", text: "Role removed." }); await reload(); } })}>×</button>
+                    )}
+                  </Badge>
+                ))}
+                {data.can.addRoles.map((r) => (
+                  <Button key={r} size="sm" variant="ghost" onClick={() => confirm({ title: `Add ${ROLE_LABELS[r]} role`, message: `${u.fullName} keeps their current role and can also use SafeRent as a ${ROLE_LABELS[r]}.`, confirmLabel: "Add role", onConfirm: async () => { await request(`/users/${u.id}/roles`, { method: "POST", body: { role: r } }); setMessage({ kind: "success", text: "Role added." }); await reload(); } })}>
+                    + {ROLE_LABELS[r]}
+                  </Button>
+                ))}
+              </div>
+            </div>
             {data.can.assignRole && <RoleChanger user={u} onChanged={async () => { setMessage({ kind: "success", text: "Role updated. The user must sign in again." }); await reload(); }} />}
           </section>
         </div>
       )}
       {tab === "permissions" && <PermissionsEditor detail={data} onSaved={async () => { setMessage({ kind: "success", text: "Permissions saved." }); await reload(); }} />}
       {tab === "activity" && <ActivityTab userId={u.id} />}
+      {tab === "data" && <UserOverviewTab userId={u.id} />}
       {dialog}
     </>
   );

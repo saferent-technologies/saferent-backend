@@ -32,3 +32,6 @@ coverage/
 .idea/
 server/uploads/
 service-account.json
+
+# Personal / business documents kept next to the code — never commit
+/*.pdf

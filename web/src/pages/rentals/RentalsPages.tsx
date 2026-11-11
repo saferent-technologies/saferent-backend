@@ -13,6 +13,10 @@ import { useAuth } from "@/hooks/useAuth";
 import { useListParams } from "@/hooks/useListParams";
 import { useQuery } from "@/hooks/useQuery";
 import { openProtected, request } from "@/services/api";
+import { LeaseReviewModal } from "@/pages/reviews/ReviewsPages";
+import { LeaseExitPanel } from "./LeaseExitPanel";
+import { LandlordPanPanel } from "./LandlordPanPanel";
+import { Badge } from "@/components/ui/Badge";
 import type { Paged } from "@/types/auth";
 import { errorMessage } from "@/utils/errors";
 import { formatDate, formatMoney, toOptions } from "@/utils/format";
@@ -145,6 +149,8 @@ interface Lease {
   securityDeposit: string;
   rentDueDay: number;
   terms: string | null;
+  place: string | null;
+  exit: { status: string; requestedByRole: "TENANT" | "LANDLORD"; moveOutDate: string } | null;
   property: { id: string; title: string; addressLine: string; city: string };
   landlord: Party;
   tenant: Party;
@@ -155,11 +161,13 @@ export function LeasesPage() {
   const list = useListParams(["status"]);
   const { data, loading, error, reload } = useQuery(() => request<Paged<Lease>>("/leases", { query: list.query }), [list.query]);
   const [open, setOpen] = useState<Lease | null>(null);
+  const [reviewFor, setReviewFor] = useState<Lease | null>(null);
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const { confirm, dialog } = useConfirm();
 
   return (
     <>
+      {reviewFor && <LeaseReviewModal leaseId={reviewFor.id} title={`${reviewFor.place ? `${reviewFor.place} · ` : ""}${reviewFor.property.title}`} onClose={() => setReviewFor(null)} />}
       <PageHeader title={profile?.role === "TENANT" ? "My rental" : "Leases"} description="Lease agreements, parties and terms." />
       {msg && <Alert kind={msg.kind} className="mb-4">{msg.text}</Alert>}
       <ListToolbar search={list.q} onSearch={list.setSearch} placeholder="Search by property" filters={[{ name: "status", label: "Status", options: toOptions(["ACTIVE", "ENDED", "TERMINATED"]) }]} values={list.filters} onFilter={list.setFilter} />
@@ -171,16 +179,16 @@ export function LeasesPage() {
         onRowClick={setOpen}
         empty="No leases yet."
         columns={[
-          { key: "property", header: "Property", render: (l) => <span className="font-semibold">{l.property.title}</span> },
+          { key: "property", header: "Property", render: (l) => <span className="font-semibold">{l.place ? `${l.place} · ` : ""}{l.property.title}</span> },
           { key: "parties", header: "Tenant / Landlord", render: (l) => <span className="text-sm">{l.tenant.fullName} · {l.landlord.fullName}</span>, className: "hidden lg:table-cell" },
           { key: "term", header: "Term", render: (l) => `${formatDate(l.startDate)} – ${formatDate(l.endDate)}` },
           { key: "rent", header: "Rent", render: (l) => formatMoney(l.monthlyRent) },
-          { key: "status", header: "Status", render: (l) => <StatusBadge status={l.status} /> },
+          { key: "status", header: "Status", render: (l) => <span className="flex flex-wrap gap-1"><StatusBadge status={l.status} />{l.exit && <Badge tone="warning">{l.exit.status === "ACCEPTED" ? `Closes ${formatDate(l.exit.moveOutDate)}` : `${l.exit.requestedByRole === "TENANT" ? "Tenant" : "Landlord"} asked to close`}</Badge>}</span> },
         ]}
       />
       {data && <Pagination page={data.page} totalPages={data.totalPages} total={data.total} onPage={list.setPage} />}
       {open && (
-        <Modal open onClose={() => setOpen(null)} title={open.property.title} description={`${open.property.addressLine}, ${open.property.city}`}>
+        <Modal open onClose={() => setOpen(null)} title={open.place ? `${open.place} · ${open.property.title}` : open.property.title} description={`${open.property.addressLine}, ${open.property.city}`}>
           <div className="space-y-4 text-sm">
             <div className="grid gap-3 sm:grid-cols-2">
               <PartyCard title="Landlord" party={open.landlord} />
@@ -193,11 +201,16 @@ export function LeasesPage() {
               <div><dt className="text-muted">Deposit</dt><dd>{formatMoney(open.securityDeposit)}</dd></div>
             </dl>
             <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-control bg-subtle p-3 font-sans text-xs text-ink-2">{open.terms}</pre>
+            {(open.tenant.id === profile?.id || open.landlord.id === profile?.id) && <LandlordPanPanel leaseId={open.id} />}
+            {(open.tenant.id === profile?.id || open.landlord.id === profile?.id || can("leases.manage")) && <LeaseExitPanel leaseId={open.id} onChanged={() => void reload()} />}
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              {can("leases.manage") && open.status === "ACTIVE" && open.tenant.id !== profile?.id && (
+              {can("leases.manage", "ALL") && open.status === "ACTIVE" && open.tenant.id !== profile?.id && open.landlord.id !== profile?.id && (
                 <Button variant="danger" onClick={() => confirm({ title: "Terminate lease", message: "Both parties are notified and the property becomes available again.", tone: "danger", confirmLabel: "Terminate", reason: { label: "Reason", required: true, minLength: 5 }, onConfirm: async (reason) => { await request(`/leases/${open.id}/terminate`, { method: "POST", body: { reason } }); setOpen(null); setMsg({ kind: "success", text: "Lease terminated." }); await reload(); } })}>
                   Terminate
                 </Button>
+              )}
+              {open.status !== "ACTIVE" && (open.tenant.id === profile?.id || open.landlord.id === profile?.id) && (
+                <Button variant="secondary" onClick={() => { setReviewFor(open); setOpen(null); }}>Review</Button>
               )}
               <Button variant="secondary" leftIcon={<Printer className="size-4" />} onClick={() => openProtected(`/leases/${open.id}/agreement`).catch((e) => setMsg({ kind: "error", text: errorMessage(e) }))}>
                 Lease agreement
@@ -233,7 +246,7 @@ interface RentRow {
   paidAt: string | null;
   method: string | null;
   receiptNumber: string | null;
-  lease: { id: string; property: { title: string; city: string }; tenant: { fullName: string }; landlord: { fullName: string } };
+  lease: { id: string; place: string | null; placeCode: string; property: { title: string; city: string }; tenant: { fullName: string }; landlord: { fullName: string } };
 }
 interface RentResponse extends Paged<RentRow> {
   summary: Record<string, { count: number; amount: string | number }>;
@@ -313,8 +326,8 @@ export function RentPage() {
         rowKey={(r) => r.id}
         empty="No rent records yet."
         columns={[
-          { key: "period", header: "Period", render: (r) => <span className="font-semibold">{r.period}</span> },
-          { key: "property", header: "Property", render: (r) => <span>{r.lease.property.title}{!isTenant && <span className="block text-xs text-muted">{r.lease.tenant.fullName}</span>}</span> },
+          { key: "period", header: "Period", render: (r) => <span><span className="block font-semibold">{r.period}</span>{r.receiptNumber && <span className="text-xs text-muted">{r.receiptNumber}</span>}</span> },
+          { key: "property", header: "Property", render: (r) => <span><span className="font-medium">{r.lease.place ? `${r.lease.place} · ` : ""}{r.lease.property.title}</span><span className="block text-xs text-muted">{r.lease.placeCode}{!isTenant ? ` · ${r.lease.tenant.fullName}` : ""}</span></span> },
           { key: "due", header: "Due", render: (r) => formatDate(r.dueDate) },
           { key: "amount", header: "Amount", render: (r) => formatMoney(r.amount) },
           { key: "status", header: "Status", render: (r) => <StatusBadge status={r.status} /> },

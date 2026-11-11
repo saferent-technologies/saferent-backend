@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { unlink } from "node:fs/promises";
+import { open, unlink } from "node:fs/promises";
 import path from "node:path";
-import type { Response } from "express";
+import type { NextFunction, Request, RequestHandler, Response } from "express";
 import multer from "multer";
 import { REASONS, UPLOADS } from "../config/constants";
 import { AppError } from "./errors";
+import { sniffMime } from "./upload-sniff";
+
+export { sniffMime } from "./upload-sniff";
 
 /**
  * Local file storage under server/uploads (git-ignored). Files are NEVER served statically —
@@ -37,9 +40,60 @@ function uploader(folder: string, allowed: readonly string[]) {
   });
 }
 
-export const uploadImages = (folder: string) => uploader(folder, UPLOADS.IMAGE_TYPES).array("files", 10);
-export const uploadDocument = (folder: string) => uploader(folder, UPLOADS.DOCUMENT_TYPES).single("file");
-export const uploadAvatar = uploader("avatars", UPLOADS.IMAGE_TYPES).single("file");
+async function readHead(file: string): Promise<Uint8Array> {
+  const handle = await open(file, "r");
+  try {
+    const buffer = Buffer.alloc(12);
+    const { bytesRead } = await handle.read(buffer, 0, 12, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Rejects (and deletes) uploads whose content does not match their declared type, e.g. a script renamed to .jpg. */
+async function verifyContent(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  const files = [...((req.files as Express.Multer.File[] | undefined) ?? []), ...(req.file ? [req.file] : [])];
+  const bad: Express.Multer.File[] = [];
+  for (const file of files) {
+    if (sniffMime(await readHead(file.path)) !== file.mimetype) bad.push(file);
+  }
+  if (bad.length) {
+    await Promise.all(files.map((f) => unlink(f.path).catch(() => undefined)));
+    return next(new AppError("invalid-argument", REASONS.INVALID_INPUT, "The file content does not match its type. Upload a real JPG, PNG, WEBP or PDF."));
+  }
+  next();
+}
+
+export const uploadImages = (folder: string, max = 10): RequestHandler[] => [uploader(folder, UPLOADS.IMAGE_TYPES).array("files", max), verifyContent];
+export const uploadDocument = (folder: string): RequestHandler[] => [uploader(folder, UPLOADS.DOCUMENT_TYPES).single("file"), verifyContent];
+export const uploadAvatar: RequestHandler[] = [uploader("avatars", UPLOADS.IMAGE_TYPES).single("file"), verifyContent];
+/** Owner-verification selfies (never public; served only to the owner and reviewers). */
+export const uploadSelfie: RequestHandler[] = [uploader("kyc", UPLOADS.IMAGE_TYPES).single("file"), verifyContent];
+
+/**
+ * Storage driver used by controllers. Today: local disk under server/uploads. To move to Firebase
+ * Storage / S3, implement this interface and switch `storage` — controllers do not change.
+ */
+export interface FileStorage {
+  /** Storage key for a file multer just received. */
+  keyFor(file: Express.Multer.File): string;
+  /** Streams a file AFTER the caller has authorized access. */
+  send(res: Response, key: string, mimeType: string, downloadName?: string): void;
+  remove(key: string): Promise<void>;
+}
+
+export const storage: FileStorage = {
+  keyFor: (file) => relativePath(file.path),
+  send: (res, key, mimeType, downloadName) => sendStoredFile(res, key, mimeType, downloadName),
+  remove: (key) => removeStoredFile(key),
+};
+
+/** Deletes freshly uploaded files when the request fails authorization or validation. */
+export async function discardUploads(req: Request): Promise<void> {
+  const files = [...((req.files as Express.Multer.File[] | undefined) ?? []), ...(req.file ? [req.file] : [])];
+  await Promise.all(files.map((f) => unlink(f.path).catch(() => undefined)));
+}
 
 /** Stored path relative to UPLOAD_ROOT, e.g. "property-images/abc.jpg". */
 export function relativePath(absolute: string): string {

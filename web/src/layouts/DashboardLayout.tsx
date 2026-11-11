@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, Menu, Settings, ShieldCheck, UserRound, X } from "lucide-react";
+import { Bell, ChevronDown, LogOut, Menu, Settings, ShieldCheck, UserRound, Wallet, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { Logo } from "@/components/ui/Logo";
@@ -12,8 +12,8 @@ import { COMPANY_NAME, PATHS, ROLE_LABELS } from "@/utils/constants";
 import { initials } from "@/utils/format";
 
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {
-  const { can, profile } = useAuth();
-  const groups = visibleNavigation(can, profile?.role);
+  const { can, activeRole } = useAuth();
+  const groups = visibleNavigation(can, activeRole?.key);
   return (
     <nav aria-label="Main" className="space-y-5">
       {groups.map((group) => (
@@ -67,9 +67,30 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 function SessionBadge() {
-  const { profile } = useAuth();
+  const { profile, roles, activeRole, setActiveRole } = useAuth();
+  const navigate = useNavigate();
   return (
-    <div className="border-t border-line px-4 pb-2 pt-4">
+    <div className="space-y-2 border-t border-line px-4 pb-2 pt-4">
+      {roles.length > 1 && (
+        <label className="block">
+          <span className="mb-1 block px-1 text-xs font-semibold uppercase tracking-wider text-muted">Using SafeRent as</span>
+          <select
+            aria-label="Switch role"
+            value={activeRole?.key ?? ""}
+            onChange={(e) => {
+              setActiveRole(e.target.value);
+              navigate(PATHS.dashboard);
+            }}
+            className="h-11 w-full cursor-pointer rounded-control border border-line bg-surface px-3 text-sm font-semibold text-ink focus:border-brand focus:shadow-focus focus:outline-none"
+          >
+            {roles.map((r) => (
+              <option key={r.key} value={r.key}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <div className="flex items-center gap-2 rounded-control bg-brand-bg px-3 py-2.5 text-xs font-medium text-brand-dark">
         <ShieldCheck className="size-4 shrink-0" />
         <span className="truncate">Verified {ROLE_LABELS[profile?.role ?? ""] ?? ""} session</span>
@@ -81,6 +102,22 @@ function SessionBadge() {
 export function Avatar({ name, image, size = "size-9" }: { name?: string | null; image?: string | null; size?: string }) {
   if (image) return <AuthImage path={image.replace(/^\/api/, "")} alt={name ?? "Profile photo"} className={cn(size, "shrink-0 rounded-full")} />;
   return <span className={cn(size, "flex shrink-0 items-center justify-center rounded-full bg-brand text-sm font-bold text-white")}>{initials(name)}</span>;
+}
+
+/** Landlords and tenants: promotional wallet balance in the top bar → wallet history. */
+function WalletChip() {
+  const { roles } = useAuth();
+  const location = useLocation();
+  const hasWallet = roles.some((r) => r.key === "LANDLORD" || r.key === "TENANT");
+  const { data } = useQuery(() => request<{ wallet: { balance: string } }>("/wallet"), [location.pathname], hasWallet);
+  if (!hasWallet) return null;
+  const balance = Number(data?.wallet.balance ?? 0);
+  return (
+    <Link to="/wallet" aria-label={`Wallet balance ₹${balance.toFixed(2)}`} className="flex h-10 items-center gap-1.5 rounded-full border border-line px-3 text-sm font-semibold text-ink hover:bg-subtle">
+      <Wallet className="size-4 text-brand" />
+      <span>₹{balance.toLocaleString("en-IN", { minimumFractionDigits: balance % 1 ? 2 : 0, maximumFractionDigits: 2 })}</span>
+    </Link>
+  );
 }
 
 function NotificationBell() {
@@ -98,7 +135,7 @@ function NotificationBell() {
 }
 
 function ProfileMenu() {
-  const { profile, logout } = useAuth();
+  const { profile, logout, activeRole } = useAuth();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -135,7 +172,7 @@ function ProfileMenu() {
         <Avatar name={profile?.fullName} image={profile?.profileImage} />
         <span className="hidden text-left sm:block">
           <span className="block max-w-40 truncate text-sm font-semibold text-ink">{profile?.fullName}</span>
-          <span className="block text-xs text-muted">{ROLE_LABELS[profile?.role ?? ""]}</span>
+          <span className="block text-xs text-muted">{activeRole?.name ?? ROLE_LABELS[profile?.role ?? ""]}</span>
         </span>
         <ChevronDown className="hidden size-4 text-muted sm:block" />
       </button>
@@ -211,6 +248,7 @@ export function DashboardLayout() {
             <Logo className="h-8" />
           </Link>
           <div className="ml-auto flex items-center gap-1">
+            <WalletChip />
             <NotificationBell />
             <ProfileMenu />
           </div>

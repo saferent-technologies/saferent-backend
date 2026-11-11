@@ -17,6 +17,8 @@ export async function syncRbacCatalog(): Promise<void> {
       update: { name: info.name, description: info.description, rank: info.rank, isStaff: info.isStaff },
     });
   }
+  const known = new Set((await prisma.permission.findMany({ select: { key: true } })).map((p) => p.key));
+  const added = PERMISSION_KEYS.filter((k) => !known.has(k));
   for (const key of PERMISSION_KEYS) {
     const info = PERMISSIONS[key] as PermissionInfo;
     await prisma.permission.upsert({
@@ -30,7 +32,17 @@ export async function syncRbacCatalog(): Promise<void> {
 
   for (const role of ROLES) {
     const count = await prisma.rolePermission.count({ where: { role } });
-    if (count > 0 && role !== "SUPER_ADMIN") continue;
+    if (count > 0 && role !== "SUPER_ADMIN") {
+      // A permission that is new in this release gets its default grants once; edits made in the UI
+      // to existing permissions are left alone. (Skipped on a fresh database, where nothing is known yet.)
+      if (known.size) {
+        const rows = added
+          .filter((k) => DEFAULT_ROLE_PERMISSIONS[role][k])
+          .map((k) => ({ role, permissionKey: k, scope: DEFAULT_ROLE_PERMISSIONS[role][k] as PermissionScope }));
+        if (rows.length) await prisma.rolePermission.createMany({ data: rows, skipDuplicates: true });
+      }
+      continue;
+    }
     await resetRolePermissions(role);
   }
   for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
@@ -66,10 +78,18 @@ export async function rolePermissions(role: RoleKey): Promise<Array<{ permission
   return cache.map.get(role) ?? [];
 }
 
-export async function effectivePermissionsFor(user: Pick<User, "id" | "role">): Promise<EffectivePermissions> {
+/** All roles held by a user: primary role first, then additional roles from user_roles. */
+export async function rolesFor(user: Pick<User, "id" | "role">): Promise<RoleKey[]> {
+  const extra = await prisma.userRole.findMany({ where: { userId: user.id }, select: { role: true }, orderBy: { createdAt: "asc" } });
+  return [user.role as RoleKey, ...extra.map((r) => r.role as RoleKey).filter((r) => r !== user.role)];
+}
+
+/** Union of the permissions of every role the user holds, plus individual overrides. */
+export async function effectivePermissionsFor(user: Pick<User, "id" | "role">, roles?: RoleKey[]): Promise<EffectivePermissions> {
+  const allRoles = roles ?? (await rolesFor(user));
   const [roleRows, overrides] = await Promise.all([
-    rolePermissions(user.role as RoleKey),
+    Promise.all(allRoles.map((r) => rolePermissions(r))).then((rows) => rows.flat()),
     prisma.userPermission.findMany({ where: { userId: user.id } }),
   ]);
-  return resolveEffectivePermissions(user.role as RoleKey, roleRows, overrides);
+  return resolveEffectivePermissions(allRoles, roleRows, overrides);
 }

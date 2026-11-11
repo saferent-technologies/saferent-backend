@@ -73,6 +73,7 @@ export const PERMISSIONS = {
   "properties.browse": { category: "Properties", description: "Browse active public listings" },
   "properties.view": { category: "Properties", description: "View property records" },
   "properties.create": { category: "Properties", description: "Add properties" },
+  "property_types.manage": { category: "Properties", description: "Turn property types on or off for new listings" },
   "properties.manage": { category: "Properties", description: "Edit properties, images, documents and availability" },
   "assignments.manage": { category: "Properties", description: "Assign managers and agents to properties" },
   "inspections.manage": { category: "Properties", description: "Schedule and record inspections" },
@@ -80,6 +81,9 @@ export const PERMISSIONS = {
   "documents.verify": { category: "Moderation", description: "Verify ownership documents" },
   "fraud.report": { category: "Moderation", description: "Report suspicious listings" },
   "fraud.manage": { category: "Moderation", description: "Investigate fraud reports" },
+  "reviews.moderate": { category: "Moderation", description: "Moderate rental reviews and review reports" },
+  "wallet.adjust": { category: "Finance", description: "Add or deduct promotional wallet balance for landlords and tenants (logged, with reason)" },
+  "referrals.manage": { category: "Administration", description: "Review referrals, hold or reject suspicious ones and view reward reports" },
 
   "applications.create": { category: "Rentals", description: "Apply for rental properties" },
   "applications.view": { category: "Rentals", description: "View rental applications" },
@@ -129,6 +133,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, Matrix> = {
 
   ADMIN: {
     ...BASE,
+    "referrals.manage": "ALL",
+    "reviews.moderate": "ALL",
+    "property_types.manage": "ALL",
     "users.view": "ALL",
     "users.manage": "ALL",
     "audit_logs.view": "ALL",
@@ -191,6 +198,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, Matrix> = {
 
   MODERATOR: {
     ...BASE,
+    "reviews.moderate": "ALL",
     "properties.view": "ALL",
     "listings.approve": "ALL",
     "documents.verify": "ALL",
@@ -259,4 +267,6 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   late_fee_percent: "2",
   support_email: "support@saferenttechnologies.com",
   platform_name: "SafeRent",
+  /** Days after a lease ends during which both sides can review (double-blind). */
+  review_window_days: "14",
 };

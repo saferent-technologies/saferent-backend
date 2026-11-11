@@ -5,9 +5,9 @@ import { AppError, fail } from "../lib/errors";
 import { adminAuth } from "../lib/firebaseAdmin";
 import { prisma } from "../lib/prisma";
 import { isSessionValid, secondsSince } from "../lib/session";
-import type { PermissionKey, Scope } from "../rbac/catalog";
+import type { PermissionKey, RoleKey, Scope } from "../rbac/catalog";
 import { hasPermission } from "../rbac/policy";
-import { effectivePermissionsFor } from "../rbac/service";
+import { effectivePermissionsFor, rolesFor } from "../rbac/service";
 import type { AuthedUser } from "../types/express";
 import { verifyAppCheck } from "./appCheck";
 
@@ -49,7 +49,8 @@ export async function loadUser(req: Request, _res: Response, next: NextFunction)
   if (user.accountStatus !== "ACTIVE") {
     return next(new AppError("permission-denied", REASONS.ACCOUNT_DISABLED, "This account has been disabled."));
   }
-  req.user = { ...user, permissions: await effectivePermissionsFor(user) };
+  const roles = await rolesFor(user);
+  req.user = { ...user, roles, permissions: await effectivePermissionsFor(user, roles) };
   next();
 }
 
@@ -68,7 +69,7 @@ export async function requireSession(req: Request, _res: Response, next: NextFun
 
 /** Requires ALL listed permissions (any scope). Resource-level scope is applied in the handler. */
 export function requirePermission(...permissions: PermissionKey[]): RequestHandler {
-  return async (req, _res, next) => {
+  const handler: Tagged = async (req, _res, next) => {
     const user = req.user;
     const missing = permissions.filter((p) => !user || !hasPermission(user.permissions, p));
     if (missing.length === 0) return next();
@@ -82,14 +83,18 @@ export function requirePermission(...permissions: PermissionKey[]): RequestHandl
     });
     next(new AppError("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to do that."));
   };
+  handler[PERMISSION_META] = { all: permissions };
+  return handler;
 }
 
 /** Requires at least ONE of the listed permissions. */
 export function requireAnyPermission(...permissions: PermissionKey[]): RequestHandler {
-  return (req, _res, next) => {
+  const handler: Tagged = (req, _res, next) => {
     if (req.user && permissions.some((p) => hasPermission(req.user!.permissions, p))) return next();
     next(new AppError("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to do that."));
   };
+  handler[PERMISSION_META] = { any: permissions };
+  return handler;
 }
 
 /**
@@ -100,6 +105,14 @@ export function protect(...permissions: PermissionKey[]): RequestHandler[] {
   const chain: RequestHandler[] = [verifyAppCheck, authenticate, loadUser, requireSession];
   if (permissions.length) chain.push(requirePermission(...permissions));
   return chain;
+}
+
+/** Permission metadata read by the OpenAPI generator. */
+export const PERMISSION_META = Symbol("permissions");
+type Tagged = RequestHandler & { [PERMISSION_META]?: { all?: PermissionKey[]; any?: PermissionKey[] } };
+
+export function permissionMeta(handler: RequestHandler): { all?: PermissionKey[]; any?: PermissionKey[] } | undefined {
+  return (handler as Tagged)[PERMISSION_META];
 }
 
 /** Sensitive operations require a sign-in or password re-confirmation within the last few minutes. */
@@ -121,6 +134,11 @@ export function me(req: Request): AuthedUser {
 
 export function can(req: Request, permission: PermissionKey, scope?: Scope): boolean {
   return !!req.user && hasPermission(req.user.permissions, permission, scope);
+}
+
+/** Does the signed-in user hold this role (primary or additional)? */
+export function hasRole(req: Request, role: RoleKey): boolean {
+  return !!req.user && req.user.roles.includes(role);
 }
 
 /** Keeps the Firebase custom claim in sync with the MySQL role (informational; MySQL is authoritative). */

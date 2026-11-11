@@ -10,11 +10,13 @@ import { fail } from "../lib/errors";
 import { enumQuery, found, idParam, paged, pagination } from "../lib/http";
 import { notify } from "../lib/notify";
 import { prisma } from "../lib/prisma";
+import { placeCode, placeCodeOf, placeLabels, placeOf, receiptNumberFor } from "../lib/places";
 import { parseInput } from "../lib/validation";
 import { can, me } from "../middleware/auth";
 import { and, rentWhere } from "../rbac/access";
 import { escapeHtml } from "../services/templates/layout";
 import { printableDoc } from "./rentals.controller";
+import { receiptPan } from "./pan.controller";
 import { billingPeriods } from "../lib/rentSchedule";
 
 export { periodOf } from "../lib/rentSchedule";
@@ -48,7 +50,7 @@ async function markOverdue(where: Prisma.RentPaymentWhereInput): Promise<void> {
 }
 
 const rentInclude = {
-  lease: { select: { id: true, property: { select: { id: true, title: true, city: true } }, tenant: { select: { id: true, fullName: true } }, landlord: { select: { id: true, fullName: true } } } },
+  lease: { select: { id: true, code: true, unitId: true, bedId: true, property: { select: { id: true, code: true, title: true, city: true } }, tenant: { select: { id: true, fullName: true } }, landlord: { select: { id: true, fullName: true } } } },
 } satisfies Prisma.RentPaymentInclude;
 
 /** GET /api/rent — tenant: own; landlord: own properties; finance: all. */
@@ -72,8 +74,9 @@ export async function listRent(req: Request, res: Response): Promise<void> {
     prisma.rentPayment.count({ where }),
     prisma.rentPayment.groupBy({ by: ["status"], where: scope, _sum: { amount: true }, _count: { _all: true } }),
   ]);
+  const places = await placeLabels(items.map((r) => r.lease));
   res.json({
-    ...paged(items, total, p),
+    ...paged(items.map((r) => ({ ...r, lease: { ...r.lease, place: placeOf(places, r.lease), placeCode: placeCodeOf(places, r.lease) ?? r.lease.property.code } })), total, p),
     summary: Object.fromEntries(summary.map((s) => [s.status, { count: s._count._all, amount: s._sum.amount ?? 0 }])),
     paymentMode: env.PAYMENT_MODE,
   });
@@ -87,10 +90,15 @@ async function settle(req: Request, rentId: string, method: string, isTest: bool
   return prisma.$transaction(async (tx) => {
     const rent = found(await tx.rentPayment.findUnique({ where: { id: rentId } }), "Rent record");
     if (rent.status === "PAID" || rent.status === "WAIVED") fail("failed-precondition", REASONS.INVALID_STATE, "This rent is already settled.");
+    // Receipt number from the flat / bed / property unique ID + rent month (see receiptNumberFor).
+    const lease = await tx.lease.findUniqueOrThrow({ where: { id: rent.leaseId }, select: { propertyId: true, unitId: true, bedId: true } });
+    const code = await placeCode(tx, lease);
+    let receiptNumber = receiptNumberFor(code, rent.period);
+    for (let attempt = 2; await tx.rentPayment.count({ where: { receiptNumber } }); attempt++) receiptNumber = receiptNumberFor(code, rent.period, attempt);
     // Conditional update prevents double payment under concurrency.
     const updated = await tx.rentPayment.updateMany({
       where: { id: rent.id, status: { in: ["DUE", "OVERDUE"] } },
-      data: { status: "PAID", paidAt: new Date(), method, receiptNumber: reference("RCPT"), recordedById: actorId },
+      data: { status: "PAID", paidAt: new Date(), method, receiptNumber, recordedById: actorId },
     });
     if (updated.count !== 1) fail("failed-precondition", REASONS.INVALID_STATE, "This rent is already settled.");
 
@@ -204,14 +212,22 @@ export async function rentReceipt(req: Request, res: Response): Promise<void> {
   const rent = found(await prisma.rentPayment.findFirst({ where: and(scope, { id: idParam(req) }), include: rentInclude }), "Rent record");
   if (rent.status !== "PAID") fail("failed-precondition", REASONS.INVALID_STATE, "A receipt is available once the rent is paid.");
   const test = rent.method === "ONLINE_TEST";
+  const places = await placeLabels([rent.lease]);
+  const place = placeOf(places, rent.lease);
+  const code = placeCodeOf(places, rent.lease) ?? rent.lease.property.code;
+  // Shown only with the owner's consent (Profile → PAN & tax, or approved on this lease).
+  const landlordPan = await receiptPan(rent.lease.id, rent.lease.landlord.id);
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(printableDoc(`Rent receipt ${rent.receiptNumber}`, `
     <h1>Rent Receipt${test ? " (TEST — no money received)" : ""}</h1>
     <p class="muted">Receipt no. ${escapeHtml(rent.receiptNumber ?? "")}</p>
     <table>
-      <tr><th>Property</th><td>${escapeHtml(rent.lease.property.title)}, ${escapeHtml(rent.lease.property.city)}</td></tr>
+      <tr><th>Property</th><td>${place ? `${escapeHtml(place)}, ` : ""}${escapeHtml(rent.lease.property.title ?? rent.lease.property.code)}, ${escapeHtml(rent.lease.property.city ?? "")}</td></tr>
+      <tr><th>Unit ID</th><td>${escapeHtml(code)}</td></tr>
+      <tr><th>Lease</th><td>${escapeHtml(rent.lease.code ?? "")}</td></tr>
       <tr><th>Tenant</th><td>${escapeHtml(rent.lease.tenant.fullName)}</td></tr>
       <tr><th>Landlord</th><td>${escapeHtml(rent.lease.landlord.fullName)}</td></tr>
+      ${landlordPan ? `<tr><th>Landlord PAN</th><td>${escapeHtml(landlordPan)}</td></tr>` : ""}
       <tr><th>Rent period</th><td>${escapeHtml(rent.period)}</td></tr>
       <tr><th>Amount</th><td>${inr(rent.amount)}</td></tr>
       <tr><th>Paid on</th><td>${rent.paidAt?.toLocaleString("en-IN") ?? ""}</td></tr>

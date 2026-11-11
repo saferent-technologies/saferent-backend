@@ -18,6 +18,7 @@ import { PATHS } from "@/utils/constants";
 import { errorMessage } from "@/utils/errors";
 import { formatTimestamp } from "@/utils/format";
 import { maskPhone } from "@/utils/mask";
+import { PanSettingsCard } from "./PanSettingsCard";
 
 type FieldDef = { key: string; label: string; type?: "text" | "number" | "date" | "tel" | "checkbox"; hint?: string };
 
@@ -131,6 +132,7 @@ export function ProfilePage() {
             <UploadButton path="/profile/image" field="file" multiple={false} label="Change photo" icon={<Camera className="size-4" />} onDone={() => { setMsg({ kind: "success", text: "Photo updated." }); void refresh(); void reload(); }} onError={(t) => setMsg({ kind: "error", text: t })} />
           </div>
           <h2 className="mt-4 break-words text-lg font-semibold">{u.fullName}</h2>
+          <MyRoles onChanged={async () => { setMsg({ kind: "success", text: "Roles updated." }); await refresh(); }} onError={(t) => setMsg({ kind: "error", text: t })} />
           <div className="mt-2 flex flex-wrap justify-center gap-2">
             <Badge tone="brand">{data?.roleInfo.name}</Badge>
             {u.isFounder && <Badge tone="brand">Founder</Badge>}
@@ -178,6 +180,16 @@ export function ProfilePage() {
             <Button leftIcon={<Save className="size-4" />} loading={saving} disabled={fullName.trim().length < 2} onClick={() => void save()}>Save profile</Button>
           </div>
         </section>
+        {u.role === "LANDLORD" && (
+          <section className="card flex flex-wrap items-center justify-between gap-3 p-5 lg:col-span-3">
+            <div>
+              <h2 className="font-semibold">Owner verification</h2>
+              <p className="text-sm text-muted">DigiLocker ID + live selfie + ownership proof. Your listings go live only after you're verified.</p>
+            </div>
+            <Button variant="secondary" onClick={() => navigate("/verify")}>Open verification</Button>
+          </section>
+        )}
+        {u.role === "LANDLORD" && <PanSettingsCard />}
       </div>
     </>
   );
@@ -192,6 +204,43 @@ function Row({ label, value, verified }: { label: string; value: string; verifie
         {verified === true && <BadgeCheck aria-label="Verified" className="size-4 shrink-0 text-success" />}
         {verified === false && <CircleAlert aria-label="Not verified" className="size-4 shrink-0 text-warning" />}
       </dd>
+    </div>
+  );
+}
+
+/** Multi-role: a landlord can also rent (TENANT), a tenant can also list property (LANDLORD). */
+function MyRoles({ onChanged, onError }: { onChanged: () => Promise<void>; onError: (t: string) => void }) {
+  const { data, reload } = useQuery(() => request<{ roles: Array<{ key: string; name: string; primary: boolean }>; canAdd: string[] }>("/me/roles"), []);
+  const [busy, setBusy] = useState(false);
+  if (!data || (data.canAdd.length === 0 && data.roles.length < 2)) return null;
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try {
+      await fn();
+      await reload();
+      await onChanged();
+    } catch (err) {
+      onError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-3 w-full rounded-control bg-subtle p-3 text-left text-sm">
+      <p className="mb-2 font-semibold">Your roles</p>
+      <ul className="space-y-1">
+        {data.roles.map((r) => (
+          <li key={r.key} className="flex items-center justify-between">
+            <span>{r.name}{r.primary ? " (primary)" : ""}</span>
+            {!r.primary && <button type="button" disabled={busy} className="text-xs font-semibold text-danger" onClick={() => void run(() => request(`/me/roles/${r.key}`, { method: "DELETE" }))}>Remove</button>}
+          </li>
+        ))}
+      </ul>
+      {data.canAdd.map((r) => (
+        <Button key={r} size="sm" variant="secondary" className="mt-2 w-full" loading={busy} onClick={() => void run(() => request("/me/roles", { method: "POST", body: { role: r } }))}>
+          {r === "TENANT" ? "I also want to rent a home" : r === "LANDLORD" ? "I also want to list my property" : `Add ${r}`}
+        </Button>
+      ))}
     </div>
   );
 }

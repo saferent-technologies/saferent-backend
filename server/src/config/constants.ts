@@ -30,6 +30,17 @@ export const RATE_LIMITS = {
   REGISTRATION: { limit: 5, windowMs: 60 * 60 * 1000 },
   SUPPORT_TICKET: { limit: 20, windowMs: 60 * 60 * 1000 },
   UPLOAD: { limit: 60, windowMs: 60 * 60 * 1000 },
+  PROPERTY_WRITE: { limit: 300, windowMs: 10 * 60 * 1000 },
+  PROPERTY_CREATE: { limit: 30, windowMs: 60 * 60 * 1000 },
+  GEOCODE: { limit: 60, windowMs: 60 * 60 * 1000 },
+  INVITE_CREATE: { limit: 30, windowMs: 60 * 60 * 1000 },
+  INVITE_LOOKUP: { limit: 60, windowMs: 60 * 60 * 1000 },
+  REVIEW_SUBMIT: { limit: 10, windowMs: 60 * 60 * 1000 },
+  REVIEW_REPORT: { limit: 20, windowMs: 60 * 60 * 1000 },
+  REFERRAL_CODE: { limit: 10, windowMs: 24 * 60 * 60 * 1000 },
+  REFERRAL_LOOKUP: { limit: 60, windowMs: 60 * 60 * 1000 },
+  WALLET_REDEEM: { limit: 10, windowMs: 60 * 60 * 1000 },
+  WALLET_TOPUP: { limit: 20, windowMs: 60 * 60 * 1000 },
 } as const;
 
 /** Machine-readable reasons returned in error responses (error.reason). The web app maps these to friendly text. */
@@ -60,6 +71,8 @@ export const REASONS = {
   INVALID_STATE: "INVALID_STATE",
   FOUNDER_PROTECTED: "FOUNDER_PROTECTED",
   PAYMENTS_NOT_CONFIGURED: "PAYMENTS_NOT_CONFIGURED",
+  VERSION_CONFLICT: "VERSION_CONFLICT",
+  SERVICE_NOT_CONFIGURED: "SERVICE_NOT_CONFIGURED",
 } as const;
 export type Reason = (typeof REASONS)[keyof typeof REASONS];
 

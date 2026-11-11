@@ -11,6 +11,7 @@ import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { Textarea } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
+import { PhoneField } from "@/components/ui/PhoneField";
 import { Spinner } from "@/components/ui/Spinner";
 import { StatCard } from "@/components/ui/StatCard";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -255,7 +256,7 @@ function InvoiceModal({ open, onClose, onDone }: { open: boolean; onClose: () =>
     <Modal open={open} onClose={onClose} title="New invoice">
       <div className="space-y-4">
         {error && <Alert kind="error">{error}</Alert>}
-        <Input label="Customer phone" type="tel" placeholder="+919876543210" value={form.issuedToPhone} onChange={set("issuedToPhone")} />
+        <PhoneField label="Customer phone" value={form.issuedToPhone} onChange={(v) => setForm((f) => ({ ...f, issuedToPhone: v }))} />
         <Input label="Description" value={form.description} onChange={set("description")} />
         <div className="grid gap-3 sm:grid-cols-3">
           <Input label="Amount (₹)" type="number" value={form.amount} onChange={set("amount")} />

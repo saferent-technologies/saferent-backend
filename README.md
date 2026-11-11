@@ -11,7 +11,12 @@ Multi-role rental platform for **SafeRent** by SafeRent Technologies: 7 staff ro
 ## Roles
 
 Super Admin · Admin · Finance Admin · Property Manager · Support · Moderator · Viewer · Landlord · Tenant · Property Agent · Service Provider.
-The complete role → permission matrix and data-access rules are in **[docs/RBAC.md](docs/RBAC.md)**.
+The complete role → permission matrix and data-access rules are in **[docs/RBAC.md](docs/RBAC.md)**. One account can hold several customer roles (e.g. Landlord + Tenant).
+
+## Property management (shared by Android, iOS and the Admin Panel)
+
+All clients use the same versioned API at **`/api/v1`** (`{ success, message, data, meta }` responses). Apartments with many flats, villas and villa communities, houses, duplexes, PG / hostel rooms and beds, commercial and land — with utilities, guest policies, amenities, itemised charges, private documents, inspections, verification, a completeness score and an immutable audit log.
+Read **[docs/PROPERTIES.md](docs/PROPERTIES.md)**. API docs: `http://localhost:4000/api/v1/docs` while the API runs, or `docs/openapi.json`.
 
 ## How login works
 
@@ -30,10 +35,12 @@ The complete role → permission matrix and data-access rules are in **[docs/RBA
 
 ```
 .
-├── docs/            SETUP.md (start here), RBAC.md (roles & permissions), SECURITY.md, TESTING.md
+├── docs/            SETUP.md (start here), RBAC.md, PROPERTIES.md (property APIs), openapi.json, SECURITY.md, TESTING.md
 ├── server/          ── BACKEND (Express + MySQL) ──
 │   ├── prisma/schema.prisma      37 MySQL tables (users, roles, properties, leases, rent, finance, maintenance, support…)
 │   └── src/
+│       ├── properties/           property catalog, validation, workflow, completeness, costs, controllers
+│       ├── v1/                   response envelope + OpenAPI generator
 │       ├── rbac/                 roles & permissions catalog, escalation policies, scope filters
 │       ├── routes/               every endpoint + the permission it requires
 │       ├── controllers/          auth, users, roles, properties, rentals, rent, finance, operations, insights…

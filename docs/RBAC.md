@@ -13,8 +13,8 @@ Browser ─▶ App Check ─▶ Firebase ID token ─▶ active SafeRent account
            (optional)   (authenticate)        (loadUser: MySQL role)    (requireSession)    (requirePermission)  (rbac/access.ts)
 ```
 
-1. **Role (MySQL is the source of truth).** Each account has one role. A Firebase custom claim `role` is kept in sync for information only. The API always reads the role from MySQL.
-2. **Effective permissions.** These are the role's permissions plus individual overrides: grants add a permission, revokes remove one.
+1. **Roles (MySQL is the source of truth).** Each account has a primary role (`users.role`) and may hold additional customer roles (`user_roles`: Landlord, Tenant, Property Agent, Service Provider), e.g. a landlord who also rents a home. Staff accounts never stack customer roles. A Firebase custom claim `role` (primary role) is kept in sync for information only. The API always reads roles from MySQL.
+2. **Effective permissions.** The union of the permissions of every role held, plus individual overrides: grants add a permission, revokes remove one. Reserved permissions stay with `SUPER_ADMIN` only.
 3. **Scope.** Every permission comes with a scope:
    - **ALL**: every record.
    - **ASSIGNED** (ASG): records assigned to the user through `property_assignments`, or maintenance jobs assigned to them.
@@ -191,6 +191,19 @@ Every endpoint below requires a verified session plus the listed permission.
 | Support | `GET/POST /api/support/tickets`, `GET/PATCH /api/support/tickets/:id`, `POST …/messages` |
 | Agents | `GET /api/enquiries`, `PATCH /api/enquiries/:id`, `GET/POST /api/visits`, `PATCH /api/visits/:id` |
 | Other | `GET /api/dashboard` (role-specific), `GET/PUT /api/profile`, `POST /api/profile/image`, `GET /api/notifications`, `GET /api/reports/*`, `GET/PUT /api/settings`, `/api/subscriptions/plans`, `GET /api/audit/*` |
+
+## Multi-role accounts
+
+| Action | Who | Endpoint |
+|---|---|---|
+| See my roles / roles I can add | anyone signed in | `GET /api/v1/me/roles` |
+| Add Landlord or Tenant to my own account | customers (not staff) | `POST /api/v1/me/roles` |
+| Remove an additional role from my account | the account owner (blocked while I still own properties / have active leases) | `DELETE /api/v1/me/roles/:role` |
+| Add / remove additional roles for another user | `users.manage` + rank rules (lower ranks only; founder exempt) | `POST /api/v1/users/:id/roles`, `DELETE /api/v1/users/:id/roles/:role` |
+
+The Admin Panel shows a **"Using SafeRent as"** switcher for multi-role accounts; it only changes the dashboard and menu labels — permissions are always the union.
+
+Property-management permissions and the per-role matrix are in **[PROPERTIES.md](PROPERTIES.md#6-role-permission-matrix-property-management)**.
 
 ## What changed in this release
 

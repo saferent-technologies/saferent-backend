@@ -7,13 +7,16 @@ export class AppError extends Error {
   readonly reason: string;
   readonly retryAfterSeconds?: number;
   readonly attemptsRemaining?: number;
+  /** Extra API details, e.g. { issues: [{ path, message }] } or { problems: [...] }. */
+  readonly details?: Record<string, unknown>;
 
-  constructor(reason: string, message: string, extra: { retryAfterSeconds?: number; attemptsRemaining?: number } = {}) {
+  constructor(reason: string, message: string, extra: { retryAfterSeconds?: number; attemptsRemaining?: number; details?: Record<string, unknown> } = {}) {
     super(message);
     this.name = "AppError";
     this.reason = reason;
     this.retryAfterSeconds = extra.retryAfterSeconds;
     this.attemptsRemaining = extra.attemptsRemaining;
+    this.details = extra.details;
   }
 }
 
@@ -85,8 +88,11 @@ const HTTP_CODE_MESSAGES: Record<string, string> = {
 interface FirebaseLikeError {
   code?: string;
   message?: string;
-  details?: { reason?: string; retryAfterSeconds?: number; attemptsRemaining?: number | null } | null;
+  details?: { reason?: string; retryAfterSeconds?: number; attemptsRemaining?: number | null; [key: string]: unknown } | null;
 }
+
+/** SafeRent API reasons whose server message is written for users (it says exactly what to fix). */
+const SPECIFIC_API_REASONS = new Set(["INVALID_INPUT", "INVALID_STATE", "CONFLICT", "VERSION_CONFLICT", "NOT_FOUND", "PERMISSION_DENIED", "ALREADY_REGISTERED", "FOUNDER_PROTECTED", "SERVICE_NOT_CONFIGURED"]);
 
 function isBlockingFunctionRejection(err: FirebaseLikeError): boolean {
   // Errors thrown by beforeUserCreated / beforeUserSignedIn arrive as auth/internal-error
@@ -103,6 +109,9 @@ export function toAppError(error: unknown): AppError {
   const err = (error ?? {}) as FirebaseLikeError;
 
   const reason = err.details?.reason;
+  if (reason && err.code?.startsWith("http/") && SPECIFIC_API_REASONS.has(reason) && err.message) {
+    return new AppError(reason, err.message, { details: err.details ?? undefined });
+  }
   if (reason && REASON_MESSAGES[reason]) {
     return new AppError(reason, REASON_MESSAGES[reason], {
       retryAfterSeconds: err.details?.retryAfterSeconds,

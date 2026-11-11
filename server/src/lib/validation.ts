@@ -44,7 +44,8 @@ export const rebindSessionInputSchema = z.object({ previousIdToken: z.string().m
 export function parseInput<T>(schema: z.ZodType<T>, data: unknown): T {
   const result = schema.safeParse(data);
   if (!result.success) {
-    fail("invalid-argument", REASONS.INVALID_INPUT, result.error.issues[0]?.message ?? "Invalid request.");
+    const issues = result.error.issues.slice(0, 20).map((i) => ({ path: i.path.join("."), message: i.message }));
+    fail("invalid-argument", REASONS.INVALID_INPUT, result.error.issues[0]?.message ?? "Invalid request.", { issues });
   }
   return result.data;
 }

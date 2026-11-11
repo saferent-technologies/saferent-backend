@@ -9,6 +9,7 @@ import { notify } from "../lib/notify";
 import { prisma } from "../lib/prisma";
 import { consumeRateLimit } from "../lib/rateLimit";
 import { relativePath, removeStoredFile, sendStoredFile } from "../lib/uploads";
+import { propertyKey, recordStatus } from "../properties/service";
 import { parseInput } from "../lib/validation";
 import { can, me } from "../middleware/auth";
 import { and, enquiryWhere, maintenanceWhere, propertyWhere, ticketWhere, visitWhere } from "../rbac/access";
@@ -304,7 +305,10 @@ const enquirySchema = z.object({ message: z.string().trim().min(5).max(1000) });
 /** POST /api/browse/:id/enquire — tenant asks about an active listing. */
 export async function createEnquiry(req: Request, res: Response): Promise<void> {
   const tenant = me(req);
-  const property = found(await prisma.property.findFirst({ where: { id: idParam(req), status: "ACTIVE" }, include: { assignments: { where: { type: "AGENT" }, select: { userId: true } } } }), "Listing");
+  const property = found(
+    await prisma.property.findFirst({ where: { ...propertyKey(req), publicationStatus: "PUBLISHED", activeStatus: "ACTIVE" }, include: { assignments: { where: { type: "AGENT" }, select: { userId: true } } } }),
+    "Listing",
+  );
   const { message } = parseInput(enquirySchema, req.body);
   const enquiry = await prisma.enquiry.create({ data: { propertyId: property.id, tenantId: tenant.id, message } });
   const recipients = property.assignments.length ? property.assignments.map((a) => a.userId) : [property.ownerId];
@@ -410,7 +414,7 @@ export async function listFraudReports(req: Request, res: Response): Promise<voi
   const status = enumQuery(req, "status", ["OPEN", "INVESTIGATING", "RESOLVED", "DISMISSED"] as const);
   const where: Prisma.FraudReportWhereInput = status ? { status } : {};
   const [items, total] = await Promise.all([prisma.fraudReport.findMany({ where, orderBy: { createdAt: "desc" }, skip: p.skip, take: p.take }), prisma.fraudReport.count({ where })]);
-  const properties = await prisma.property.findMany({ where: { id: { in: items.map((i) => i.propertyId).filter((x): x is string => !!x) } }, select: { id: true, title: true, status: true } });
+  const properties = await prisma.property.findMany({ where: { id: { in: items.map((i) => i.propertyId).filter((x): x is string => !!x) } }, select: { id: true, code: true, title: true, activeStatus: true, publicationStatus: true } });
   const byId = Object.fromEntries(properties.map((pr) => [pr.id, pr]));
   res.json(paged(items.map((i) => ({ ...i, property: i.propertyId ? byId[i.propertyId] ?? null : null })), total, p));
 }
@@ -423,7 +427,13 @@ export async function updateFraudReport(req: Request, res: Response): Promise<vo
   const input = parseInput(fraudUpdateSchema, req.body);
   await prisma.$transaction(async (tx) => {
     await tx.fraudReport.update({ where: { id: report.id }, data: { status: input.status, resolution: input.resolution ?? null, handledById: me(req).id } });
-    if (input.suspendListing && report.propertyId) await tx.property.update({ where: { id: report.propertyId }, data: { status: "INACTIVE", moderationNote: "Suspended after a fraud report." } });
+    if (input.suspendListing && report.propertyId) {
+      const property = await tx.property.findUnique({ where: { id: report.propertyId }, select: { activeStatus: true } });
+      if (property && property.activeStatus !== "SUSPENDED") {
+        await tx.property.update({ where: { id: report.propertyId }, data: { activeStatus: "SUSPENDED", moderationNote: "Suspended after a fraud report.", version: { increment: 1 } } });
+        await recordStatus(tx, req, { propertyId: report.propertyId, entityType: "PROPERTY", entityId: report.propertyId, field: "activeStatus", from: property.activeStatus, to: "SUSPENDED", reason: "Fraud report." });
+      }
+    }
     await logActivity(req, "fraud.update", "fraud_report", report.id, input, tx);
   });
   res.json({ ok: true });

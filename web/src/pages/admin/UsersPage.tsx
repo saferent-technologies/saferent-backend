@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
+import { PhoneField } from "@/components/ui/PhoneField";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useAuth } from "@/hooks/useAuth";
 import { useListParams } from "@/hooks/useListParams";
@@ -109,7 +110,7 @@ const createSchema = z
   .superRefine((v, ctx) => {
     const staff = (STAFF_ROLES as readonly string[]).includes(v.role);
     if (staff && !/^[^@\s]+@saferenttechnologies\.com$/i.test(v.email ?? "")) ctx.addIssue({ code: "custom", path: ["email"], message: "Use an @saferenttechnologies.com email." });
-    if (!staff && v.role && !/^\+[1-9]\d{7,14}$/.test(v.phoneNumber ?? "")) ctx.addIssue({ code: "custom", path: ["phoneNumber"], message: "Enter the phone with country code, e.g. +919876543210." });
+    if (!staff && v.role && !/^\+[1-9]\d{7,14}$/.test(v.phoneNumber ?? "")) ctx.addIssue({ code: "custom", path: ["phoneNumber"], message: "Enter a valid phone number." });
   });
 type CreateValues = z.infer<typeof createSchema>;
 
@@ -121,6 +122,7 @@ function CreateUserModal({ open, onClose, onCreated }: { open: boolean; onClose:
     handleSubmit,
     watch,
     reset,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<CreateValues>({ resolver: zodResolver(createSchema), defaultValues: { fullName: "", role: "", email: "", phoneNumber: "" } });
   const role = watch("role");
@@ -152,7 +154,7 @@ function CreateUserModal({ open, onClose, onCreated }: { open: boolean; onClose:
         <Input label="Full name" error={errors.fullName?.message} {...register("fullName")} />
         <Select label="Role" placeholder="Choose a role" options={allowedRoles} error={errors.role?.message} {...register("role")} />
         {role && staff && <Input label="Work email" type="email" placeholder="name@saferenttechnologies.com" error={errors.email?.message} {...register("email")} />}
-        {role && <Input label={staff ? "Phone (optional)" : "Phone number"} type="tel" placeholder="+919876543210" error={errors.phoneNumber?.message} {...register("phoneNumber")} />}
+        {role && <PhoneField label={staff ? "Phone (optional)" : "Phone number"} value={watch("phoneNumber") ?? ""} onChange={(v) => setValue("phoneNumber", v, { shouldValidate: !!errors.phoneNumber })} error={errors.phoneNumber?.message} />}
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button variant="secondary" onClick={close}>
             Cancel

@@ -71,6 +71,15 @@ It also creates the RBAC, property, rental, finance and operations tables (37 in
 
 To see the data in a browser: `npm run db:studio`.
 
+### Updating an existing database (property management release)
+
+```bash
+npm --prefix server install       # picks up the new scripts
+npm run db:migrate                # name it: property_management
+```
+
+The release replaces the old single `properties` table structure (units, rooms, beds, pricing, utilities…). If Prisma says the database must be **reset** because existing test rows can't be migrated, accept it in development (`y`), then run `npm run bootstrap:super-admin` again — it reuses your existing Firebase account. Never reset a production database: use `npm --prefix server run db:deploy` with a reviewed migration.
+
 ## 6. Create the founder Super Admin (one time only)
 
 ```bash

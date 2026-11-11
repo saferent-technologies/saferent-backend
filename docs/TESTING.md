@@ -5,7 +5,16 @@
 ```bash
 npm test                 # server + web unit tests
 npm run typecheck        # TypeScript for both packages
+npm run test:integration # property API end-to-end tests against a real MySQL TEST database (see below)
 ```
+
+### Property API integration tests (MySQL)
+
+`server/test/integration/properties.api.test.ts` runs the real Express app + Prisma + MySQL (Firebase token checks are faked). It covers the 20 required scenarios: Super Admin and landlord creation, own-property isolation, tenants blocked from creating, admin verification, apartment with many flats, villa configuration, individual house, duplex floors, PG rooms and beds, concurrent duplicate bed assignment, utility / policy / rent validation, unique IDs under concurrency, draft → submit → approve → publish, status changes, audit logs (incl. source platform), private documents — plus unauthorized requests, stale-version conflicts, fake image uploads, multi-role and manager assignment.
+
+1. `mysql -u root -p -e "CREATE DATABASE saferent_test;"`
+2. In `server/.env`: `TEST_DATABASE_URL="mysql://root:PASSWORD@localhost:3306/saferent_test"` (the name must contain `test`; it is wiped on every run).
+3. `npm run test:integration`
 
 | Suite | File(s) | Covers |
 |---|---|---|
@@ -15,6 +24,12 @@ npm run typecheck        # TypeScript for both packages
 | RBAC & escalation | `server/test/rbac.test.ts` | least privilege, reserved permissions, founder protection, rank rule, no self-escalation, only the founder grants Super Admin |
 | Ownership & financial access | `server/test/access.test.ts` | landlord own-only, manager/agent assigned-only, tenants can't list or approve, providers see assigned jobs only, rent visible only to tenant/landlord/finance |
 | Rent schedule | `server/test/rent.test.ts` | monthly dues, lease end, future leases, year boundaries |
+| Property catalog & fields | `server/test/properties.catalog.test.ts` | all 17 types / 3 categories, unit structures, dynamic field validation, unknown keys rejected, custom configuration rule, money format |
+| Property validation | `server/test/properties.validation.test.ts` | electricity & utility contradictions, guest policies, rent / deposit / charges, review & suspension reasons, duplex floors, PG rooms, inspections |
+| Completeness & costs | `server/test/properties.scoring.test.ts` | score sections and weights, NOT_DISCLOSED ≠ NO, unverified ≠ verified, submission readiness, tenant cost breakdown and estimate rules |
+| Workflow & IDs | `server/test/properties.workflow.test.ts` | draft → verification → publish, active-status rules, readable IDs (sequential, unique under concurrency), bed capacity, audit diff / secret stripping |
+| Multi-role & property access | `server/test/multirole.test.ts` | union of roles, reserved permissions, self-service roles, staff isolation, own / assigned scopes |
+| API envelope & uploads | `server/test/envelope.test.ts` | `{ success, data, meta }`, error codes, file-signature checks |
 | Role navigation | `web/src/test/navigation.test.ts` | each role sees only its own menu |
 | Web validation | `web/src/test/validation.test.ts` | form schemas, phone helpers, masking |
 | Error messages | `web/src/test/errors.test.ts` | no Firebase internals shown to users, blocking-function rejection, rate limits |

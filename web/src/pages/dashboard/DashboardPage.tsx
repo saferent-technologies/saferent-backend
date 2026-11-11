@@ -161,11 +161,13 @@ function greeting(): string {
 }
 
 export function DashboardPage() {
-  const { profile, can } = useAuth();
-  const { data, loading, error } = useQuery(() => request<DashboardData>("/dashboard"), [profile?.role]);
-  if (!profile) return null;
+  const { profile, can, activeRole } = useAuth();
+  const role = (activeRole?.key ?? profile?.role) as Role | undefined;
+  const { data, loading, error } = useQuery(() => request<DashboardData>("/dashboard", { query: { role } }), [role]);
+  if (!profile || !role) return null;
 
-  const config = ROLE_DASHBOARDS[profile.role];
+  const config = ROLE_DASHBOARDS[role];
+  const showPortfolio = can("properties.view") && ["SUPER_ADMIN", "ADMIN", "LANDLORD", "PROPERTY_MANAGER", "PROPERTY_AGENT"].includes(role);
   const firstName = profile.fullName.split(" ")[0];
   const actions = config.actions.filter((a) => can(a.permission));
 
@@ -194,6 +196,8 @@ export function DashboardPage() {
             ))}
           </section>
 
+          {showPortfolio && <PropertyPortfolio landlord={role === "LANDLORD"} canCreate={can("properties.create")} />}
+
           {actions.length > 0 && (
             <section aria-labelledby="actions-heading">
               <h2 id="actions-heading" className="mb-3 text-base font-semibold text-ink">
@@ -215,6 +219,57 @@ export function DashboardPage() {
         </div>
       ) : null}
     </>
+  );
+}
+
+interface PropertySummary {
+  properties: Record<string, number> & { total: number };
+  units: { available: number; occupied: number };
+  rent: { period: string; expected: string; collected: string; overdue: string; overdueCount: number } | null;
+  unreadNotifications: number;
+}
+
+/** Property portfolio: drafts, pending verification, published, units and rent (scoped on the server). */
+function PropertyPortfolio({ landlord, canCreate }: { landlord: boolean; canCreate: boolean }) {
+  const { data } = useQuery(() => request<PropertySummary>("/properties/summary"), []);
+  if (!data) return null;
+  const tiles: Array<{ key: string; label: string; value: number; to: string; tone?: "warning" | "success" | "danger" }> = [
+    { key: "total", label: landlord ? "My properties" : "Properties", value: data.properties.total, to: "/properties" },
+    { key: "DRAFT", label: "Drafts", value: data.properties.DRAFT ?? 0, to: "/properties?publicationStatus=DRAFT" },
+    { key: "PENDING_VERIFICATION", label: "Pending verification", value: data.properties.PENDING_VERIFICATION ?? 0, to: "/properties?publicationStatus=PENDING_VERIFICATION", tone: "warning" },
+    { key: "REJECTED", label: "Needs changes", value: data.properties.REJECTED ?? 0, to: "/properties?publicationStatus=REJECTED", tone: "danger" },
+    { key: "APPROVED", label: "Approved (not published)", value: data.properties.APPROVED ?? 0, to: "/properties?publicationStatus=APPROVED" },
+    { key: "PUBLISHED", label: "Published", value: data.properties.PUBLISHED ?? 0, to: "/properties?publicationStatus=PUBLISHED", tone: "success" },
+  ];
+  return (
+    <Panel title={landlord ? "My properties" : "Property portfolio"} link={canCreate ? { to: "/properties/new", label: "+ Add property" } : { to: "/properties", label: "View all" }}>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+        {tiles.map((t) => (
+          <Link key={t.key} to={t.to} className="rounded-control border border-line p-3 transition-colors hover:border-brand-light hover:bg-brand-bg">
+            <p className={`text-2xl font-bold ${t.tone === "warning" && t.value ? "text-warning" : t.tone === "danger" && t.value ? "text-danger" : t.tone === "success" ? "text-success" : "text-ink"}`}>{t.value}</p>
+            <p className="text-xs font-medium text-muted">{t.label}</p>
+          </Link>
+        ))}
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-control bg-subtle px-4 py-3 text-sm">
+          <span className="font-semibold text-success">{data.units.available}</span> available units / beds
+        </div>
+        <div className="rounded-control bg-subtle px-4 py-3 text-sm">
+          <span className="font-semibold text-brand-dark">{data.units.occupied}</span> occupied units / beds
+        </div>
+        {data.rent && (
+          <>
+            <div className="rounded-control bg-subtle px-4 py-3 text-sm">
+              Rent {data.rent.period}: <span className="font-semibold">{formatMoney(data.rent.collected)}</span> of {formatMoney(data.rent.expected)}
+            </div>
+            <div className="rounded-control bg-subtle px-4 py-3 text-sm">
+              Overdue: <span className={data.rent.overdueCount ? "font-semibold text-danger" : "font-semibold"}>{formatMoney(data.rent.overdue)}</span> ({data.rent.overdueCount})
+            </div>
+          </>
+        )}
+      </div>
+    </Panel>
   );
 }
 

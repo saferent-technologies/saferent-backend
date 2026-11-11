@@ -13,7 +13,10 @@ export interface PermissionOverride {
 
 export interface Actor {
   id: string;
+  /** Primary role (users.role). */
   role: RoleKey;
+  /** Every role held, primary included. Defaults to [role]. */
+  roles?: readonly RoleKey[];
   isFounder: boolean;
   permissions: EffectivePermissions;
 }
@@ -21,8 +24,17 @@ export interface Actor {
 export interface TargetUser {
   id: string;
   role: RoleKey;
+  roles?: readonly RoleKey[];
   isFounder: boolean;
 }
+
+/**
+ * Roles that can be held IN ADDITION to the primary role (multi-role accounts, e.g. LANDLORD + TENANT).
+ * Staff roles are never stacked: a staff identity stays separate from a customer identity.
+ */
+export const ADDITIONAL_ROLES: readonly RoleKey[] = ["LANDLORD", "TENANT", "PROPERTY_AGENT", "SERVICE_PROVIDER"];
+/** Roles a customer may add to their own account without an admin. */
+export const SELF_ADDABLE_ROLES: readonly RoleKey[] = ["LANDLORD", "TENANT"];
 
 export function isRole(value: unknown): value is RoleKey {
   return typeof value === "string" && (ROLES as readonly string[]).includes(value);
@@ -37,10 +49,11 @@ export function isPermission(value: unknown): value is PermissionKey {
  * a grant adds a scope. Reserved permissions are dropped for anyone who is not SUPER_ADMIN.
  */
 export function resolveEffectivePermissions(
-  role: RoleKey,
+  role: RoleKey | readonly RoleKey[],
   rolePermissions: Array<{ permissionKey: string; scope: Scope }>,
   overrides: PermissionOverride[] = [],
 ): EffectivePermissions {
+  const roles: readonly RoleKey[] = typeof role === "string" ? [role] : role;
   const result: EffectivePermissions = {};
   const add = (key: string, scope: Scope) => {
     if (!isPermission(key)) return;
@@ -51,7 +64,7 @@ export function resolveEffectivePermissions(
   for (const o of overrides) if (o.granted) add(o.permissionKey, o.scope);
   for (const o of overrides) if (!o.granted && isPermission(o.permissionKey)) delete result[o.permissionKey];
 
-  if (role !== "SUPER_ADMIN") for (const reserved of RESERVED_PERMISSIONS) delete result[reserved];
+  if (!roles.includes("SUPER_ADMIN")) for (const reserved of RESERVED_PERMISSIONS) delete result[reserved];
   for (const key of Object.keys(result) as PermissionKey[]) {
     if (result[key]!.includes("ALL")) result[key] = ["ALL"];
   }
@@ -72,6 +85,15 @@ export function rankOf(role: RoleKey): number {
   return ROLE_INFO[role].rank;
 }
 
+/** Highest rank among every role a user holds. */
+export function userRank(user: { role: RoleKey; roles?: readonly RoleKey[] }): number {
+  return Math.max(rankOf(user.role), ...(user.roles ?? []).map(rankOf));
+}
+
+export function rolesOf(user: { role: RoleKey; roles?: readonly RoleKey[] }): RoleKey[] {
+  return [user.role, ...(user.roles ?? []).filter((r) => r !== user.role)];
+}
+
 export type Decision = { allowed: true } | { allowed: false; reason: string };
 const deny = (reason: string): Decision => ({ allowed: false, reason });
 const ALLOW: Decision = { allowed: true };
@@ -82,7 +104,7 @@ export function canManageUser(actor: Actor, target: TargetUser): Decision {
   if (target.isFounder && actor.id !== target.id) return deny("The founder account is protected.");
   if (actor.id === target.id) return deny("You cannot change your own account here.");
   if (actor.isFounder) return ALLOW;
-  if (rankOf(target.role) >= rankOf(actor.role)) return deny("You can only manage accounts with a lower role than yours.");
+  if (userRank(target) >= userRank(actor)) return deny("You can only manage accounts with a lower role than yours.");
   return ALLOW;
 }
 
@@ -91,7 +113,7 @@ export function canCreateUserWithRole(actor: Actor, role: RoleKey): Decision {
   if (!hasPermission(actor.permissions, "users.manage")) return deny("Missing users.manage permission.");
   if (role === "SUPER_ADMIN" && !actor.isFounder) return deny("Only the founder can create Super Admins.");
   if (actor.isFounder) return ALLOW;
-  if (rankOf(role) >= rankOf(actor.role)) return deny("You can only create accounts with a lower role than yours.");
+  if (rankOf(role) >= userRank(actor)) return deny("You can only create accounts with a lower role than yours.");
   return ALLOW;
 }
 
@@ -133,4 +155,31 @@ export function canEditRolePermissions(actor: Actor, role: RoleKey, permissions:
     if ((RESERVED_PERMISSIONS as string[]).includes(p.permissionKey)) return deny(`${p.permissionKey} is reserved for Super Admins.`);
   }
   return ALLOW;
+}
+
+/**
+ * Can `actor` add `role` as an ADDITIONAL role to `target`?
+ *  - Only customer roles can be stacked, and never on a staff account.
+ *  - Customers may add LANDLORD / TENANT to themselves.
+ *  - Otherwise users.manage + the normal rank rules apply.
+ */
+export function canAddRole(actor: Actor, target: TargetUser, role: RoleKey): Decision {
+  if (!ADDITIONAL_ROLES.includes(role)) return deny(`${role} cannot be added as an additional role.`);
+  if (ROLE_INFO[target.role].isStaff) return deny("Staff accounts cannot hold customer roles. Use a separate account.");
+  if (rolesOf(target).includes(role)) return deny("The account already has this role.");
+  if (actor.id === target.id) {
+    return SELF_ADDABLE_ROLES.includes(role) ? ALLOW : deny("This role can only be added by SafeRent staff.");
+  }
+  const manage = canManageUser(actor, target);
+  if (!manage.allowed) return manage;
+  if (!actor.isFounder && rankOf(role) >= userRank(actor)) return deny("You can only add roles lower than yours.");
+  return ALLOW;
+}
+
+/** Can `actor` remove the ADDITIONAL role `role` from `target`? (The primary role is changed with canAssignRole.) */
+export function canRemoveRole(actor: Actor, target: TargetUser, role: RoleKey): Decision {
+  if (role === target.role) return deny("The primary role cannot be removed here.");
+  if (!(target.roles ?? []).includes(role)) return deny("The account does not have this role.");
+  if (actor.id === target.id) return SELF_ADDABLE_ROLES.includes(role) ? ALLOW : deny("Ask SafeRent staff to remove this role.");
+  return canManageUser(actor, target);
 }

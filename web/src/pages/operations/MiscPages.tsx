@@ -221,10 +221,13 @@ export function NotificationsPage() {
 
 interface PropertyReportRow {
   id: string;
-  title: string;
-  city: string;
-  status: string;
-  monthlyRent: string;
+  code: string;
+  title: string | null;
+  city: string | null;
+  publicationStatus: string;
+  activeStatus: string;
+  rentFrom: string | null;
+  rentTo: string | null;
   occupied: boolean;
   openMaintenance: number;
   rentCollected?: number;
@@ -266,9 +269,9 @@ export function ReportsPage() {
         rowKey={(r) => r.id}
         empty="No properties in your report."
         columns={[
-          { key: "title", header: "Property", render: (r) => <Link to={`/properties/${r.id}`} className="font-semibold hover:text-brand">{r.title}</Link> },
-          { key: "status", header: "Status", render: (r) => <span className="flex flex-wrap gap-1"><StatusBadge status={r.status} />{r.occupied ? <Badge tone="success">Occupied</Badge> : <Badge>Vacant</Badge>}</span> },
-          { key: "rent", header: "Rent", render: (r) => formatMoney(r.monthlyRent) },
+          { key: "title", header: "Property", render: (r) => <Link to={`/properties/${r.id}`} className="font-semibold hover:text-brand">{r.title ?? r.code}</Link> },
+          { key: "status", header: "Status", render: (r) => <span className="flex flex-wrap gap-1"><StatusBadge status={r.publicationStatus} />{r.activeStatus !== "ACTIVE" && <StatusBadge status={r.activeStatus} />}{r.occupied ? <Badge tone="success">Occupied</Badge> : <Badge>Vacant</Badge>}</span> },
+          { key: "rent", header: "Rent", render: (r) => (r.rentFrom ? (r.rentTo && r.rentTo !== r.rentFrom ? `${formatMoney(r.rentFrom)} – ${formatMoney(r.rentTo)}` : formatMoney(r.rentFrom)) : "—") },
           ...(showMoney
             ? [
                 { key: "collected", header: "Collected", render: (r: PropertyReportRow) => formatMoney(r.rentCollected) },

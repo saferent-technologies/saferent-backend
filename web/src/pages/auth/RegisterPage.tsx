@@ -14,6 +14,7 @@ import { cn } from "@/utils/cn";
 import { PATHS } from "@/utils/constants";
 import { errorMessage } from "@/utils/errors";
 import { maskPhone } from "@/utils/mask";
+import { clearPendingReferral, pendingReferral } from "@/routes/pendingReferral";
 
 const schema = z.object({
   fullName: z.string().trim().min(2, "Enter your full name.").max(120),
@@ -32,20 +33,23 @@ export function RegisterPage() {
   const navigate = useNavigate();
   const { pendingPhone, runLoginFlow, waitForAuthenticated, logout } = useAuth();
   const [error, setError] = useState<string | null>(null);
+  // Code from a /ref link opened before sign-up (the server validates and locks it).
+  const [referral] = useState(() => pendingReferral());
   const {
     register,
     handleSubmit,
     watch,
     setValue,
     formState: { errors, isSubmitting },
-  } = useForm<Values>({ resolver: zodResolver(schema), defaultValues: { fullName: "", email: "" }, mode: "onTouched" });
+  } = useForm<Values>({ resolver: zodResolver(schema), defaultValues: { fullName: "", email: "", ...(referral ? { role: referral.kind } : {}) }, mode: "onTouched" });
   const role = watch("role");
 
   const onSubmit = handleSubmit(async (values) => {
     setError(null);
     try {
       await runLoginFlow(async () => {
-        await api.register({ fullName: values.fullName, role: values.role, email: values.email || undefined });
+        await api.register({ fullName: values.fullName, role: values.role, email: values.email || undefined, referralCode: referral?.code });
+        clearPendingReferral();
         await waitForAuthenticated();
       });
       navigate(values.role === "LANDLORD" ? "/properties/new" : "/browse", { replace: true });
@@ -58,6 +62,7 @@ export function RegisterPage() {
     <AuthLayout>
       <AuthCard title="Create your account" subtitle={pendingPhone ? <>Phone verified: <strong className="text-ink">{maskPhone(pendingPhone)}</strong></> : "Tell us a little about yourself."}>
         <form onSubmit={onSubmit} noValidate className="space-y-5">
+          {referral && <Alert kind="info">You were invited with referral code {referral.code}. It applies when you sign up as a {referral.kind === "TENANT" ? "tenant" : "landlord"}.</Alert>}
           {error && <Alert kind="error">{error}</Alert>}
 
           <fieldset>

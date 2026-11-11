@@ -21,7 +21,9 @@ const money = (v: unknown) => Number(v ?? 0);
  */
 export async function dashboard(req: Request, res: Response): Promise<void> {
   const user = me(req);
-  const role = user.role as RoleKey;
+  // Multi-role accounts choose which dashboard to see (?role=TENANT); only roles they hold are accepted.
+  const requested = typeof req.query.role === "string" ? (req.query.role as RoleKey) : undefined;
+  const role = requested && user.roles.includes(requested) ? requested : (user.role as RoleKey);
   const cards: Card[] = [];
   const lists: Record<string, unknown[]> = {};
 
@@ -31,7 +33,7 @@ export async function dashboard(req: Request, res: Response): Promise<void> {
       const [users, activeUsers, pendingListings, openTickets, openFraud, byRole] = await Promise.all([
         prisma.user.count(),
         prisma.user.count({ where: { accountStatus: "ACTIVE", lastLoginAt: { gte: new Date(Date.now() - 30 * 86400_000) } } }),
-        prisma.property.count({ where: { status: "PENDING_REVIEW" } }),
+        prisma.property.count({ where: { publicationStatus: "PENDING_VERIFICATION", activeStatus: "ACTIVE" } }),
         prisma.supportTicket.count({ where: { status: { in: ["OPEN", "IN_PROGRESS"] } } }),
         prisma.fraudReport.count({ where: { status: { in: ["OPEN", "INVESTIGATING"] } } }),
         prisma.user.groupBy({ by: ["role"], _count: { _all: true } }),
@@ -73,7 +75,7 @@ export async function dashboard(req: Request, res: Response): Promise<void> {
       const scope = propertyWhere(user)!;
       const [assigned, vacant, inspections, pendingApps, openMaint] = await Promise.all([
         prisma.property.count({ where: scope }),
-        prisma.property.count({ where: and(scope, { status: "ACTIVE", isAvailable: true }) }),
+        prisma.property.count({ where: and(scope, { activeStatus: "ACTIVE", availableCount: { gt: 0 } }) }),
         prisma.propertyInspection.count({ where: { property: scope, status: "SCHEDULED" } }),
         prisma.rentalApplication.count({ where: { property: scope, status: "PENDING" } }),
         prisma.maintenanceRequest.count({ where: and(maintenanceWhere(user)!, { status: { in: ["OPEN", "ASSIGNED", "ACCEPTED", "IN_PROGRESS"] } }) }),
@@ -106,9 +108,9 @@ export async function dashboard(req: Request, res: Response): Promise<void> {
     }
     case "MODERATOR": {
       const [listings, images, documents, fraud] = await Promise.all([
-        prisma.property.count({ where: { status: "PENDING_REVIEW" } }),
+        prisma.property.count({ where: { publicationStatus: "PENDING_VERIFICATION", activeStatus: "ACTIVE" } }),
         prisma.propertyImage.count({ where: { status: "PENDING" } }),
-        prisma.propertyDocument.count({ where: { status: "PENDING" } }),
+        prisma.propertyDocument.count({ where: { status: "PENDING", needsVerification: true, isCurrent: true, archivedAt: null } }),
         prisma.fraudReport.count({ where: { status: { in: ["OPEN", "INVESTIGATING"] } } }),
       ]);
       cards.push(
@@ -122,7 +124,7 @@ export async function dashboard(req: Request, res: Response): Promise<void> {
     case "VIEWER": {
       const [properties, active, leases, users] = await Promise.all([
         prisma.property.count(),
-        prisma.property.count({ where: { status: "ACTIVE" } }),
+        prisma.property.count({ where: { publicationStatus: "PUBLISHED", activeStatus: "ACTIVE" } }),
         prisma.lease.count({ where: { status: "ACTIVE" } }),
         prisma.user.count({ where: { role: { in: ["LANDLORD", "TENANT"] } } }),
       ]);
@@ -138,7 +140,7 @@ export async function dashboard(req: Request, res: Response): Promise<void> {
       const leases = await prisma.lease.findMany({ where: { landlordId: user.id, status: "ACTIVE" } });
       for (const l of leases) await ensureRentSchedule(l);
       const [properties, pendingApps, pendingRent, income, maint] = await Promise.all([
-        prisma.property.groupBy({ by: ["status"], where: { ownerId: user.id }, _count: { _all: true } }),
+        prisma.property.groupBy({ by: ["publicationStatus"], where: { ownerId: user.id, activeStatus: { not: "ARCHIVED" } }, _count: { _all: true } }),
         prisma.rentalApplication.count({ where: { property: { ownerId: user.id }, status: "PENDING" } }),
         prisma.rentPayment.aggregate({ where: { landlordId: user.id, status: { in: ["DUE", "OVERDUE"] } }, _sum: { amount: true }, _count: { _all: true } }),
         prisma.rentPayment.aggregate({ where: { landlordId: user.id, status: "PAID", paidAt: { gte: startOfMonth() } }, _sum: { amount: true } }),
@@ -153,7 +155,7 @@ export async function dashboard(req: Request, res: Response): Promise<void> {
         { key: "pendingRent", label: `Pending rent (${pendingRent._count._all})`, value: money(pendingRent._sum.amount) },
         { key: "maintenance", label: "Open maintenance", value: maint },
       );
-      lists.propertiesByStatus = properties.map((p) => ({ status: p.status, count: p._count._all }));
+      lists.propertiesByStatus = properties.map((p) => ({ status: p.publicationStatus, count: p._count._all }));
       break;
     }
     case "TENANT": {
@@ -232,12 +234,12 @@ export async function propertyReport(req: Request, res: Response): Promise<void>
   if (!scope) fail("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to do that.");
   const p = pagination(req);
   const [properties, total] = await Promise.all([
-    prisma.property.findMany({ where: scope, select: { id: true, title: true, city: true, status: true, monthlyRent: true }, orderBy: { title: "asc" }, skip: p.skip, take: p.take }),
+    prisma.property.findMany({ where: scope, select: { id: true, code: true, title: true, city: true, publicationStatus: true, activeStatus: true, rentFrom: true, rentTo: true, availableCount: true, occupiedCount: true }, orderBy: { title: "asc" }, skip: p.skip, take: p.take }),
     prisma.property.count({ where: scope }),
   ]);
   const ids = properties.map((x) => x.id);
   // Financial columns only for those allowed to see rent for these properties.
-  const showMoney = user.role === "LANDLORD" || user.role === "SUPER_ADMIN" || user.role === "FINANCE_ADMIN" || !!user.permissions["rent.view"]?.includes("ALL");
+  const showMoney = user.roles.some((r) => r === "LANDLORD" || r === "SUPER_ADMIN" || r === "FINANCE_ADMIN") || !!user.permissions["rent.view"]?.includes("ALL");
   const [paid, pending, leases, maint] = await Promise.all([
     showMoney ? prisma.rentPayment.groupBy({ by: ["propertyId"], where: { propertyId: { in: ids }, status: "PAID" }, _sum: { amount: true } }) : [],
     showMoney ? prisma.rentPayment.groupBy({ by: ["propertyId"], where: { propertyId: { in: ids }, status: { in: ["DUE", "OVERDUE"] } }, _sum: { amount: true } }) : [],
@@ -264,7 +266,7 @@ export async function overviewReport(req: Request, res: Response): Promise<void>
   if (!me(req).permissions["reports.view"]?.includes("ALL")) fail("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to do that.");
   const [usersByRole, propertiesByStatus, leasesByStatus, ticketsByStatus, maintenanceByStatus] = await Promise.all([
     prisma.user.groupBy({ by: ["role"], _count: { _all: true } }),
-    prisma.property.groupBy({ by: ["status"], _count: { _all: true } }),
+    prisma.property.groupBy({ by: ["publicationStatus"], _count: { _all: true } }),
     prisma.lease.groupBy({ by: ["status"], _count: { _all: true } }),
     prisma.supportTicket.groupBy({ by: ["status"], _count: { _all: true } }),
     prisma.maintenanceRequest.groupBy({ by: ["status"], _count: { _all: true } }),
@@ -272,7 +274,7 @@ export async function overviewReport(req: Request, res: Response): Promise<void>
   const shape = <K extends string>(rows: Array<{ _count: { _all: number } } & Record<K, string>>, key: K) => rows.map((r) => ({ key: r[key], count: r._count._all }));
   res.json({
     usersByRole: shape(usersByRole, "role"),
-    propertiesByStatus: shape(propertiesByStatus, "status"),
+    propertiesByStatus: shape(propertiesByStatus, "publicationStatus"),
     leasesByStatus: shape(leasesByStatus, "status"),
     ticketsByStatus: shape(ticketsByStatus, "status"),
     maintenanceByStatus: shape(maintenanceByStatus, "status"),
@@ -297,6 +299,9 @@ export async function updateSettings(req: Request, res: Response): Promise<void>
   if (unknown.length) fail("invalid-argument", REASONS.INVALID_INPUT, `Unknown setting: ${unknown[0]}`);
   if (settings.commission_percent !== undefined && !(Number(settings.commission_percent) >= 0 && Number(settings.commission_percent) <= 50)) {
     fail("invalid-argument", REASONS.INVALID_INPUT, "Commission must be between 0 and 50%.");
+  }
+  if (settings.review_window_days !== undefined && !(Number.isInteger(Number(settings.review_window_days)) && Number(settings.review_window_days) >= 1 && Number(settings.review_window_days) <= 60)) {
+    fail("invalid-argument", REASONS.INVALID_INPUT, "Review window must be 1 to 60 days.");
   }
   const before = await prisma.platformSetting.findMany({ where: { key: { in: Object.keys(settings) } } });
   await prisma.$transaction(async (tx) => {

@@ -23,6 +23,8 @@ export interface UserProfile {
   phoneNumber: string | null;
   profileImage: string | null;
   role: Role;
+  /** All roles held (primary first). */
+  roles?: Role[];
   accountStatus: "ACTIVE" | "SUSPENDED" | "DEACTIVATED";
   isFounder: boolean;
   emailVerified: boolean;

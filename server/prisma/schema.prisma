@@ -50,28 +50,193 @@ enum AuditOutcome {
   FAILURE
 }
 
-enum PropertyType {
-  APARTMENT
-  INDEPENDENT_HOUSE
-  VILLA
-  PG_HOSTEL
+enum PropertyCategory {
+  RESIDENTIAL
   COMMERCIAL
+  LAND
+}
+
+enum ListingType {
+  RENT
+  LEASE
+  SALE
+}
+
+/// Lifecycle of a record. Independent of publication, verification and availability.
+enum ActiveStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum PublicationStatus {
+  DRAFT
+  PENDING_VERIFICATION
+  APPROVED
+  REJECTED
+  PUBLISHED
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum AvailabilityStatus {
+  AVAILABLE
+  OCCUPIED
+  RESERVED
+  UNDER_MAINTENANCE
+  NOT_AVAILABLE
+}
+
+/// Explicit disclosure states. NOT_DISCLOSED is never treated as NO.
+enum Disclosure {
+  YES
+  NO
+  NOT_APPLICABLE
+  NOT_DISCLOSED
+}
+
+enum UnitKind {
+  FLAT
+  VILLA
+  HOUSE
+  DUPLEX
+  FARMHOUSE
+  COMMERCIAL_SPACE
+  PLOT
+}
+
+enum PgType {
+  BOYS
+  GIRLS
+  CO_LIVING
+}
+
+enum SharingType {
+  SINGLE
+  DOUBLE
+  TRIPLE
+  FOUR_SHARING
+  CUSTOM
+}
+
+enum ChargeKind {
+  MAINTENANCE
+  ELECTRICITY
+  WATER
+  GAS
+  PARKING
+  INTERNET
+  OTHER
+}
+
+/// How a charge is billed. Tenant-facing views group charges by this value.
+enum ChargeBilling {
+  INCLUDED_IN_RENT
+  FIXED_MONTHLY
+  USAGE_BASED
+  ONE_TIME
+  NOT_APPLICABLE
+  NOT_DISCLOSED
+}
+
+enum ChargeFrequency {
+  MONTHLY
+  QUARTERLY
+  HALF_YEARLY
+  YEARLY
+  ONE_TIME
+}
+
+enum ElectricityBilling {
+  ACTUAL_BILL
+  FIXED
+  INCLUDED_IN_RENT
+  NOT_APPLICABLE
+  NOT_DISCLOSED
+}
+
+enum MeterPayment {
+  PREPAID
+  POSTPAID
+  NOT_APPLICABLE
+  NOT_DISCLOSED
+}
+
+enum WaterSupply {
+  MUNICIPAL
+  BOREWELL
+  TANKER
+  MIXED
+  NOT_APPLICABLE
+  NOT_DISCLOSED
+}
+
+enum GasConnection {
+  PIPED
+  CYLINDER
+  NONE
+  NOT_DISCLOSED
+}
+
+enum PaidBy {
+  LANDLORD
+  TENANT
+  SHARED
+  NOT_APPLICABLE
+  NOT_DISCLOSED
+}
+
+enum ImageCategory {
+  FRONT_VIEW
+  ENTRANCE
+  LIVING_ROOM
+  BEDROOM
+  KITCHEN
+  BATHROOM
+  BALCONY
+  PARKING
+  BUILDING_EXTERIOR
+  COMMON_AREA
+  METER_READING
+  INSPECTION
+  OTHER
+}
+
+enum InspectionType {
+  MOVE_IN
+  MOVE_OUT
+  ROUTINE
+  VERIFICATION
+}
+
+enum ConditionRating {
+  GOOD
+  FAIR
+  POOR
+  NOT_APPLICABLE
+  NOT_INSPECTED
+}
+
+enum SourcePlatform {
+  ANDROID
+  IOS
+  ADMIN_PANEL
+  BACKEND
 }
 
 enum Furnishing {
   UNFURNISHED
   SEMI_FURNISHED
   FULLY_FURNISHED
+  NOT_DISCLOSED
 }
 
-enum PropertyStatus {
-  DRAFT
-  PENDING_REVIEW
-  ACTIVE
-  REJECTED
-  RENTED
-  INACTIVE
-}
 
 enum ReviewStatus {
   PENDING
@@ -80,10 +245,13 @@ enum ReviewStatus {
 }
 
 enum DocumentType {
-  OWNERSHIP_DEED
-  TAX_RECEIPT
-  UTILITY_BILL
-  ID_PROOF
+  OWNERSHIP_PROOF
+  SALE_DEED
+  PROPERTY_TAX_RECEIPT
+  ELECTRICITY_BILL
+  BUILDING_PERMISSION
+  RENTAL_AGREEMENT
+  LANDLORD_IDENTITY
   OTHER
 }
 
@@ -103,6 +271,148 @@ enum ApplicationStatus {
   APPROVED
   REJECTED
   WITHDRAWN
+}
+
+enum ReviewerRole {
+  TENANT
+  LANDLORD
+}
+
+/// ELIGIBLE / DRAFT are not stored: eligibility is computed from the lease, drafts stay on the device.
+enum RentalReviewStatus {
+  SUBMITTED
+  PUBLISHED
+  FLAGGED
+  UNDER_REVIEW
+  REMOVED
+  REJECTED
+}
+
+enum ReviewReportReason {
+  FALSE_INFORMATION
+  HARASSMENT
+  PERSONAL_INFORMATION
+  DISCRIMINATORY
+  SPAM
+  IRRELEVANT
+  OTHER
+}
+
+enum ReviewReportStatus {
+  OPEN
+  UPHELD
+  DISMISSED
+}
+
+enum ReferralType {
+  TENANT_TO_TENANT
+  LANDLORD_TO_TENANT
+  LANDLORD_TO_LANDLORD
+}
+
+enum ReferralCodeKind {
+  TENANT
+  LANDLORD
+}
+
+enum ReferralCodeStatus {
+  ACTIVE
+  REVOKED
+}
+
+/// Lifecycle of the referred person. LINK_GENERATED / LINK_OPENED / REGISTRATION_STARTED live on the code
+/// and its events (there's no referred user yet).
+enum ReferralStatus {
+  REGISTERED
+  PHONE_VERIFIED
+  ONBOARDING_PENDING
+  VERIFICATION_PENDING
+  ELIGIBLE
+  SUCCESSFUL
+  EXPIRED
+  REJECTED
+  REVERSED
+}
+
+/// Kept separate from the referral status.
+enum RewardStatus {
+  NOT_DUE
+  REWARD_PENDING
+  REWARD_CREDITED
+  REVERSED
+}
+
+enum WalletTxnType {
+  REFERRAL_REWARD
+  REDEMPTION
+  REVERSAL
+  EXPIRY
+  /// Added / deducted by an authorised admin (wallet.adjust), with a reason. Never edits other rows.
+  ADMIN_CREDIT
+  ADMIN_DEBIT
+  /// Money added by the user through a payment gateway (CASH bucket).
+  TOPUP
+}
+
+/// PROMO = promotional credit (referrals, admin bonus). CASH = money the user paid in (top-ups).
+/// Both are closed-loop: spendable only on SafeRent services, never withdrawn or sent to other users.
+enum WalletBucket {
+  PROMO
+  CASH
+}
+
+enum PaymentProvider {
+  RAZORPAY
+  PAYTM
+  INSTAMOJO
+}
+
+enum TopupStatus {
+  CREATED
+  PENDING
+  PAID
+  FAILED
+}
+
+enum EntitlementStatus {
+  ACTIVE
+  SCHEDULED
+  NEXT_BILLING
+  CANCELLED
+}
+
+enum LeaseExitStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELLED
+  COMPLETED
+}
+
+enum KycProvider {
+  SETU
+  MOCK
+}
+
+enum IdentityVerificationStatus {
+  STARTED
+  COMPLETED
+  FAILED
+}
+
+enum PanShareStatus {
+  PENDING
+  APPROVED
+  DENIED
+  REVOKED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  REVOKED
+  EXPIRED
 }
 
 enum LeaseStatus {
@@ -235,6 +545,7 @@ model User {
   otpChallenge    OtpChallenge?
   session         AuthSession?
   permissions     UserPermission[]
+  extraRoles      UserRole[]
   landlordProfile LandlordProfile?
   tenantProfile   TenantProfile?
   agentProfile    AgentProfile?
@@ -254,6 +565,21 @@ model User {
 
   @@index([role, accountStatus])
   @@map("users")
+}
+
+/// Additional roles held by one account (e.g. a LANDLORD who is also a TENANT). users.role stays the
+/// primary role; only customer roles (LANDLORD, TENANT, PROPERTY_AGENT, SERVICE_PROVIDER) can be added here.
+model UserRole {
+  userId      String   @map("user_id") @db.Char(36)
+  role        Role
+  grantedById String?  @map("granted_by_id") @db.Char(36)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, role])
+  @@index([role])
+  @@map("user_roles")
 }
 
 model RoleDefinition {
@@ -410,6 +736,18 @@ model LandlordProfile {
   state        String?  @db.VarChar(80)
   pincode      String?  @db.VarChar(10)
   kycStatus    ReviewStatus @default(PENDING) @map("kyc_status")
+  kycNote      String?  @map("kyc_note") @db.VarChar(500)
+  kycReviewedById String? @map("kyc_reviewed_by_id") @db.Char(36)
+  kycReviewedAt DateTime? @map("kyc_reviewed_at")
+  /// Owner's PAN. Never returned whole except on receipts the owner consented to (see PanShareRequest).
+  pan          String?  @db.VarChar(10)
+  /// Owner opted in to show the PAN on receipts for ALL their tenants (HRA). Default off.
+  panShareAll  Boolean  @default(false) @map("pan_share_all")
+  panShareAllAt DateTime? @map("pan_share_all_at")
+  /// Owner verification: when the owner sent DigiLocker + selfie for review (null = not submitted yet).
+  kycSubmittedAt DateTime? @map("kyc_submitted_at")
+  /// Live selfie, compared by staff with the DigiLocker photo.
+  selfiePath   String?  @map("selfie_path") @db.VarChar(255)
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -461,87 +799,479 @@ model ServiceProviderProfile {
 
 // ───────────────────────────── Properties ─────────────────────────────
 
-model Property {
-  id             String         @id @default(uuid()) @db.Char(36)
-  ownerId        String         @map("owner_id") @db.Char(36)
-  title          String         @db.VarChar(150)
-  description    String         @db.Text
-  propertyType   PropertyType   @map("property_type")
-  addressLine    String         @map("address_line") @db.VarChar(255)
-  locality       String?        @db.VarChar(120)
-  city           String         @db.VarChar(80)
-  state          String         @db.VarChar(80)
-  pincode        String         @db.VarChar(10)
-  bedrooms       Int            @default(0)
-  bathrooms      Int            @default(0)
-  areaSqft       Int?           @map("area_sqft")
-  furnishing     Furnishing     @default(UNFURNISHED)
-  monthlyRent    Decimal        @map("monthly_rent") @db.Decimal(12, 2)
-  securityDeposit Decimal       @default(0) @map("security_deposit") @db.Decimal(12, 2)
-  availableFrom  DateTime?      @map("available_from") @db.Date
-  isAvailable    Boolean        @default(true) @map("is_available")
-  status         PropertyStatus @default(DRAFT)
-  moderationNote String?        @map("moderation_note") @db.VarChar(500)
-  reviewedById   String?        @map("reviewed_by_id") @db.Char(36)
-  reviewedAt     DateTime?      @map("reviewed_at")
-  verified       Boolean        @default(false)
-  createdById    String         @map("created_by_id") @db.Char(36)
-  createdAt      DateTime       @default(now()) @map("created_at")
-  updatedAt      DateTime       @updatedAt @map("updated_at")
+model PropertyTypeDefinition {
+  key       String           @id @db.VarChar(40)
+  category  PropertyCategory
+  label     String           @db.VarChar(80)
+  /// MULTI_UNIT | VILLA | SINGLE_UNIT | DUPLEX | ROOMS_BEDS
+  structure String           @db.VarChar(20)
+  active    Boolean          @default(true)
+  sortOrder Int              @default(0) @map("sort_order")
+  /// Field definitions used by the API for validation and by every client to render forms.
+  schema    Json
+  updatedAt DateTime         @updatedAt @map("updated_at")
 
-  owner        User                 @relation("PropertyOwner", fields: [ownerId], references: [id])
+  properties Property[]
+
+  @@map("property_types")
+}
+
+model AmenityDefinition {
+  key        String   @id @db.VarChar(40)
+  label      String   @db.VarChar(80)
+  /// JSON array of PropertyCategory values this amenity applies to.
+  categories Json
+  active     Boolean  @default(true)
+  sortOrder  Int      @default(0) @map("sort_order")
+
+  @@map("amenities")
+}
+
+/// Transactional counters for readable IDs (SR-PROP-000001 …). Incremented with a row lock.
+model IdCounter {
+  name  String @id @db.VarChar(20)
+  value BigInt
+
+  @@map("id_counters")
+}
+
+model Property {
+  id                 String             @id @default(uuid()) @db.Char(36)
+  code               String             @unique @db.VarChar(20)
+  ownerId            String             @map("owner_id") @db.Char(36)
+  createdById        String             @map("created_by_id") @db.Char(36)
+  category           PropertyCategory
+  propertyTypeKey    String             @map("property_type") @db.VarChar(40)
+  listingType        ListingType        @default(RENT) @map("listing_type")
+  title              String?            @db.VarChar(150)
+  description        String?            @db.Text
+  /// Apartment / project / PG / house name.
+  name               String?            @db.VarChar(150)
+  addressLine        String?            @map("address_line") @db.VarChar(255)
+  locality           String?            @db.VarChar(120)
+  city               String?            @db.VarChar(80)
+  state              String?            @db.VarChar(80)
+  country            String             @default("India") @db.VarChar(60)
+  pincode            String?            @db.VarChar(10)
+  latitude           Decimal?           @db.Decimal(9, 6)
+  longitude          Decimal?           @db.Decimal(9, 6)
+  totalFloors        Int?               @map("total_floors")
+  totalUnits         Int?               @map("total_units")
+  /// Type-specific building fields, validated against property_types.schema.
+  attributes         Json?
+  activeStatus       ActiveStatus       @default(ACTIVE) @map("active_status")
+  publicationStatus  PublicationStatus  @default(DRAFT) @map("publication_status")
+  verificationStatus VerificationStatus @default(UNVERIFIED) @map("verification_status")
+  moderationNote     String?            @map("moderation_note") @db.VarChar(500)
+  reviewedById       String?            @map("reviewed_by_id") @db.Char(36)
+  reviewedAt         DateTime?          @map("reviewed_at")
+  submittedAt        DateTime?          @map("submitted_at")
+  publishedAt        DateTime?          @map("published_at")
+  archivedAt         DateTime?          @map("archived_at")
+  wizardStep         Int                @default(1) @map("wizard_step")
+  /// Backend-calculated aggregates (refreshed after every change).
+  completenessScore  Int                @default(0) @map("completeness_score")
+  rentFrom           Decimal?           @map("rent_from") @db.Decimal(12, 2)
+  rentTo             Decimal?           @map("rent_to") @db.Decimal(12, 2)
+  availableCount     Int                @default(0) @map("available_count")
+  occupiedCount      Int                @default(0) @map("occupied_count")
+  /// Optimistic concurrency: incremented on every update.
+  version            Int                @default(1)
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  owner        User                   @relation("PropertyOwner", fields: [ownerId], references: [id])
+  type         PropertyTypeDefinition @relation(fields: [propertyTypeKey], references: [key])
+  units        PropertyUnit[]
+  rooms        PropertyRoom[]
+  utilities    PropertyUtility[]
+  policy       PropertyPolicy?
+  amenities    PropertyAmenity[]
+  pricing      PropertyPricing[]
   images       PropertyImage[]
   documents    PropertyDocument[]
   assignments  PropertyAssignment[]
   inspections  PropertyInspection[]
+  history      PropertyStatusHistory[]
   applications RentalApplication[]
   leases       Lease[]
+  invitations  TenantInvitation[]
+  reviews      RentalReview[]
   maintenance  MaintenanceRequest[]
   enquiries    Enquiry[]
   visits       PropertyVisit[]
 
-  @@index([ownerId])
-  @@index([status, city])
-  @@index([status, monthlyRent])
+  @@index([ownerId, publicationStatus])
+  @@index([publicationStatus, activeStatus, city])
+  @@index([propertyTypeKey])
+  @@index([rentFrom])
   @@map("properties")
 }
 
-model PropertyImage {
-  id           String       @id @default(uuid()) @db.Char(36)
-  propertyId   String       @map("property_id") @db.Char(36)
-  filePath     String       @map("file_path") @db.VarChar(255)
-  mimeType     String       @map("mime_type") @db.VarChar(60)
-  status       ReviewStatus @default(PENDING)
-  reviewedById String?      @map("reviewed_by_id") @db.Char(36)
-  uploadedById String       @map("uploaded_by_id") @db.Char(36)
-  createdAt    DateTime     @default(now()) @map("created_at")
+/// A rentable unit inside a property: a flat, a villa, a house, a duplex, a commercial space or a plot.
+model PropertyUnit {
+  id                 String             @id @default(uuid()) @db.Char(36)
+  code               String             @unique @db.VarChar(20)
+  propertyId         String             @map("property_id") @db.Char(36)
+  kind               UnitKind
+  name               String?            @db.VarChar(120)
+  unitNumber         String?            @map("unit_number") @db.VarChar(30)
+  floorNumber        Int?               @map("floor_number")
+  bhkType            String?            @map("bhk_type") @db.VarChar(20)
+  bedrooms           Int?
+  bathrooms          Int?
+  balconies          Int?
+  kitchenCount       Int?               @map("kitchen_count")
+  livingRoomCount    Int?               @map("living_room_count")
+  builtUpArea        Decimal?           @map("built_up_area") @db.Decimal(12, 2)
+  carpetArea         Decimal?           @map("carpet_area") @db.Decimal(12, 2)
+  plotArea           Decimal?           @map("plot_area") @db.Decimal(12, 2)
+  furnishing         Furnishing         @default(NOT_DISCLOSED)
+  configuration      String?            @db.VarChar(20)
+  totalFloors        Int?               @map("total_floors")
+  parkingCapacity    Int?               @map("parking_capacity")
+  parkingDetails     String?            @map("parking_details") @db.VarChar(255)
+  attributes         Json?
+  availableFrom      DateTime?          @map("available_from") @db.Date
+  availabilityStatus AvailabilityStatus @default(NOT_AVAILABLE) @map("availability_status")
+  activeStatus       ActiveStatus       @default(ACTIVE) @map("active_status")
+  version            Int                @default(1)
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  property     Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  floors       DuplexFloor[]
+  images       PropertyImage[]
+  leases       Lease[]
+  applications RentalApplication[]
+
+  @@unique([propertyId, unitNumber])
+  @@index([propertyId, availabilityStatus])
+  @@map("property_units")
+}
+
+model DuplexFloor {
+  id                String   @id @default(uuid()) @db.Char(36)
+  unitId            String   @map("unit_id") @db.Char(36)
+  floorNumber       Int      @map("floor_number")
+  label             String?  @db.VarChar(40)
+  bedrooms          Int      @default(0)
+  bathrooms         Int      @default(0)
+  kitchens          Int      @default(0)
+  livingRooms       Int      @default(0) @map("living_rooms")
+  balconies         Int      @default(0)
+  additionalDetails String?  @map("additional_details") @db.VarChar(500)
+
+  unit PropertyUnit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([unitId, floorNumber])
+  @@map("duplex_floors")
+}
+
+/// PG / hostel room.
+model PropertyRoom {
+  id                 String             @id @default(uuid()) @db.Char(36)
+  code               String             @unique @db.VarChar(20)
+  propertyId         String             @map("property_id") @db.Char(36)
+  roomNumber         String             @map("room_number") @db.VarChar(30)
+  floorNumber        Int?               @map("floor_number")
+  sharingType        SharingType        @map("sharing_type")
+  customSharing      Int?               @map("custom_sharing")
+  attachedBathroom   Disclosure         @default(NOT_DISCLOSED) @map("attached_bathroom")
+  acAvailable        Disclosure         @default(NOT_DISCLOSED) @map("ac_available")
+  rentPerBed         Decimal?           @map("rent_per_bed") @db.Decimal(12, 2)
+  securityDeposit    Decimal?           @map("security_deposit") @db.Decimal(12, 2)
+  availabilityStatus AvailabilityStatus @default(NOT_AVAILABLE) @map("availability_status")
+  activeStatus       ActiveStatus       @default(ACTIVE) @map("active_status")
+  version            Int                @default(1)
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  property Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  beds     PropertyBed[]
+  images   PropertyImage[]
+
+  @@unique([propertyId, roomNumber])
+  @@map("property_rooms")
+}
+
+model PropertyBed {
+  id                 String             @id @default(uuid()) @db.Char(36)
+  code               String             @unique @db.VarChar(20)
+  roomId             String             @map("room_id") @db.Char(36)
+  propertyId         String             @map("property_id") @db.Char(36)
+  bedNumber          String             @map("bed_number") @db.VarChar(20)
+  rent               Decimal?           @db.Decimal(12, 2)
+  /// Current occupant. Assignment is an atomic conditional update, so one bed never has two active tenants.
+  tenantId           String?            @map("tenant_id") @db.Char(36)
+  leaseId            String?            @unique @map("lease_id") @db.Char(36)
+  occupiedSince      DateTime?          @map("occupied_since")
+  availabilityStatus AvailabilityStatus @default(NOT_AVAILABLE) @map("availability_status")
+  activeStatus       ActiveStatus       @default(ACTIVE) @map("active_status")
+  version            Int                @default(1)
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  room         PropertyRoom        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  assignments  BedAssignment[]
+  applications RentalApplication[]
+
+  @@unique([roomId, bedNumber])
+  @@index([propertyId, availabilityStatus])
+  @@index([tenantId])
+  @@map("property_beds")
+}
+
+model BedAssignment {
+  id          String    @id @default(uuid()) @db.Char(36)
+  bedId       String    @map("bed_id") @db.Char(36)
+  tenantId    String    @map("tenant_id") @db.Char(36)
+  leaseId     String?   @map("lease_id") @db.Char(36)
+  startedAt   DateTime  @default(now()) @map("started_at")
+  endedAt     DateTime? @map("ended_at")
+  createdById String    @map("created_by_id") @db.Char(36)
+
+  bed PropertyBed @relation(fields: [bedId], references: [id], onDelete: Cascade)
+
+  @@index([bedId, endedAt])
+  @@map("bed_assignments")
+}
+
+/// Electricity, water and other utilities for the whole property (scope_key = "PROPERTY") or one unit (scope_key = unit id).
+model PropertyUtility {
+  id                       String             @id @default(uuid()) @db.Char(36)
+  propertyId               String             @map("property_id") @db.Char(36)
+  unitId                   String?            @map("unit_id") @db.Char(36)
+  scopeKey                 String             @map("scope_key") @db.VarChar(36)
+  separateElectricityMeter Disclosure         @default(NOT_DISCLOSED) @map("separate_electricity_meter")
+  meterNumber              String?            @map("meter_number") @db.VarChar(40)
+  electricityBillingType   ElectricityBilling @default(NOT_DISCLOSED) @map("electricity_billing_type")
+  electricityRatePerUnit   Decimal?           @map("electricity_rate_per_unit") @db.Decimal(8, 2)
+  meterPaymentType         MeterPayment       @default(NOT_DISCLOSED) @map("meter_payment_type")
+  electricityIncludedInRent Disclosure        @default(NOT_DISCLOSED) @map("electricity_included_in_rent")
+  meterReadingAtHandover   Decimal?           @map("meter_reading_at_handover") @db.Decimal(12, 2)
+  meterReadingImageId      String?            @map("meter_reading_image_id") @db.Char(36)
+  separateWaterMeter       Disclosure         @default(NOT_DISCLOSED) @map("separate_water_meter")
+  waterSupplyType          WaterSupply        @default(NOT_DISCLOSED) @map("water_supply_type")
+  waterChargesType         ChargeBilling      @default(NOT_DISCLOSED) @map("water_charges_type")
+  waterChargesAmount       Decimal?           @map("water_charges_amount") @db.Decimal(12, 2)
+  waterIncludedInRent      Disclosure         @default(NOT_DISCLOSED) @map("water_included_in_rent")
+  waterAvailability        String?            @map("water_availability") @db.VarChar(120)
+  gasConnectionType        GasConnection      @default(NOT_DISCLOSED) @map("gas_connection_type")
+  internetAvailable        Disclosure         @default(NOT_DISCLOSED) @map("internet_available")
+  internetCharges          Decimal?           @map("internet_charges") @db.Decimal(12, 2)
+  powerBackup              Disclosure         @default(NOT_DISCLOSED) @map("power_backup")
+  generatorAvailable       Disclosure         @default(NOT_DISCLOSED) @map("generator_available")
+  sewageFacilities         Disclosure         @default(NOT_DISCLOSED) @map("sewage_facilities")
+  wasteCollection          Disclosure         @default(NOT_DISCLOSED) @map("waste_collection")
+  notes                    String?            @db.VarChar(1000)
+  updatedAt                DateTime           @updatedAt @map("updated_at")
 
   property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
 
+  @@unique([propertyId, scopeKey])
+  @@map("property_utilities")
+}
+
+model PropertyPolicy {
+  propertyId                String     @id @map("property_id") @db.Char(36)
+  guestsAllowed             Disclosure @default(NOT_DISCLOSED) @map("guests_allowed")
+  overnightGuestsAllowed    Disclosure @default(NOT_DISCLOSED) @map("overnight_guests_allowed")
+  maximumGuestStayDays      Int?       @map("maximum_guest_stay_days")
+  guestRegistrationRequired Disclosure @default(NOT_DISCLOSED) @map("guest_registration_required")
+  visitorTimingRestrictions String?    @map("visitor_timing_restrictions") @db.VarChar(255)
+  landlordApprovalRequired  Disclosure @default(NOT_DISCLOSED) @map("landlord_approval_required")
+  guestParkingAvailable     Disclosure @default(NOT_DISCLOSED) @map("guest_parking_available")
+  guestChargesApplicable    Disclosure @default(NOT_DISCLOSED) @map("guest_charges_applicable")
+  guestChargeAmount         Decimal?   @map("guest_charge_amount") @db.Decimal(12, 2)
+  petsAllowed               Disclosure @default(NOT_DISCLOSED) @map("pets_allowed")
+  smokingAllowed            Disclosure @default(NOT_DISCLOSED) @map("smoking_allowed")
+  partiesAllowed            Disclosure @default(NOT_DISCLOSED) @map("parties_allowed")
+  loudMusicPolicy           String?    @map("loud_music_policy") @db.VarChar(255)
+  cookingAllowed            Disclosure @default(NOT_DISCLOSED) @map("cooking_allowed")
+  sublettingAllowed         Disclosure @default(NOT_DISCLOSED) @map("subletting_allowed")
+  workFromHomeAllowed       Disclosure @default(NOT_DISCLOSED) @map("work_from_home_allowed")
+  /// Structured custom rules: [{ "title": string, "description": string }]
+  additionalRules           Json?      @map("additional_rules")
+  updatedAt                 DateTime   @updatedAt @map("updated_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@map("property_policies")
+}
+
+model PropertyAmenity {
+  id         String     @id @default(uuid()) @db.Char(36)
+  propertyId String     @map("property_id") @db.Char(36)
+  scopeKey   String     @map("scope_key") @db.VarChar(36)
+  unitId     String?    @map("unit_id") @db.Char(36)
+  /// amenities.key, or "custom:<slug>" for a custom amenity.
+  key        String     @db.VarChar(80)
+  label      String     @db.VarChar(80)
+  status     Disclosure @default(YES)
+  notes      String?    @db.VarChar(255)
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, scopeKey, key])
+  @@map("property_amenities")
+}
+
+/// Rent and financial terms for the whole property (scope_key = "PROPERTY") or one unit (scope_key = unit id).
+model PropertyPricing {
+  id                     String          @id @default(uuid()) @db.Char(36)
+  propertyId             String          @map("property_id") @db.Char(36)
+  unitId                 String?         @map("unit_id") @db.Char(36)
+  scopeKey               String          @map("scope_key") @db.VarChar(36)
+  currency               String          @default("INR") @db.Char(3)
+  monthlyRent            Decimal?        @map("monthly_rent") @db.Decimal(12, 2)
+  salePrice              Decimal?        @map("sale_price") @db.Decimal(14, 2)
+  securityDeposit        Decimal?        @map("security_deposit") @db.Decimal(12, 2)
+  advanceRentMonths      Int?            @map("advance_rent_months")
+  rentDueDay             Int?            @map("rent_due_day")
+  lateFeePolicy          String?         @map("late_fee_policy") @db.VarChar(500)
+  lockInPeriodMonths     Int?            @map("lock_in_period_months")
+  noticePeriodDays       Int?            @map("notice_period_days")
+  rentIncreasePolicy     String?         @map("rent_increase_policy") @db.VarChar(500)
+  agreementCharges       Decimal?        @map("agreement_charges") @db.Decimal(12, 2)
+  agreementChargesPaidBy PaidBy          @default(NOT_DISCLOSED) @map("agreement_charges_paid_by")
+  refundPolicy           String?         @map("refund_policy") @db.Text
+  otherTerms             String?         @map("other_terms") @db.Text
+  rentNegotiable         Disclosure      @default(NOT_DISCLOSED) @map("rent_negotiable")
+  updatedAt              DateTime        @updatedAt @map("updated_at")
+
+  property Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  charges  PricingCharge[]
+
+  @@unique([propertyId, scopeKey])
+  @@map("property_pricing")
+}
+
+/// One clearly labelled charge. Charges are never merged into one unclear amount.
+model PricingCharge {
+  id        String           @id @default(uuid()) @db.Char(36)
+  pricingId String           @map("pricing_id") @db.Char(36)
+  kind      ChargeKind
+  label     String           @db.VarChar(80)
+  billing   ChargeBilling
+  amount    Decimal?         @db.Decimal(12, 2)
+  frequency ChargeFrequency?
+  notes     String?          @db.VarChar(255)
+
+  pricing PropertyPricing @relation(fields: [pricingId], references: [id], onDelete: Cascade)
+
+  @@unique([pricingId, kind, label])
+  @@map("pricing_charges")
+}
+
+model PropertyImage {
+  id           String        @id @default(uuid()) @db.Char(36)
+  propertyId   String        @map("property_id") @db.Char(36)
+  unitId       String?       @map("unit_id") @db.Char(36)
+  roomId       String?       @map("room_id") @db.Char(36)
+  inspectionId String?       @map("inspection_id") @db.Char(36)
+  category     ImageCategory @default(OTHER)
+  /// Which room of that category the photo shows, e.g. BEDROOM + slot 2 = "Bedroom 2". Null for general photos.
+  slot         Int?
+  displayOrder Int           @default(0) @map("display_order")
+  filePath     String        @map("file_path") @db.VarChar(255)
+  mimeType     String        @map("mime_type") @db.VarChar(60)
+  status       ReviewStatus  @default(PENDING)
+  reviewedById String?       @map("reviewed_by_id") @db.Char(36)
+  uploadedById String        @map("uploaded_by_id") @db.Char(36)
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  property   Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  unit       PropertyUnit?       @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  room       PropertyRoom?       @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  inspection PropertyInspection? @relation(fields: [inspectionId], references: [id], onDelete: SetNull)
+
   @@index([propertyId, status])
+  @@index([propertyId, displayOrder])
   @@map("property_images")
 }
 
+/// Private by default. Files are only streamed through authorized endpoints.
+/// Property / unit documents. Private by default; tenants see a document only when it is shared AND it
+/// belongs to their property (property-level) or their own flat / room / bed. Replacing a file adds a new
+/// version (same group_id) and keeps the old one; deleting archives.
 model PropertyDocument {
-  id           String       @id @default(uuid()) @db.Char(36)
-  propertyId   String       @map("property_id") @db.Char(36)
-  docType      DocumentType @map("doc_type")
-  filePath     String       @map("file_path") @db.VarChar(255)
-  originalName String       @map("original_name") @db.VarChar(200)
-  mimeType     String       @map("mime_type") @db.VarChar(60)
-  status       ReviewStatus @default(PENDING)
-  note         String?      @db.VarChar(500)
-  reviewedById String?      @map("reviewed_by_id") @db.Char(36)
-  uploadedById String       @map("uploaded_by_id") @db.Char(36)
-  createdAt    DateTime     @default(now()) @map("created_at")
+  id              String       @id @default(uuid()) @db.Char(36)
+  code            String       @unique @db.VarChar(20)
+  propertyId      String       @map("property_id") @db.Char(36)
+  unitId          String?      @map("unit_id") @db.Char(36)
+  roomId          String?      @map("room_id") @db.Char(36)
+  bedId           String?      @map("bed_id") @db.Char(36)
+  docType         DocumentType @map("doc_type")
+  /// Name for "Other" documents (any text), or an optional title for the others.
+  customName      String?      @map("custom_name") @db.VarChar(150)
+  description     String?      @db.VarChar(1000)
+  documentDate    DateTime?    @map("document_date") @db.Date
+  expiryDate      DateTime?    @map("expiry_date") @db.Date
+  sharedWithTenant Boolean     @default(false) @map("shared_with_tenant")
+  /// First time tenants were notified about this document (no repeat notifications).
+  sharedNotifiedAt DateTime?   @map("shared_notified_at")
+  /// Only ownership-type documents go to SafeRent's verification queue.
+  needsVerification Boolean    @default(true) @map("needs_verification")
+  /// Versions: all versions share group_id; exactly one is current.
+  groupId         String?      @map("group_id") @db.Char(36)
+  version         Int          @default(1)
+  isCurrent       Boolean      @default(true) @map("is_current")
+  archivedAt      DateTime?    @map("archived_at")
+  archivedById    String?      @map("archived_by_id") @db.Char(36)
+  fileSize        Int?         @map("file_size")
+  filePath        String       @map("file_path") @db.VarChar(255)
+  originalName    String       @map("original_name") @db.VarChar(200)
+  mimeType        String       @map("mime_type") @db.VarChar(60)
+  status          ReviewStatus @default(PENDING)
+  verifiedById    String?      @map("verified_by_id") @db.Char(36)
+  verifiedAt      DateTime?    @map("verified_at")
+  rejectionReason String?      @map("rejection_reason") @db.VarChar(500)
+  uploadedById    String       @map("uploaded_by_id") @db.Char(36)
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @default(now()) @updatedAt @map("updated_at")
 
   property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
 
   @@index([propertyId, status])
+  @@index([propertyId, isCurrent, archivedAt])
+  @@index([groupId, version])
   @@map("property_documents")
 }
 
-/// property_assignments: links property managers and agents to the properties they may access.
+enum DocumentRequestStatus {
+  PENDING
+  IN_PROGRESS
+  FULFILLED
+  REJECTED
+  CANCELLED
+}
+
+/// A tenant asks their landlord for a document; fulfilled by uploading + sharing it.
+model DocumentRequest {
+  id               String                @id @default(uuid()) @db.Char(36)
+  code             String                @unique @db.VarChar(20)
+  tenantId         String                @map("tenant_id") @db.Char(36)
+  landlordId       String                @map("landlord_id") @db.Char(36)
+  leaseId          String                @map("lease_id") @db.Char(36)
+  propertyId       String                @map("property_id") @db.Char(36)
+  unitId           String?               @map("unit_id") @db.Char(36)
+  bedId            String?               @map("bed_id") @db.Char(36)
+  documentName     String                @map("document_name") @db.VarChar(150)
+  reason           String?               @db.VarChar(1000)
+  status           DocumentRequestStatus @default(PENDING)
+  linkedDocumentId String?               @map("linked_document_id") @db.Char(36)
+  rejectionReason  String?               @map("rejection_reason") @db.VarChar(500)
+  respondedById    String?               @map("responded_by_id") @db.Char(36)
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+
+  @@index([propertyId, status])
+  @@index([tenantId, status])
+  @@index([landlordId, status])
+  @@map("document_requests")
+}
+
 model PropertyAssignment {
   id          String         @id @default(uuid()) @db.Char(36)
   propertyId  String         @map("property_id") @db.Char(36)
@@ -559,26 +1289,88 @@ model PropertyAssignment {
 }
 
 model PropertyInspection {
-  id          String           @id @default(uuid()) @db.Char(36)
-  propertyId  String           @map("property_id") @db.Char(36)
-  inspectorId String           @map("inspector_id") @db.Char(36)
-  scheduledAt DateTime         @map("scheduled_at")
-  status      InspectionStatus @default(SCHEDULED)
-  notes       String?          @db.Text
-  result      String?          @db.VarChar(40)
-  createdAt   DateTime         @default(now()) @map("created_at")
+  id                     String           @id @default(uuid()) @db.Char(36)
+  propertyId             String           @map("property_id") @db.Char(36)
+  type                   InspectionType   @default(ROUTINE)
+  unitId                 String?          @map("unit_id") @db.Char(36)
+  roomId                 String?          @map("room_id") @db.Char(36)
+  bedId                  String?          @map("bed_id") @db.Char(36)
+  leaseId                String?          @map("lease_id") @db.Char(36)
+  inspectorId            String           @map("inspector_id") @db.Char(36)
+  scheduledAt            DateTime         @map("scheduled_at")
+  inspectionDate         DateTime?        @map("inspection_date")
+  status                 InspectionStatus @default(SCHEDULED)
+  propertyCondition      ConditionRating  @default(NOT_INSPECTED) @map("property_condition")
+  wallCondition          ConditionRating  @default(NOT_INSPECTED) @map("wall_condition")
+  doorsAndWindows        ConditionRating  @default(NOT_INSPECTED) @map("doors_and_windows")
+  electricalCondition    ConditionRating  @default(NOT_INSPECTED) @map("electrical_condition")
+  plumbingCondition      ConditionRating  @default(NOT_INSPECTED) @map("plumbing_condition")
+  /// [{ "item": string, "quantity": number, "condition": string }]
+  furnitureInventory     Json?            @map("furniture_inventory")
+  existingDamages        String?          @map("existing_damages") @db.Text
+  handoverMeterReading   Decimal?         @map("handover_meter_reading") @db.Decimal(12, 2)
+  keysHandedOver         Int?             @map("keys_handed_over")
+  notes                  String?          @db.Text
+  result                 String?          @db.VarChar(40)
+  landlordAcknowledgedAt DateTime?        @map("landlord_acknowledged_at")
+  tenantAcknowledgedAt   DateTime?        @map("tenant_acknowledged_at")
+  createdAt              DateTime         @default(now()) @map("created_at")
+  updatedAt              DateTime         @updatedAt @map("updated_at")
 
-  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  property Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  photos   PropertyImage[]
 
-  @@index([propertyId])
+  @@unique([leaseId, type])
+  @@index([propertyId, type])
   @@map("property_inspections")
 }
 
+/// Every change of active / publication / verification / availability status.
+model PropertyStatusHistory {
+  id         BigInt   @id @default(autoincrement())
+  propertyId String   @map("property_id") @db.Char(36)
+  entityType String   @map("entity_type") @db.VarChar(20)
+  entityId   String   @map("entity_id") @db.Char(36)
+  field      String   @db.VarChar(30)
+  fromValue  String?  @map("from_value") @db.VarChar(30)
+  toValue    String   @map("to_value") @db.VarChar(30)
+  reason     String?  @db.VarChar(500)
+  actorId    String?  @map("actor_id") @db.Char(36)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, createdAt])
+  @@map("property_status_history")
+}
+
+/// Append-only property audit trail. The API exposes no update or delete for this table.
+model PropertyAuditLog {
+  id             BigInt         @id @default(autoincrement())
+  eventId        String         @unique @map("event_id") @db.Char(36)
+  propertyId     String?        @map("property_id") @db.Char(36)
+  entityType     String         @map("entity_type") @db.VarChar(20)
+  entityId       String         @map("entity_id") @db.VarChar(36)
+  action         String         @db.VarChar(60)
+  oldValue       Json?          @map("old_value")
+  newValue       Json?          @map("new_value")
+  performedById  String?        @map("performed_by_id") @db.Char(36)
+  actorRole      String?        @map("actor_role") @db.VarChar(32)
+  sourcePlatform SourcePlatform @map("source_platform")
+  requestId      String?        @map("request_id") @db.VarChar(64)
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  @@index([propertyId, createdAt])
+  @@index([entityType, entityId])
+  @@map("property_audit_logs")
+}
 // ───────────────────────────── Rentals ─────────────────────────────
 
 model RentalApplication {
   id             String            @id @default(uuid()) @db.Char(36)
   propertyId     String            @map("property_id") @db.Char(36)
+  unitId         String?           @map("unit_id") @db.Char(36)
+  bedId          String?           @map("bed_id") @db.Char(36)
   tenantId       String            @map("tenant_id") @db.Char(36)
   message        String?           @db.VarChar(1000)
   proposedMoveIn DateTime          @map("proposed_move_in") @db.Date
@@ -589,8 +1381,10 @@ model RentalApplication {
   decidedAt      DateTime?         @map("decided_at")
   createdAt      DateTime          @default(now()) @map("created_at")
 
-  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  tenant   User     @relation("ApplicationTenant", fields: [tenantId], references: [id], onDelete: Cascade)
+  property Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  unit     PropertyUnit? @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  bed      PropertyBed?  @relation(fields: [bedId], references: [id], onDelete: SetNull)
+  tenant   User          @relation("ApplicationTenant", fields: [tenantId], references: [id], onDelete: Cascade)
   lease    Lease?
 
   @@index([propertyId, status])
@@ -600,7 +1394,10 @@ model RentalApplication {
 
 model Lease {
   id              String      @id @default(uuid()) @db.Char(36)
+  code            String?     @unique @db.VarChar(20)
   propertyId      String      @map("property_id") @db.Char(36)
+  unitId          String?     @map("unit_id") @db.Char(36)
+  bedId           String?     @map("bed_id") @db.Char(36)
   landlordId      String      @map("landlord_id") @db.Char(36)
   tenantId        String      @map("tenant_id") @db.Char(36)
   applicationId   String?     @unique @map("application_id") @db.Char(36)
@@ -609,6 +1406,11 @@ model Lease {
   monthlyRent     Decimal     @map("monthly_rent") @db.Decimal(12, 2)
   securityDeposit Decimal     @map("security_deposit") @db.Decimal(12, 2)
   rentDueDay      Int         @default(5) @map("rent_due_day")
+  maintenanceCharges Decimal? @map("maintenance_charges") @db.Decimal(12, 2)
+  noticePeriodDays   Int?     @map("notice_period_days")
+  lockInMonths       Int?     @map("lock_in_months")
+  /// Set when the lease was created by a tenant accepting an invitation link.
+  invitationId       String?  @unique @map("invitation_id") @db.Char(36)
   terms           String?     @db.Text
   status          LeaseStatus @default(ACTIVE)
   endedAt         DateTime?   @map("ended_at")
@@ -616,15 +1418,349 @@ model Lease {
   createdAt       DateTime    @default(now()) @map("created_at")
 
   property     Property           @relation(fields: [propertyId], references: [id])
+  unit         PropertyUnit?      @relation(fields: [unitId], references: [id])
   landlord     User               @relation("LeaseLandlord", fields: [landlordId], references: [id])
   tenant       User               @relation("LeaseTenant", fields: [tenantId], references: [id])
   application  RentalApplication? @relation(fields: [applicationId], references: [id])
   rentPayments RentPayment[]
+  reviews      RentalReview[]
+  exitRequests LeaseExitRequest[]
+  panShare     PanShareRequest?
 
   @@index([tenantId, status])
   @@index([landlordId, status])
   @@index([propertyId, status])
   @@map("leases")
+}
+
+/// Landlord → tenant invitation link. Only the SHA-256 of the token is stored; the token itself is shown
+/// to the landlord once (when the link is made). Single-use, expiring and revocable.
+model TenantInvitation {
+  id                 String           @id @default(uuid()) @db.Char(36)
+  code               String           @unique @db.VarChar(20)
+  tokenHash          String           @unique @map("token_hash") @db.Char(64)
+  propertyId         String           @map("property_id") @db.Char(36)
+  unitId             String?          @map("unit_id") @db.Char(36)
+  bedId              String?          @map("bed_id") @db.Char(36)
+  landlordId         String           @map("landlord_id") @db.Char(36)
+  createdById        String           @map("created_by_id") @db.Char(36)
+  recipientName      String           @map("recipient_name") @db.VarChar(120)
+  recipientPhone     String?          @map("recipient_phone") @db.VarChar(20)
+  recipientEmail     String?          @map("recipient_email") @db.VarChar(254)
+  monthlyRent        Decimal          @map("monthly_rent") @db.Decimal(12, 2)
+  securityDeposit    Decimal          @map("security_deposit") @db.Decimal(12, 2)
+  maintenanceCharges Decimal?         @map("maintenance_charges") @db.Decimal(12, 2)
+  /// [{ label, amount }]
+  otherCharges       Json?            @map("other_charges")
+  startDate          DateTime         @map("start_date") @db.Date
+  endDate            DateTime?        @map("end_date") @db.Date
+  rentDueDay         Int              @map("rent_due_day")
+  noticePeriodDays   Int?             @map("notice_period_days")
+  lockInMonths       Int?             @map("lock_in_months")
+  additionalTerms    String?          @map("additional_terms") @db.Text
+  status             InvitationStatus @default(PENDING)
+  expiresAt          DateTime         @map("expires_at")
+  respondedById      String?          @map("responded_by_id") @db.Char(36)
+  respondedAt        DateTime?        @map("responded_at")
+  revokedById        String?          @map("revoked_by_id") @db.Char(36)
+  leaseId            String?          @unique @map("lease_id") @db.Char(36)
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, status])
+  @@index([landlordId, status])
+  @@index([unitId, status])
+  @@index([bedId, status])
+  @@map("tenant_invitations")
+}
+
+/// Two-way, double-blind review of a finished lease. One per reviewer per lease (unique below).
+model RentalReview {
+  id              String             @id @default(uuid()) @db.Char(36)
+  code            String             @unique @db.VarChar(20)
+  leaseId         String             @map("lease_id") @db.Char(36)
+  propertyId      String             @map("property_id") @db.Char(36)
+  unitId          String?            @map("unit_id") @db.Char(36)
+  bedId           String?            @map("bed_id") @db.Char(36)
+  landlordId      String             @map("landlord_id") @db.Char(36)
+  tenantId        String             @map("tenant_id") @db.Char(36)
+  reviewerId      String             @map("reviewer_id") @db.Char(36)
+  reviewerRole    ReviewerRole       @map("reviewer_role")
+  revieweeId      String             @map("reviewee_id") @db.Char(36)
+  revieweeRole    ReviewerRole       @map("reviewee_role")
+  overallRating   Int                @map("overall_rating")
+  categoryRatings Json               @map("category_ratings")
+  reviewText      String?            @map("review_text") @db.Text
+  tags            Json?
+  /// Optional evidence, e.g. { inspectionIds: [...] } — only inspections of this lease.
+  evidence        Json?
+  status          RentalReviewStatus @default(SUBMITTED)
+  submittedAt     DateTime           @default(now()) @map("submitted_at")
+  publishedAt     DateTime?          @map("published_at")
+  responseText    String?            @map("response_text") @db.Text
+  respondedAt     DateTime?          @map("responded_at")
+  responseEditedAt DateTime?         @map("response_edited_at")
+  responseHidden  Boolean            @default(false) @map("response_hidden")
+  moderationNote  String?            @map("moderation_note") @db.VarChar(500)
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  lease    Lease                 @relation(fields: [leaseId], references: [id])
+  property Property              @relation(fields: [propertyId], references: [id])
+  reports  ReviewReport[]
+  logs     ReviewModerationLog[]
+
+  @@unique([leaseId, reviewerId])
+  @@index([revieweeId, status])
+  @@index([propertyId, status])
+  @@index([unitId, status])
+  @@index([status, submittedAt])
+  @@map("rental_reviews")
+}
+
+model ReviewReport {
+  id           String             @id @default(uuid()) @db.Char(36)
+  reviewId     String             @map("review_id") @db.Char(36)
+  reportedById String             @map("reported_by_id") @db.Char(36)
+  reason       ReviewReportReason
+  description  String?            @db.VarChar(1000)
+  status       ReviewReportStatus @default(OPEN)
+  reviewedById String?            @map("reviewed_by_id") @db.Char(36)
+  resolution   String?            @db.VarChar(500)
+  createdAt    DateTime           @default(now()) @map("created_at")
+  resolvedAt   DateTime?          @map("resolved_at")
+
+  review RentalReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, reportedById])
+  @@index([status, createdAt])
+  @@map("review_reports")
+}
+
+/// Append-only history of every moderation action (who, what, why).
+model ReviewModerationLog {
+  id          String   @id @default(uuid()) @db.Char(36)
+  reviewId    String   @map("review_id") @db.Char(36)
+  action      String   @db.VarChar(40)
+  fromStatus  String?  @map("from_status") @db.VarChar(20)
+  toStatus    String?  @map("to_status") @db.VarChar(20)
+  reason      String   @db.VarChar(500)
+  moderatorId String   @map("moderator_id") @db.Char(36)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  review RentalReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@index([reviewId, createdAt])
+  @@map("review_moderation_logs")
+}
+
+/// One shareable code per user per kind. Revoking makes a new code; old links stop working.
+model ReferralCode {
+  id        String             @id @default(uuid()) @db.Char(36)
+  code      String             @unique @db.VarChar(20)
+  userId    String             @map("user_id") @db.Char(36)
+  kind      ReferralCodeKind
+  status    ReferralCodeStatus @default(ACTIVE)
+  expiresAt DateTime?          @map("expires_at")
+  opens     Int                @default(0)
+  createdAt DateTime           @default(now()) @map("created_at")
+  revokedAt DateTime?          @map("revoked_at")
+
+  referrals Referral[]
+
+  @@index([userId, kind, status])
+  @@map("referral_codes")
+}
+
+/// One referral = one referrer + one referred person + one type. Unique per (type, referred user):
+/// a person can make only one referrer earn for the same kind of event, ever.
+model Referral {
+  id              String         @id @default(uuid()) @db.Char(36)
+  code            String         @unique @db.VarChar(20)
+  type            ReferralType
+  referrerId      String         @map("referrer_id") @db.Char(36)
+  referredUserId  String         @map("referred_user_id") @db.Char(36)
+  referralCodeId  String?        @map("referral_code_id") @db.Char(36)
+  invitationId    String?        @unique @map("invitation_id") @db.Char(36)
+  leaseId         String?        @map("lease_id") @db.Char(36)
+  status          ReferralStatus @default(REGISTERED)
+  rewardStatus    RewardStatus   @default(NOT_DUE) @map("reward_status")
+  onHold          Boolean        @default(false) @map("on_hold")
+  holdReason      String?        @map("hold_reason") @db.VarChar(500)
+  rejectionReason String?        @map("rejection_reason") @db.VarChar(500)
+  eligibleAt      DateTime?      @map("eligible_at")
+  successfulAt    DateTime?      @map("successful_at")
+  rewardedAt      DateTime?      @map("rewarded_at")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  referralCode ReferralCode?           @relation(fields: [referralCodeId], references: [id])
+  events       ReferralEvent[]
+  entitlement  SubscriptionEntitlement?
+
+  @@unique([type, referredUserId])
+  @@index([referrerId, type, status])
+  @@index([status, rewardStatus])
+  @@map("referrals")
+}
+
+/// Append-only history of every referral step and admin action.
+model ReferralEvent {
+  id         String   @id @default(uuid()) @db.Char(36)
+  referralId String?  @map("referral_id") @db.Char(36)
+  codeId     String?  @map("code_id") @db.Char(36)
+  event      String   @db.VarChar(40)
+  data       Json?
+  actorId    String?  @map("actor_id") @db.Char(36)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  referral Referral? @relation(fields: [referralId], references: [id], onDelete: Cascade)
+
+  @@index([referralId, createdAt])
+  @@index([event, createdAt])
+  @@map("referral_events")
+}
+
+model ReferralCampaign {
+  type              ReferralType @id
+  enabled           Boolean      @default(true)
+  rewardAmount      Decimal?     @map("reward_amount") @db.Decimal(10, 2)
+  durationMonths    Int?         @map("duration_months")
+  maxRewardsPerUser Int?         @map("max_rewards_per_user")
+  startsAt          DateTime?    @map("starts_at")
+  endsAt            DateTime?    @map("ends_at")
+  codeExpiryDays    Int?         @map("code_expiry_days")
+  rewardExpiryDays  Int?         @map("reward_expiry_days")
+  tenantEligibility String?      @map("tenant_eligibility") @db.VarChar(30)
+  terms             String?      @db.Text
+  updatedById       String?      @map("updated_by_id") @db.Char(36)
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  @@map("referral_campaigns")
+}
+
+/// Promotional credit balance — not cash: no withdrawal, no transfer, not usable for rent.
+/// The balance only ever changes together with a ledger row (same transaction).
+model PromoWallet {
+  userId         String   @id @map("user_id") @db.Char(36)
+  balance        Decimal  @default(0) @db.Decimal(12, 2)
+  /// Money added through payment gateways (separate from promotional credit).
+  cashBalance    Decimal  @default(0) @map("cash_balance") @db.Decimal(12, 2)
+  lifetimeEarned Decimal  @default(0) @map("lifetime_earned") @db.Decimal(12, 2)
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("promo_wallets")
+}
+
+model PromoWalletTransaction {
+  id             String        @id @default(uuid()) @db.Char(36)
+  userId         String        @map("user_id") @db.Char(36)
+  type           WalletTxnType
+  bucket         WalletBucket  @default(PROMO)
+  /// + credit / − debit
+  amount         Decimal       @db.Decimal(12, 2)
+  balanceAfter   Decimal       @map("balance_after") @db.Decimal(12, 2)
+  currency       String        @default("INR") @db.Char(3)
+  status         String        @default("CREDITED") @db.VarChar(20)
+  rewardType     String?       @map("reward_type") @db.VarChar(30)
+  referralId     String?       @map("referral_id") @db.Char(36)
+  /// Credits only: what is left to spend (oldest-expiring spent first).
+  remaining      Decimal?      @db.Decimal(12, 2)
+  expiresAt      DateTime?     @map("expires_at")
+  idempotencyKey String        @unique @map("idempotency_key") @db.VarChar(80)
+  note           String?       @db.VarChar(255)
+  createdById    String?       @map("created_by_id") @db.Char(36)
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([userId, type, expiresAt])
+  @@map("promo_wallet_transactions")
+}
+
+/// Free subscription time granted by a referral (never cash).
+model SubscriptionEntitlement {
+  id             String            @id @default(uuid()) @db.Char(36)
+  userId         String            @map("user_id") @db.Char(36)
+  planId         String            @map("plan_id") @db.Char(36)
+  planName       String            @map("plan_name") @db.VarChar(60)
+  months         Int
+  referralId     String            @unique @map("referral_id") @db.Char(36)
+  subscriptionId String?           @unique @map("subscription_id") @db.Char(36)
+  status         EntitlementStatus
+  startsAt       DateTime?         @map("starts_at")
+  endsAt         DateTime?         @map("ends_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  referral Referral @relation(fields: [referralId], references: [id])
+
+  @@index([userId, status])
+  @@map("subscription_entitlements")
+}
+
+/// Mutual lease close: one side asks (with reason + move-out date), the other must accept. Only one open
+/// request per lease (open_lease_id is set to the lease id while PENDING / ACCEPTED, else NULL).
+model LeaseExitRequest {
+  id              String          @id @default(uuid()) @db.Char(36)
+  leaseId         String          @map("lease_id") @db.Char(36)
+  openLeaseId     String?         @unique @map("open_lease_id") @db.Char(36)
+  requestedById   String          @map("requested_by_id") @db.Char(36)
+  requestedByRole ReviewerRole    @map("requested_by_role")
+  reason          String          @db.Text
+  moveOutDate     DateTime        @map("move_out_date") @db.Date
+  status          LeaseExitStatus @default(PENDING)
+  respondedById   String?         @map("responded_by_id") @db.Char(36)
+  respondedAt     DateTime?       @map("responded_at")
+  responseNote    String?         @map("response_note") @db.VarChar(1000)
+  /// Optional reviews written while asking / accepting; submitted automatically once the lease closes.
+  requesterReview Json?           @map("requester_review")
+  responderReview Json?           @map("responder_review")
+  completedAt     DateTime?       @map("completed_at")
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+
+  lease Lease @relation(fields: [leaseId], references: [id])
+
+  @@index([leaseId, createdAt])
+  @@index([status, moveOutDate])
+  @@map("lease_exit_requests")
+}
+
+/// Payment gateways the admin can switch on. Secrets never live here — only in server/.env.
+model PaymentGateway {
+  provider    PaymentProvider @id
+  enabled     Boolean         @default(false)
+  minAmount   Decimal         @default(10) @map("min_amount") @db.Decimal(10, 2)
+  maxAmount   Decimal         @default(10000) @map("max_amount") @db.Decimal(10, 2)
+  updatedById String?         @map("updated_by_id") @db.Char(36)
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  @@map("payment_gateways")
+}
+
+/// One "add money to wallet" attempt. Credited only after the gateway confirms (signature + API check
+/// or signed webhook) — never because the app says it succeeded.
+model WalletTopup {
+  id                String          @id @default(uuid()) @db.Char(36)
+  code              String          @unique @db.VarChar(20)
+  userId            String          @map("user_id") @db.Char(36)
+  provider          PaymentProvider
+  amount            Decimal         @db.Decimal(12, 2)
+  currency          String          @default("INR") @db.Char(3)
+  status            TopupStatus     @default(CREATED)
+  providerOrderId   String?         @unique @map("provider_order_id") @db.VarChar(64)
+  providerPaymentId String?         @unique @map("provider_payment_id") @db.VarChar(64)
+  method            String?         @db.VarChar(30)
+  failureReason     String?         @map("failure_reason") @db.VarChar(255)
+  testMode          Boolean         @default(false) @map("test_mode")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+  paidAt            DateTime?       @map("paid_at")
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("wallet_topups")
 }
 
 // ───────────────────────────── Finance ─────────────────────────────
@@ -743,6 +1879,8 @@ model Subscription {
   status    SubscriptionStatus @default(ACTIVE)
   startsAt  DateTime           @map("starts_at")
   endsAt    DateTime?          @map("ends_at")
+  /// PAID (default) | REFERRAL_REWARD | CREDIT_REDEMPTION — promotional periods are never billed.
+  source    String             @default("PAID") @db.VarChar(30)
   createdAt DateTime           @default(now()) @map("created_at")
 
   plan SubscriptionPlan @relation(fields: [planId], references: [id])
@@ -905,4 +2043,48 @@ model Notification {
 
   @@index([userId, readAt, createdAt])
   @@map("notifications")
+}
+
+/// Tenant asks the landlord to share their PAN (for HRA). One row per lease; consent is per lease and revocable.
+model PanShareRequest {
+  id          String         @id @default(uuid()) @db.Char(36)
+  leaseId     String         @unique @map("lease_id") @db.Char(36)
+  tenantId    String         @map("tenant_id") @db.Char(36)
+  landlordId  String         @map("landlord_id") @db.Char(36)
+  status      PanShareStatus @default(PENDING)
+  note        String?        @db.VarChar(300)
+  requestedAt DateTime       @default(now()) @map("requested_at")
+  decidedAt   DateTime?      @map("decided_at")
+  decidedById String?        @map("decided_by_id") @db.Char(36)
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  lease Lease @relation(fields: [leaseId], references: [id])
+
+  @@index([landlordId, status])
+  @@map("pan_share_requests")
+}
+
+/// One DigiLocker session. Only what's needed is kept: verified name, DOB, gender, last 4 Aadhaar
+/// digits and city/state/PIN. The full Aadhaar number is never stored; the photo is deleted after review.
+model IdentityVerification {
+  id           String                     @id @default(uuid()) @db.Char(36)
+  userId       String                     @map("user_id") @db.Char(36)
+  provider     KycProvider
+  providerRef  String                     @unique @map("provider_ref") @db.VarChar(80)
+  status       IdentityVerificationStatus @default(STARTED)
+  name         String?                    @db.VarChar(150)
+  dob          String?                    @db.VarChar(20)
+  gender       String?                    @db.VarChar(10)
+  aadhaarLast4 String?                    @map("aadhaar_last4") @db.VarChar(4)
+  city         String?                    @db.VarChar(80)
+  state        String?                    @db.VarChar(80)
+  pincode      String?                    @db.VarChar(10)
+  photoPath    String?                    @map("photo_path") @db.VarChar(255)
+  error        String?                    @db.VarChar(300)
+  createdAt    DateTime                   @default(now()) @map("created_at")
+  completedAt  DateTime?                  @map("completed_at")
+
+  @@index([userId, createdAt])
+  @@map("identity_verifications")
 }

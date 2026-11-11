@@ -8,6 +8,7 @@ import { parseInput } from "../lib/validation";
 import { can, me } from "../middleware/auth";
 import { ROLE_INFO, type RoleKey } from "../rbac/catalog";
 import { toProfile } from "./serializers";
+import { evaluateForUser } from "../services/referral.service";
 
 const optionalText = (max: number) =>
   z
@@ -63,8 +64,13 @@ const roleProfileSchemas = {
 
 async function loadRoleProfile(userId: string, role: RoleKey) {
   switch (role) {
-    case "LANDLORD":
-      return prisma.landlordProfile.findUnique({ where: { userId } });
+    case "LANDLORD": {
+      // PAN lives behind /profile/pan (masked) — never in the general profile payload.
+      const row = await prisma.landlordProfile.findUnique({ where: { userId } });
+      if (!row) return null;
+      const { pan, panShareAll: _shareAll, panShareAllAt: _shareAllAt, ...rest } = row;
+      return { ...rest, hasPan: !!pan };
+    }
     case "TENANT":
       return prisma.tenantProfile.findUnique({ where: { userId } });
     case "PROPERTY_AGENT":
@@ -137,6 +143,8 @@ export async function updateProfile(req: Request, res: Response): Promise<void> 
     }
   });
 
+  // Finishing the tenant profile can complete a referral.
+  if (input.roleProfile && role === "TENANT") await evaluateForUser(user.id);
   const fresh = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
   res.json({ user: toProfile(fresh), roleProfile: await loadRoleProfile(user.id, role) });
 }

@@ -20,6 +20,11 @@ export interface AuthContextValue {
   session: AdminSession | null;
   profile: UserProfile | null;
   roleInfo: RoleInfo | null;
+  /** Every role the account holds (primary first). */
+  roles: RoleInfo[];
+  /** The role whose dashboard / menu labels are shown (multi-role accounts can switch). */
+  activeRole: RoleInfo | null;
+  setActiveRole: (role: string) => void;
   /** Effective permissions from the API (UX only — the API enforces everything again). */
   permissions: Permissions;
   can: (permission: string, scope?: Scope) => boolean;
@@ -53,6 +58,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [flowActive, setFlowActive] = useState(false);
   const requestSeq = useRef(0);
+  const [preferredRole, setPreferredRole] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("saferent.activeRole");
+    } catch {
+      return null;
+    }
+  });
+  const setActiveRole = useCallback((role: string) => {
+    setPreferredRole(role);
+    try {
+      localStorage.setItem("saferent.activeRole", role);
+    } catch {
+      // storage unavailable — keep it for this tab only
+    }
+  }, []);
   const reauthActive = useRef(false);
 
   // 1) Firebase Auth state (sign-in, re-auth, hourly token refresh).
@@ -178,6 +198,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [permissions],
   );
 
+  const roles = useMemo<RoleInfo[]>(() => (status === "authenticated" && me && !me.registrationRequired ? (me.roles?.length ? me.roles : [me.roleInfo]) : []), [status, me]);
+  const activeRole = useMemo(() => roles.find((r) => r.key === preferredRole) ?? roles[0] ?? null, [roles, preferredRole]);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       status,
@@ -186,6 +209,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       session: me && !me.registrationRequired ? me.session : null,
       profile: status === "authenticated" && me && !me.registrationRequired ? me.user : null,
       roleInfo: status === "authenticated" && me && !me.registrationRequired ? me.roleInfo : null,
+      roles,
+      activeRole,
+      setActiveRole,
       permissions,
       can,
       pendingPhone: me?.registrationRequired ? (me.phoneNumber ?? token?.user.phoneNumber ?? null) : null,
@@ -198,7 +224,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       reauthenticate,
       logout,
     }),
-    [status, token, me, permissions, can, notice, flowActive, runLoginFlow, waitForAuthenticated, refresh, reauthenticate, logout],
+    [status, token, me, roles, activeRole, setActiveRole, permissions, can, notice, flowActive, runLoginFlow, waitForAuthenticated, refresh, reauthenticate, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

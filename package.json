@@ -13,7 +13,9 @@
     "bootstrap:super-admin": "npm --prefix server run bootstrap:super-admin",
     "build": "npm --prefix server run build && npm --prefix web run build",
     "typecheck": "npm --prefix server run typecheck && npm --prefix web run typecheck",
-    "test": "npm --prefix server test && npm --prefix web test"
+    "test": "npm --prefix server test && npm --prefix web test",
+    "test:integration": "npm --prefix server run test:migrate && npm --prefix server run test:integration",
+    "openapi": "npm --prefix server run openapi"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
