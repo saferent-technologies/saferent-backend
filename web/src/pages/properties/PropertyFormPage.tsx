@@ -803,6 +803,8 @@ function UtilitiesStep({ p, reload, next, setMsg }: StepProps) {
 }
 
 /* Step 7 */
+/** Cooking is asked only for PG / hostel. */
+const policyFieldsFor = (p: { structure: string | null }) => POLICY_FIELDS.filter(([k]) => k !== "cookingAllowed" || p.structure === "ROOMS_BEDS");
 const POLICY_FIELDS: Array<[string, string]> = [
   ["guestsAllowed", "Guests allowed"],
   ["overnightGuestsAllowed", "Overnight guests"],
@@ -815,7 +817,6 @@ const POLICY_FIELDS: Array<[string, string]> = [
   ["partiesAllowed", "Parties"],
   ["cookingAllowed", "Cooking"],
   ["sublettingAllowed", "Subletting"],
-  ["workFromHomeAllowed", "Work from home"],
 ];
 
 function PoliciesStep({ p, reload, next, setMsg }: StepProps) {
@@ -827,7 +828,7 @@ function PoliciesStep({ p, reload, next, setMsg }: StepProps) {
       request(`/properties/${p.id}/policies`, {
         method: "PUT",
         body: {
-          ...Object.fromEntries(POLICY_FIELDS.map(([k]) => [k, (v[k] as string) ?? "NOT_DISCLOSED"])),
+          ...Object.fromEntries(policyFieldsFor(p).map(([k]) => [k, (v[k] as string) ?? "NOT_DISCLOSED"])),
           maximumGuestStayDays: v.maximumGuestStayDays === "" || v.maximumGuestStayDays === null || v.maximumGuestStayDays === undefined ? null : Number(v.maximumGuestStayDays),
           guestChargeAmount: v.guestChargeAmount === "" || v.guestChargeAmount === null || v.guestChargeAmount === undefined ? null : String(v.guestChargeAmount),
           visitorTimingRestrictions: (v.visitorTimingRestrictions as string) || null,
@@ -839,7 +840,7 @@ function PoliciesStep({ p, reload, next, setMsg }: StepProps) {
   return (
     <StepCard title="Guest policies and restrictions" description="Shown to tenants exactly as entered. Custom rules are stored as structured rules." footer={<SaveButtons save={save} next={next} busy={busy} />}>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {POLICY_FIELDS.map(([k, label]) => (
+        {policyFieldsFor(p).map(([k, label]) => (
           <DisclosureSelect key={k} label={label} value={v[k] as string} onChange={(val) => setV({ ...v, [k]: val })} />
         ))}
         {v.overnightGuestsAllowed === "YES" && <Input label="Maximum guest stay (days)" type="number" min={1} value={String(v.maximumGuestStayDays ?? "")} onChange={(e) => setV({ ...v, maximumGuestStayDays: e.target.value })} />}
@@ -952,6 +953,7 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
     refundPolicy: pr?.refundPolicy ?? "",
     otherTerms: pr?.otherTerms ?? "",
   }));
+  const [depositUsable, setDepositUsable] = useState<boolean>(() => Boolean((pr as { depositUsableAsRent?: boolean | null } | null | undefined)?.depositUsableAsRent));
   const [charges, setCharges] = useState(() =>
     CHARGE_ROWS.map(([kind, label]) => {
       const c = pr?.charges.find((x) => x.kind === kind);
@@ -972,6 +974,7 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
           rentIncreasePolicy: v.rentIncreasePolicy || null,
           refundPolicy: v.refundPolicy || null,
           otherTerms: v.otherTerms || null,
+          ...(sale ? {} : { depositUsableAsRent: depositUsable }),
           charges: charges.map((c) => ({
             kind: c.kind,
             label: c.label,
@@ -1034,6 +1037,15 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
         <Textarea label="Refund policy" rows={2} value={v.refundPolicy} onChange={set("refundPolicy")} />
         <Textarea label="Other terms" rows={2} value={v.otherTerms} onChange={set("otherTerms")} />
       </div>
+      {!sale && (
+        <label className="mt-4 flex items-start gap-3 rounded-control border border-line p-3 text-sm">
+          <input type="checkbox" className="mt-1 size-4 accent-brand" checked={depositUsable} onChange={(e) => setDepositUsable(e.target.checked)} />
+          <span>
+            <span className="font-semibold">Tenant can pay rent from the security deposit</span>
+            <span className="block text-muted">The tenant can ask to use the deposit for a month's rent; you approve each time. Applies to new leases.</span>
+          </span>
+        </label>
+      )}
       {pr?.breakdown && (
         <div className="mt-6 rounded-control bg-subtle p-4">
           <h3 className="mb-3 font-semibold">What tenants will see</h3>

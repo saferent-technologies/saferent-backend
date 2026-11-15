@@ -428,6 +428,25 @@ enum RentStatus {
   PAID
   OVERDUE
   WAIVED
+  PARTIAL
+}
+
+enum PaymentRequestType {
+  PROOF
+  DEPOSIT
+}
+
+enum DepositRefundStatus {
+  YES
+  PARTIAL
+  NO
+}
+
+enum PaymentRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
 }
 
 enum TransactionType {
@@ -437,6 +456,7 @@ enum TransactionType {
   SERVICE_CHARGE
   SUBSCRIPTION
   ADJUSTMENT
+  DEPOSIT
 }
 
 enum TransactionStatus {
@@ -469,6 +489,7 @@ enum MaintenanceStatus {
   DECLINED
   CANCELLED
   CLOSED
+  RESOLVED
 }
 
 enum Priority {
@@ -1177,6 +1198,8 @@ model PropertyPricing {
   refundPolicy           String?         @map("refund_policy") @db.Text
   otherTerms             String?         @map("other_terms") @db.Text
   rentNegotiable         Disclosure      @default(NOT_DISCLOSED) @map("rent_negotiable")
+  /// Tenant may pay rent from the security deposit (landlord approves each use). NULL on a flat = building's setting.
+  depositUsableAsRent    Boolean?        @map("deposit_usable_as_rent")
   updatedAt              DateTime        @updatedAt @map("updated_at")
 
   property Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
@@ -1453,6 +1476,20 @@ model Lease {
   /// Set when the lease was created by a tenant accepting an invitation link.
   invitationId       String?  @unique @map("invitation_id") @db.Char(36)
   terms           String?     @db.Text
+  /// Security deposit received (recorded once by the landlord); its receipt is GET /rent/receipts/{leaseId}/pdf.
+  depositPaidAt        DateTime? @map("deposit_paid_at")
+  depositPaidAmount    Decimal?  @map("deposit_paid_amount") @db.Decimal(12, 2)
+  depositMethod        String?   @map("deposit_method") @db.VarChar(30)
+  depositReceiptNumber String?   @unique @map("deposit_receipt_number") @db.VarChar(40)
+  depositRecordedById  String?   @map("deposit_recorded_by_id") @db.Char(36)
+  /// Deposit already used to pay rent (approved "pay from deposit" requests).
+  depositUsedAmount    Decimal   @default(0) @map("deposit_used_amount") @db.Decimal(12, 2)
+  /// Copied from the listing's pricing when the lease is created.
+  depositUsableAsRent  Boolean   @default(false) @map("deposit_usable_as_rent")
+  /// Tenant's report after move-out: was the deposit refunded? (shown to the landlord and SafeRent admins)
+  depositRefundStatus     DepositRefundStatus? @map("deposit_refund_status")
+  depositRefundAmount     Decimal?             @map("deposit_refund_amount") @db.Decimal(12, 2)
+  depositRefundReportedAt DateTime?            @map("deposit_refund_reported_at")
   status          LeaseStatus @default(ACTIVE)
   endedAt         DateTime?   @map("ended_at")
   createdById     String      @map("created_by_id") @db.Char(36)
@@ -1466,12 +1503,30 @@ model Lease {
   rentPayments RentPayment[]
   reviews      RentalReview[]
   exitRequests LeaseExitRequest[]
+  dateChanges  LeaseDateChange[]
   panShare     PanShareRequest?
 
   @@index([tenantId, status])
   @@index([landlordId, status])
   @@index([propertyId, status])
   @@map("leases")
+}
+
+/// Every change of a lease date (e.g. the move-in / "occupied since" date): who, when, from → to, why.
+model LeaseDateChange {
+  id          String   @id @default(uuid()) @db.Char(36)
+  leaseId     String   @map("lease_id") @db.Char(36)
+  field       String   @db.VarChar(30) // START_DATE
+  oldValue    DateTime @map("old_value") @db.Date
+  newValue    DateTime @map("new_value") @db.Date
+  reason      String   @db.VarChar(500)
+  changedById String   @map("changed_by_id") @db.Char(36)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  lease Lease @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+
+  @@index([leaseId, createdAt])
+  @@map("lease_date_changes")
 }
 
 /// Landlord → tenant invitation link. Only the SHA-256 of the token is stored; the token itself is shown
@@ -1813,9 +1868,14 @@ model RentPayment {
   tenantId      String     @map("tenant_id") @db.Char(36)
   landlordId    String     @map("landlord_id") @db.Char(36)
   period        String     @db.Char(7) // YYYY-MM
+  /// Total the tenant pays = rentAmount + maintenanceAmount (snapshotted when the due is created).
   amount        Decimal    @db.Decimal(12, 2)
+  rentAmount    Decimal?   @map("rent_amount") @db.Decimal(12, 2)
+  maintenanceAmount Decimal @default(0) @map("maintenance_amount") @db.Decimal(12, 2)
   dueDate       DateTime   @map("due_date") @db.Date
   status        RentStatus @default(DUE)
+  /// Received so far (= amount when PAID; less for PARTIAL).
+  paidAmount    Decimal    @default(0) @map("paid_amount") @db.Decimal(12, 2)
   paidAt        DateTime?  @map("paid_at")
   method        String?    @db.VarChar(30)
   receiptNumber String?    @unique @map("receipt_number") @db.VarChar(40)
@@ -1828,8 +1888,9 @@ model RentPayment {
   overdueNotifiedAt DateTime? @map("overdue_notified_at")
   createdAt     DateTime   @default(now()) @map("created_at")
 
-  lease        Lease         @relation(fields: [leaseId], references: [id], onDelete: Cascade)
-  transactions Transaction[]
+  lease           Lease                @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  transactions    Transaction[]
+  paymentRequests RentPaymentRequest[]
 
   @@unique([leaseId, period])
   @@index([tenantId, status])
@@ -1837,6 +1898,38 @@ model RentPayment {
   @@index([landlordId, period])
   @@index([status, dueDate])
   @@map("rent_payments")
+}
+
+/// Tenant says "I paid" (transaction id + proof photo); the landlord approves (full / part) or rejects.
+model RentPaymentRequest {
+  id             String               @id @default(uuid()) @db.Char(36)
+  rentPaymentId  String               @map("rent_payment_id") @db.Char(36)
+  leaseId        String               @map("lease_id") @db.Char(36)
+  propertyId     String               @map("property_id") @db.Char(36)
+  tenantId       String               @map("tenant_id") @db.Char(36)
+  landlordId     String               @map("landlord_id") @db.Char(36)
+  /// PROOF = tenant paid and sent proof; DEPOSIT = tenant asks to pay this due from the security deposit.
+  type           PaymentRequestType   @default(PROOF)
+  amount         Decimal              @db.Decimal(12, 2)
+  transactionId  String?              @map("transaction_id") @db.VarChar(60)
+  mode           String               @default("UPI") @db.VarChar(30)
+  proofKey       String?              @map("proof_key") @db.VarChar(255)
+  proofMime      String?              @map("proof_mime") @db.VarChar(50)
+  status         PaymentRequestStatus @default(PENDING)
+  /// = rentPaymentId while PENDING → one pending request per due.
+  pendingKey     String?              @unique @map("pending_key") @db.Char(36)
+  approvedAmount Decimal?             @map("approved_amount") @db.Decimal(12, 2)
+  rejectReason   String?              @map("reject_reason") @db.VarChar(500)
+  decidedById    String?              @map("decided_by_id") @db.Char(36)
+  decidedAt      DateTime?            @map("decided_at")
+  createdAt      DateTime             @default(now()) @map("created_at")
+
+  rentPayment RentPayment @relation(fields: [rentPaymentId], references: [id], onDelete: Cascade)
+
+  @@index([landlordId, status, createdAt])
+  @@index([rentPaymentId, createdAt])
+  @@index([tenantId, transactionId])
+  @@map("rent_payment_requests")
 }
 
 model Transaction {
@@ -1964,9 +2057,21 @@ model MaintenanceRequest {
   serviceCharge      Decimal?          @map("service_charge") @db.Decimal(12, 2)
   providerNote       String?           @map("provider_note") @db.VarChar(500)
   completedAt        DateTime?         @map("completed_at")
+  /// MAINTENANCE | SERVICE | COMPLAINT | OTHER (tenant requests)
+  type               String            @default("MAINTENANCE") @db.VarChar(20)
+  unitId             String?           @map("unit_id") @db.Char(36)
+  bedId              String?           @map("bed_id") @db.Char(36)
+  lastRemark         String?           @map("last_remark") @db.VarChar(1000)
+  /// Last status / remark from the landlord side — a tenant reminder after it needs attention again.
+  landlordUpdatedAt  DateTime?         @map("landlord_updated_at")
+  lastReminderAt     DateTime?         @map("last_reminder_at")
+  reminderCount      Int               @default(0) @map("reminder_count")
+  resolvedAt         DateTime?         @map("resolved_at")
+  resolvedById       String?           @map("resolved_by_id") @db.Char(36)
   createdAt          DateTime          @default(now()) @map("created_at")
   updatedAt          DateTime          @updatedAt @map("updated_at")
 
+  updates  MaintenanceUpdate[]
   property Property           @relation(fields: [propertyId], references: [id])
   raisedBy User               @relation("MaintenanceRaisedBy", fields: [raisedById], references: [id])
   provider User?              @relation("MaintenanceProvider", fields: [assignedProviderId], references: [id])
@@ -1984,11 +2089,33 @@ model MaintenancePhoto {
   filePath     String   @map("file_path") @db.VarChar(255)
   mimeType     String   @map("mime_type") @db.VarChar(60)
   uploadedById String   @map("uploaded_by_id") @db.Char(36)
+  /// Photo added with a status update (null = with the request itself).
+  updateId     String?  @map("update_id") @db.Char(36)
   createdAt    DateTime @default(now()) @map("created_at")
 
   request MaintenanceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 
   @@map("maintenance_photos")
+}
+
+/// Timeline of a request: created, status changes, remarks, reminders, resolved / reopened.
+model MaintenanceUpdate {
+  id         String   @id @default(uuid()) @db.Char(36)
+  requestId  String   @map("request_id") @db.Char(36)
+  byId       String   @map("by_id") @db.Char(36)
+  /// TENANT | LANDLORD | PROVIDER | STAFF
+  byRole     String   @map("by_role") @db.VarChar(20)
+  /// CREATED | STATUS | REMARK | REMINDER | RESOLVED | REOPENED | CANCELLED
+  kind       String   @db.VarChar(20)
+  fromStatus String?  @map("from_status") @db.VarChar(20)
+  toStatus   String?  @map("to_status") @db.VarChar(20)
+  remark     String?  @db.VarChar(1000)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  request MaintenanceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId, createdAt])
+  @@map("maintenance_updates")
 }
 
 model SupportTicket {
@@ -2288,4 +2415,41 @@ model PropertyRevision {
   @@index([propertyId, status])
   @@index([status, submittedAt])
   @@map("property_revisions")
+}
+
+/// Landlord → tenants announcement (all tenants, some properties, or chosen leases).
+model Announcement {
+  id             String   @id @default(uuid()) @db.Char(36)
+  landlordId     String   @map("landlord_id") @db.Char(36)
+  title          String   @db.VarChar(100)
+  body           String   @db.Text
+  /// ALL | PROPERTIES | TENANTS
+  audience       String   @db.VarChar(20)
+  audienceLabel  String   @map("audience_label") @db.VarChar(255)
+  propertyIds    Json?    @map("property_ids")
+  imageKey       String?  @map("image_key") @db.VarChar(255)
+  imageMime      String?  @map("image_mime") @db.VarChar(50)
+  recipientCount Int      @default(0) @map("recipient_count")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  recipients AnnouncementRecipient[]
+
+  @@index([landlordId, createdAt])
+  @@map("announcements")
+}
+
+/// Who an announcement was sent to (snapshot at send time) and when they opened it.
+model AnnouncementRecipient {
+  id             String    @id @default(uuid()) @db.Char(36)
+  announcementId String    @map("announcement_id") @db.Char(36)
+  leaseId        String    @map("lease_id") @db.Char(36)
+  tenantId       String    @map("tenant_id") @db.Char(36)
+  viewedAt       DateTime? @map("viewed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, tenantId])
+  @@index([tenantId, createdAt])
+  @@map("announcement_recipients")
 }

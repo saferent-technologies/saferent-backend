@@ -64,6 +64,10 @@ import {
 } from "../service";
 import { canChangeActiveStatus, canPublish, canReview, canSubmit, canUnpublish, publicationAfterEdit } from "../workflow";
 import { evaluateForUser } from "../../services/referral.service";
+import { dateChangesFor } from "../../controllers/leaseDates.controller";
+
+/** Building fields removed from some property types (e.g. APARTMENT parkingAvailable → Amenities). */
+const RETIRED_BUILDING_FIELDS = new Set(["parkingAvailable"]);
 
 export const WIZARD_STEPS = [
   { step: 1, key: "category", title: "Select category" },
@@ -229,6 +233,7 @@ async function permissionsFor(req: Request, propertyId: string, ownerId: string)
     suspend: isModerator(req),
     transferOwnership: isPropertyAdmin(req) && can(req, "users.manage"),
     viewAudit: true,
+    changeLeaseDates: can(req, "leases.change_dates"),
   };
 }
 
@@ -247,7 +252,51 @@ export async function getProperty(req: Request, res: Response): Promise<void> {
   }
   const agg = await loadAggregate(prisma, property.id);
   const completeness = computeCompleteness(completenessInput(agg), await completenessWeights());
-  res.json({ property: presentProperty(agg, completeness), can, pendingRevision, lastRevision });
+  const presented = presentProperty(agg, completeness);
+  res.json({ property: await withOccupancy(presented), can, pendingRevision, lastRevision });
+}
+
+/**
+ * Who lives where, from the ACTIVE leases: flats (units), PG / hostel beds, or the whole property.
+ * since = move-in date (changeable by Super Admin / leases.change_dates, every change recorded),
+ * movingOutOn = agreed move-out. A vacant place's "available from" is separate (listing date).
+ */
+async function withOccupancy<P extends { id: string; units: Array<{ id: string }>; rooms: Array<{ beds: Array<{ id: string }> }> }>(property: P) {
+  const leases = await prisma.lease.findMany({
+    where: { propertyId: property.id, status: "ACTIVE" },
+    select: { id: true, unitId: true, bedId: true, startDate: true, endDate: true, tenant: { select: { fullName: true } }, exitRequests: { where: { status: "ACCEPTED" }, select: { moveOutDate: true }, take: 1 } },
+  });
+  const changes = await dateChangesFor(leases.map((l) => l.id));
+  const info = (l: (typeof leases)[number]) => ({
+    leaseId: l.id,
+    tenantName: l.tenant.fullName,
+    since: l.startDate,
+    leaseEnds: l.endDate,
+    movingOutOn: l.exitRequests[0]?.moveOutDate ?? null,
+    dateChanges: changes.get(l.id) ?? [],
+  });
+  // Pending (unexpired) invitations: that flat / bed is spoken for — no second invite.
+  const invites = await prisma.tenantInvitation.findMany({
+    where: { propertyId: property.id, status: "PENDING", expiresAt: { gt: new Date() } },
+    select: { id: true, code: true, unitId: true, bedId: true, recipientName: true, expiresAt: true },
+  });
+  const inviteInfo = (i: (typeof invites)[number]) => ({ id: i.id, code: i.code, recipientName: i.recipientName, expiresAt: i.expiresAt });
+  const inviteByUnit = new Map(invites.filter((i) => i.unitId && !i.bedId).map((i) => [i.unitId!, i]));
+  const inviteByBed = new Map(invites.filter((i) => i.bedId).map((i) => [i.bedId!, i]));
+  const wholeInvite = invites.find((i) => !i.unitId && !i.bedId);
+  const byUnit = new Map(leases.filter((l) => l.unitId && !l.bedId).map((l) => [l.unitId!, l]));
+  const byBed = new Map(leases.filter((l) => l.bedId).map((l) => [l.bedId!, l]));
+  const whole = leases.find((l) => !l.unitId && !l.bedId);
+  return {
+    ...property,
+    occupancy: whole ? info(whole) : null,
+    pendingInvitation: wholeInvite ? inviteInfo(wholeInvite) : null,
+    units: property.units.map((u) => ({ ...u, occupancy: byUnit.has(u.id) ? info(byUnit.get(u.id)!) : null, pendingInvitation: inviteByUnit.has(u.id) ? inviteInfo(inviteByUnit.get(u.id)!) : null })),
+    rooms: property.rooms.map((r) => ({
+      ...r,
+      beds: r.beds.map((b) => ({ ...b, occupancy: byBed.has(b.id) ? info(byBed.get(b.id)!) : null, pendingInvitation: inviteByBed.has(b.id) ? inviteInfo(inviteByBed.get(b.id)!) : null })),
+    })),
+  };
 }
 
 /** GET /api/v1/properties/:propertyId/completeness */
@@ -289,7 +338,10 @@ export async function updateProperty(req: Request, res: Response): Promise<void>
   const data: Prisma.PropertyUncheckedUpdateManyInput = { ...basic } as Prisma.PropertyUncheckedUpdateManyInput;
   const changed: Record<string, unknown> = { ...basic };
   if (building) {
-    const values = parseInput(fieldsSchema(type.buildingFields), building) as Record<string, unknown>;
+    // Fields since removed from a type (older app versions may still send them) are ignored, not rejected.
+    const known = new Set(type.buildingFields.map((fd) => fd.key));
+    const cleaned = Object.fromEntries(Object.entries(building as Record<string, unknown>).filter(([k]) => known.has(k) || !RETIRED_BUILDING_FIELDS.has(k)));
+    const values = parseInput(fieldsSchema(type.buildingFields), cleaned) as Record<string, unknown>;
     const { columns, attributes } = splitValues(values, PROPERTY_COLUMNS);
     Object.assign(data, columns);
     if (Object.keys(attributes).length) data.attributes = mergeAttributes(property.attributes, attributes) as Prisma.InputJsonValue;

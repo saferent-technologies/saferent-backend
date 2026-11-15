@@ -10,6 +10,7 @@ export type ErrorCode =
   | "resource-exhausted"
   | "deadline-exceeded"
   | "unavailable"
+  | "unprocessable"
   | "internal";
 
 const STATUS: Record<ErrorCode, number> = {
@@ -22,6 +23,7 @@ const STATUS: Record<ErrorCode, number> = {
   "resource-exhausted": 429,
   "deadline-exceeded": 410,
   unavailable: 503,
+  unprocessable: 422,
   internal: 500,
 };
 

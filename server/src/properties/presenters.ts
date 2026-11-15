@@ -31,6 +31,7 @@ function flatPricing(unit: Pricing | undefined, common: Pricing | undefined): Pr
   for (const k of INHERITED_TERMS) if (merged[k] === null || merged[k] === undefined) merged[k] = common[k];
   if (unit.agreementChargesPaidBy === "NOT_DISCLOSED") merged.agreementChargesPaidBy = common.agreementChargesPaidBy;
   if (unit.rentNegotiable === "NOT_DISCLOSED") merged.rentNegotiable = common.rentNegotiable;
+  if (unit.depositUsableAsRent === null) merged.depositUsableAsRent = common.depositUsableAsRent;
   return merged as Pricing;
 }
 
@@ -38,7 +39,7 @@ function flatPricing(unit: Pricing | undefined, common: Pricing | undefined): Pr
 function roomPricing(room: { rentPerBed: unknown; securityDeposit: unknown }, common: Pricing | undefined, utility: Utility | undefined) {
   const base = { ...(common ?? {}), monthlyRent: room.rentPerBed ?? null, securityDeposit: room.securityDeposit ?? null, salePrice: null } as unknown as Pricing;
   const charges = (common?.charges ?? []) as unknown as ChargeLike[];
-  return { monthlyRent: room.rentPerBed ?? null, securityDeposit: room.securityDeposit ?? null, charges: common?.charges ?? [], breakdown: costBreakdown(base, charges, utility ?? null) };
+  return { monthlyRent: room.rentPerBed ?? null, securityDeposit: room.securityDeposit ?? null, depositUsableAsRent: common?.depositUsableAsRent ?? false, charges: common?.charges ?? [], breakdown: costBreakdown(base, charges, utility ?? null) };
 }
 
 function presentPricing(p: Pricing | undefined, utility: Utility | undefined) {
@@ -46,6 +47,7 @@ function presentPricing(p: Pricing | undefined, utility: Utility | undefined) {
   const { charges, ...rest } = p;
   return {
     ...rest,
+    depositUsableAsRent: rest.depositUsableAsRent ?? false,
     charges,
     breakdown: costBreakdown(p, charges as unknown as ChargeLike[], utility ?? null),
   };
@@ -112,6 +114,7 @@ export function presentProperty(p: PropertyAggregate, completeness?: Completenes
       utilities: utilityFor(u.id) ?? null,
       amenities: p.amenities.filter((a) => a.scopeKey === u.id),
       imageIds: p.images.filter((i) => i.unitId === u.id).map((i) => i.id),
+      ...unitAvailability(u),
     })),
     rooms: p.rooms.map((r) => ({
       ...r,
@@ -186,6 +189,7 @@ export function presentPublic(p: PropertyAggregate) {
           utilities: publicUtility(utilityFor(u.id)),
           amenities: p.amenities.filter((a) => a.scopeKey === u.id).map(({ key, label, status, notes }) => ({ key, label, status, notes })),
           imageIds: approved.filter((i) => i.unitId === u.id).map((i) => i.id),
+          ...unitAvailability(u),
         };
       }),
     rooms: p.rooms
@@ -222,4 +226,22 @@ export function presentPublic(p: PropertyAggregate) {
       NOT_DISCLOSED: "Not disclosed by the landlord — ask before you rent.",
     },
   };
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * A flat marked AVAILABLE with a future "available from" date isn't free yet: it's "Available from 30 Nov".
+ * availableNow = can move in today. availableFrom stays the raw date for apps that format it themselves.
+ */
+export function unitAvailability(u: { availabilityStatus: string; availableFrom?: Date | null }): { availableNow: boolean; availabilityLabel: string } {
+  const from = u.availableFrom ? new Date(u.availableFrom) : null;
+  const today = new Date();
+  const todayUtc = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+  if (u.availabilityStatus === "AVAILABLE") {
+    if (from && from.getTime() > todayUtc) return { availableNow: false, availabilityLabel: `Available from ${from.getUTCDate()} ${MONTHS[from.getUTCMonth()]} ${from.getUTCFullYear()}` };
+    return { availableNow: true, availabilityLabel: "Available now" };
+  }
+  const label = u.availabilityStatus.charAt(0) + u.availabilityStatus.slice(1).toLowerCase().replace(/_/g, " ");
+  return { availableNow: false, availabilityLabel: label };
 }

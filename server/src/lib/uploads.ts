@@ -86,6 +86,10 @@ export const uploadImages = (folder: string, max = 10): RequestHandler[] => [upl
 export const uploadDocument = (folder: string): RequestHandler[] => [uploader(folder, UPLOADS.DOCUMENT_TYPES).single("file"), verifyContent("document")];
 export const uploadAvatar: RequestHandler[] = [uploader("avatars", UPLOADS.IMAGE_TYPES).single("file"), verifyContent("image")];
 /** Owner-verification selfies (never public; served only to the owner and reviewers). */
+/** Announcement picture, multipart field "image". */
+export const uploadAnnouncementImage: RequestHandler[] = [uploader("announcements", UPLOADS.IMAGE_TYPES).single("image"), verifyContent("image")];
+/** Tenant rent payment proof (screenshot / photo), multipart field "proof". */
+export const uploadPaymentProof: RequestHandler[] = [uploader("payment-proofs", UPLOADS.IMAGE_TYPES).single("proof"), verifyContent("image")];
 export const uploadSelfie: RequestHandler[] = [uploader("kyc", UPLOADS.IMAGE_TYPES).single("file"), verifyContent("image")];
 
 /**

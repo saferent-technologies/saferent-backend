@@ -180,7 +180,6 @@ const POLICY_FIELDS: Array<[string, string]> = [
   ["partiesAllowed", "Parties"],
   ["cookingAllowed", "Cooking"],
   ["sublettingAllowed", "Subletting"],
-  ["workFromHomeAllowed", "Work from home"],
 ];
 
 export function ListingPage({ mode = "app" }: { mode?: BrowseMode }) {
@@ -350,7 +349,7 @@ export function ListingPage({ mode = "app" }: { mode?: BrowseMode }) {
           </section>
           <section className="card p-5">
             <h2 className="mb-3 font-semibold">House rules</h2>
-            <Facts items={POLICY_FIELDS.map(([k, l]) => [l, <ValueText key={k} value={p.policy?.[k] ?? "NOT_DISCLOSED"} />])} />
+            <Facts items={POLICY_FIELDS.filter(([k]) => k !== "cookingAllowed" || p.structure === "ROOMS_BEDS").map(([k, l]) => [l, <ValueText key={k} value={p.policy?.[k] ?? "NOT_DISCLOSED"} />])} />
             {Array.isArray(p.policy?.additionalRules) && (p.policy.additionalRules as Array<{ title: string; description: string }>).length > 0 && (
               <ul className="mt-3 list-disc pl-5 text-sm">{(p.policy.additionalRules as Array<{ title: string; description: string }>).map((r) => <li key={r.title}><span className="font-medium">{r.title}</span>{r.description ? ` — ${r.description}` : ""}</li>)}</ul>
             )}

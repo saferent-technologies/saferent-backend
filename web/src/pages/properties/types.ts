@@ -119,6 +119,11 @@ export interface Unit {
   parkingCapacity: number | null;
   parkingDetails: string | null;
   availableFrom: string | null;
+  /** Occupied flats: ACTIVE lease info (property detail only). */
+  occupancy?: Occupancy | null;
+  pendingInvitation?: PendingInvitation | null;
+  availableNow?: boolean;
+  availabilityLabel?: string;
   availabilityStatus: string;
   activeStatus: string;
   attributes: Record<string, unknown>;
@@ -130,7 +135,27 @@ export interface Unit {
   version: number;
 }
 
+/** ACTIVE lease of a flat / bed / whole property (property detail only). */
+export interface Occupancy {
+  leaseId: string;
+  tenantName: string;
+  since: string;
+  leaseEnds: string;
+  movingOutOn: string | null;
+  dateChanges: Array<{ id: string; field: string; from: string; to: string; reason: string; changedBy: string; at: string }>;
+}
+
+/** A pending, unexpired invitation for this flat / bed / property — no second invite until it's answered. */
+export interface PendingInvitation {
+  id: string;
+  code: string;
+  recipientName: string;
+  expiresAt: string;
+}
+
 export interface Bed {
+  occupancy?: Occupancy | null;
+  pendingInvitation?: PendingInvitation | null;
   id: string;
   code: string;
   bedNumber: string;
@@ -205,6 +230,9 @@ export interface PropertySummary {
 }
 
 export interface PropertyDetail extends PropertySummary {
+  /** Whole-property lease (single-unit types). */
+  occupancy?: Occupancy | null;
+  pendingInvitation?: PendingInvitation | null;
   description: string | null;
   addressLine: string | null;
   country: string;
@@ -248,6 +276,7 @@ export interface PropertyCan {
   inspect: boolean;
   suspend: boolean;
   transferOwnership: boolean;
+  changeLeaseDates?: boolean;
 }
 
 export interface PublicListing {

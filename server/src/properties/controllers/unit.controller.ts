@@ -64,6 +64,8 @@ export async function createUnit(req: Request, res: Response): Promise<void> {
       const code = await nextCode(tx, unitPrefix(kind));
       const created = await tx.propertyUnit.create({
         data: {
+          // No availability sent → AVAILABLE; "Available from" decides when it's actually free.
+          availabilityStatus: "AVAILABLE",
           ...(body.columns as Prisma.PropertyUnitUncheckedCreateInput),
           code,
           propertyId: property.id,

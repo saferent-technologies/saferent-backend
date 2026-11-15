@@ -360,6 +360,8 @@ export const pricingSchema = z
     refundPolicy: optText(5000),
     otherTerms: optText(5000),
     rentNegotiable: disclosure.optional(),
+    /** Tenant may pay rent from the security deposit (allowed at building level too). */
+    depositUsableAsRent: z.boolean().optional(),
     /** Replaces the full list of charges when sent. */
     charges: z.array(chargeSchema).max(30).optional(),
   })
@@ -390,7 +392,14 @@ export const imageUploadSchema = z
   .strict();
 
 export const imageUpdateSchema = z
-  .object({ category: z.enum(IMAGE_CATEGORIES).optional(), displayOrder: z.coerce.number().int().min(0).max(1000).optional() })
+  .object({
+    category: z.enum(IMAGE_CATEGORIES).optional(),
+    displayOrder: z.coerce.number().int().min(0).max(1000).optional(),
+    /** Move the photo: to a flat / unit, a PG room, or (both null) the building / common areas. */
+    unitId: z.string().uuid().nullable().optional(),
+    roomId: z.string().uuid().nullable().optional(),
+    slot: z.coerce.number().int().min(1).max(20).nullable().optional(),
+  })
   .strict();
 
 export const documentUploadSchema = z.object({ docType: z.enum(DOCUMENT_TYPES), unitId: z.string().uuid().optional() }).strict();

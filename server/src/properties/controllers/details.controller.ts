@@ -206,7 +206,10 @@ async function pricingResponse(propertyId: string, scopeKey: string) {
     prisma.propertyPricing.findUnique({ where: { propertyId_scopeKey: { propertyId, scopeKey } }, include: { charges: true } }),
     prisma.propertyUtility.findUnique({ where: { propertyId_scopeKey: { propertyId, scopeKey } } }).then(async (u) => u ?? (await prisma.propertyUtility.findUnique({ where: { propertyId_scopeKey: { propertyId, scopeKey: PROPERTY_SCOPE } } }))),
   ]);
-  return { pricing, breakdown: pricing ? costBreakdown(pricing, pricing.charges as unknown as ChargeLike[], utility) : null };
+  // depositUsableAsRent: a flat without its own setting follows the building; default false.
+  const building = scopeKey === PROPERTY_SCOPE ? null : await prisma.propertyPricing.findUnique({ where: { propertyId_scopeKey: { propertyId, scopeKey: PROPERTY_SCOPE } }, select: { depositUsableAsRent: true } });
+  const out = pricing ? { ...pricing, depositUsableAsRent: pricing.depositUsableAsRent ?? building?.depositUsableAsRent ?? false } : null;
+  return { pricing: out, breakdown: pricing ? costBreakdown(pricing, pricing.charges as unknown as ChargeLike[], utility) : null };
 }
 
 /** GET /api/v1/properties/:propertyId/pricing  (and …/units/:unitId/pricing) */

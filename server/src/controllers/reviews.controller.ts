@@ -130,7 +130,7 @@ export async function pendingReviews(req: Request, res: Response): Promise<void>
       endedAt: { gt: new Date(Date.now() - days * DAY) },
       reviews: { none: { reviewerId: user.id } },
     },
-    select: { ...leaseSelect, reviews: { select: { reviewerRole: true } } },
+    select: { ...leaseSelect, securityDeposit: true, depositRefundStatus: true, depositRefundAmount: true, reviews: { select: { reviewerRole: true } } },
     orderBy: { endedAt: "desc" },
     take: 50,
   });
@@ -145,10 +145,19 @@ export async function pendingReviews(req: Request, res: Response): Promise<void>
         leaseCode: l.code,
         role,
         question: role === "TENANT" ? "How was your rental experience with this landlord?" : "How was your rental experience with this tenant?",
-        property: { id: l.property.id, name: l.property.title ?? l.property.code, city: l.property.city },
+        property: { id: l.property.id, title: l.property.title ?? l.property.code, name: l.property.title ?? l.property.code, city: l.property.city },
         place: placeOf(places, l),
+        counterparty: { fullName: who.get(role === "TENANT" ? l.landlordId : l.tenantId) ?? "" },
         otherPartyName: publicName(who.get(role === "TENANT" ? l.landlordId : l.tenantId)),
+        endedAt: l.endedAt,
         stay: { from: l.startDate, to: l.endedAt },
+        // Tenant only: the deposit, so the app can ask "Did you get your deposit back?" (POST /leases/:id/deposit-refund).
+        ...(role === "TENANT"
+          ? {
+              securityDeposit: Number(l.securityDeposit),
+              depositRefund: l.depositRefundStatus ? { refunded: l.depositRefundStatus, amount: l.depositRefundAmount === null ? null : Number(l.depositRefundAmount) } : null,
+            }
+          : {}),
         closesAt: (e as { closesAt: Date }).closesAt,
         // Only *whether* the other side has reviewed — never what they wrote.
         otherPartySubmitted: l.reviews.some((r) => r.reviewerRole !== role),
@@ -158,7 +167,7 @@ export async function pendingReviews(req: Request, res: Response): Promise<void>
 }
 
 /** Finished leases this user still has to review (window open, rental actually happened), newest first. */
-export async function reviewsOwedBy(userId: string, side?: ReviewerRole): Promise<Array<{ leaseId: string; role: ReviewerRole; propertyName: string }>> {
+export async function reviewsOwedBy(userId: string, side?: ReviewerRole): Promise<Array<{ leaseId: string; propertyId: string; role: ReviewerRole; propertyName: string }>> {
   const days = await reviewWindowDays();
   const party = side === "TENANT" ? [{ tenantId: userId }] : side === "LANDLORD" ? [{ landlordId: userId }] : [{ tenantId: userId }, { landlordId: userId }];
   const leases = await prisma.lease.findMany({
@@ -170,7 +179,7 @@ export async function reviewsOwedBy(userId: string, side?: ReviewerRole): Promis
   return leases
     .map((l) => ({ l, e: reviewEligibility(l, userId, { windowDays: days, alreadyReviewed: false }) }))
     .filter((x) => x.e.eligible && (!side || (x.e as { role: ReviewerRole }).role === side))
-    .map(({ l, e }) => ({ leaseId: l.id, role: (e as { role: ReviewerRole }).role, propertyName: l.property.title ?? l.property.code }));
+    .map(({ l, e }) => ({ leaseId: l.id, propertyId: l.propertyId, role: (e as { role: ReviewerRole }).role, propertyName: l.property.title ?? l.property.code }));
 }
 
 /**

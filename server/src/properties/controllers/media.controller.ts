@@ -85,9 +85,12 @@ export async function updateImage(req: Request, res: Response): Promise<void> {
   const property = await editable(req);
   const image = found(await prisma.propertyImage.findFirst({ where: { id: String(req.params.imageId), propertyId: property.id } }), "Image");
   const input = parseInput(imageUpdateSchema, req.body);
+  if (input.unitId && !(await prisma.propertyUnit.count({ where: { id: input.unitId, propertyId: property.id } }))) fail("invalid-argument", REASONS.INVALID_INPUT, "Unit not found in this property.");
+  if (input.roomId && !(await prisma.propertyRoom.count({ where: { id: input.roomId, propertyId: property.id } }))) fail("invalid-argument", REASONS.INVALID_INPUT, "Room not found in this property.");
+  if (image.inspectionId && (input.unitId !== undefined || input.roomId !== undefined)) fail("failed-precondition", REASONS.INVALID_STATE, "Inspection photos can't be moved.");
   await withProperty(property.id, async (tx) => {
     await tx.propertyImage.update({ where: { id: image.id }, data: input });
-    await audit(tx, req, { propertyId: property.id, entityType: "IMAGE", entityId: image.id, action: "image.update", oldValue: { category: image.category, displayOrder: image.displayOrder }, newValue: input });
+    await audit(tx, req, { propertyId: property.id, entityType: "IMAGE", entityId: image.id, action: "image.update", oldValue: { category: image.category, displayOrder: image.displayOrder, unitId: image.unitId, roomId: image.roomId, slot: image.slot }, newValue: input });
   });
   res.json({ ok: true });
 }

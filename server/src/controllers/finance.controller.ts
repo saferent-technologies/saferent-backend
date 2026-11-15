@@ -27,7 +27,7 @@ const ref = (prefix: string) => `${prefix}-${Date.now().toString(36).toUpperCase
 
 /* ─────────────── Transactions ─────────────── */
 
-const TYPES = ["RENT_PAYMENT", "REFUND", "COMMISSION", "SERVICE_CHARGE", "SUBSCRIPTION", "ADJUSTMENT"] as const;
+const TYPES = ["RENT_PAYMENT", "REFUND", "COMMISSION", "SERVICE_CHARGE", "SUBSCRIPTION", "ADJUSTMENT", "DEPOSIT"] as const;
 const TX_STATUS = ["PENDING", "SUCCESS", "FAILED", "REVERSED"] as const;
 
 /** GET /api/finance/transactions */

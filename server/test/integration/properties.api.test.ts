@@ -174,7 +174,7 @@ describe.skipIf(!TEST_DB)("property APIs (MySQL integration)", () => {
       pincode: "500081",
       latitude: 17.44,
       longitude: 78.39,
-      building: { name: "Green Valley Apartments", totalFloors: 5, totalUnits: 40, liftAvailable: "YES", securityAvailable: "YES", parkingAvailable: "NOT_DISCLOSED" },
+      building: { name: "Green Valley Apartments", totalFloors: 5, totalUnits: 40, liftAvailable: "YES", securityAvailable: "YES" },
     });
     expect(patch.status).toBe(200);
     const flat = (n: string, floor: number, bhk: string, rent: number) => ({ unitNumber: n, floorNumber: floor, bhkType: bhk, bedrooms: Number(bhk[0]), bathrooms: 2, furnishing: "SEMI_FURNISHED", availabilityStatus: "AVAILABLE", pricing: { monthlyRent: rent, securityDeposit: rent * 3 } });

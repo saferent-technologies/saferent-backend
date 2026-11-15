@@ -86,7 +86,7 @@ function TransactionsTab() {
         onSearch={list.setSearch}
         placeholder="Search reference or notes"
         filters={[
-          { name: "type", label: "Type", options: toOptions(["RENT_PAYMENT", "REFUND", "COMMISSION", "SERVICE_CHARGE", "SUBSCRIPTION", "ADJUSTMENT"]) },
+          { name: "type", label: "Type", options: toOptions(["RENT_PAYMENT", "DEPOSIT", "REFUND", "COMMISSION", "SERVICE_CHARGE", "SUBSCRIPTION", "ADJUSTMENT"]) },
           { name: "status", label: "Status", options: toOptions(["PENDING", "SUCCESS", "FAILED", "REVERSED"]) },
           { name: "reconciled", label: "Reconciled", options: [{ value: "true", label: "Yes" }, { value: "false", label: "No" }] },
         ]}

@@ -1,11 +1,10 @@
 import { Archive, ArrowLeft, CalendarPlus, CheckCircle2, Eye, EyeOff, Pencil, Power, Send, ShieldAlert, Trash2, UserPlus, XCircle } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { Pagination } from "@/components/data/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { useAuth } from "@/hooks/useAuth";
 import { Alert } from "@/components/ui/Alert";
-import { AuthImage } from "@/components/ui/AuthImage";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
@@ -22,11 +21,12 @@ import type { Paged } from "@/types/auth";
 import { errorMessage } from "@/utils/errors";
 import { formatDate, formatMoney, formatTimestamp, labelize } from "@/utils/format";
 import { CompletenessMeter, CostBreakdownView, Facts, ValueText } from "./components";
-import { InvitationsTab, InviteTenantModal } from "./TenantInvites";
+import { InvitationsTab, InviteTenantModal, inviteTargets } from "./TenantInvites";
 import { PossibleDuplicates } from "./PossibleDuplicates";
+import { PropertyPhotosTab } from "./PropertyPhotos";
 import { PropertyDocumentsTab } from "./PropertyDocuments";
 import { PropertyReviewsTab } from "@/pages/reviews/ReviewsPages";
-import { imagePath, rentRange, type PendingRevision, type PropertyCan, type PropertyDetail } from "./types";
+import { rentRange, type Occupancy, type PendingRevision, type PropertyCan, type PropertyDetail } from "./types";
 
 type Tab = "overview" | "units" | "tenants" | "reviews" | "details" | "photos" | "documents" | "inspections" | "team" | "history";
 
@@ -41,6 +41,7 @@ export function PropertyDetailPage() {
   const tab = (params.get("tab") as Tab | null) ?? "overview";
   const [invite, setInvite] = useState<{ target?: string } | null>(null);
   const [invitesKey, setInvitesKey] = useState(0);
+  const [editDate, setEditDate] = useState<MoveInTarget | null>(null);
 
   if (loading && !data) return <div className="flex justify-center py-16"><Spinner className="size-7 text-brand" /></div>;
   if (error || !data) return <Alert kind="error">{error ?? "Property not found."}</Alert>;
@@ -77,7 +78,8 @@ export function PropertyDetailPage() {
 
   const editable = can.manage && p.activeStatus !== "ARCHIVED" && p.publicationStatus !== "PENDING_VERIFICATION" && p.activeStatus !== "SUSPENDED";
   // A tenant who visited in person can be invited whether or not the listing is published.
-  const canInvite = can.manage && p.activeStatus === "ACTIVE";
+  // Hidden once every vacant flat / bed already has a pending invitation (or the whole property does).
+  const canInvite = can.manage && p.activeStatus === "ACTIVE" && !p.pendingInvitation && (p.units.length + p.rooms.length === 0 || inviteTargets(p).length > 0);
   const openInvite = (target?: string) => setInvite({ target });
 
   return (
@@ -212,12 +214,14 @@ export function PropertyDetailPage() {
               items={[
                 ["Rent", rentRange(p.rentFrom, p.rentTo, formatMoney)],
                 ["Available / occupied", `${p.availableCount} / ${p.occupiedCount}`],
+                ...(p.occupancy ? ([["Occupied", <OccupiedSince key="occ" occ={p.occupancy} place={p.title ?? p.code} onChangeDate={can.changeLeaseDates ? setEditDate : undefined} />]] as Array<[string, ReactNode]>) : []),
                 ["Owner", p.owner?.fullName ?? "—"],
                 ["Address", [p.addressLine, p.locality, p.city, p.state, p.pincode].filter(Boolean).join(", ") || "—"],
                 ["Category", labelize(p.category)],
                 ["Created", formatDate(p.createdAt)],
               ]}
             />
+            {p.occupancy && <DateChangeHistory occ={p.occupancy} />}
             {p.type && p.type.buildingFields.length > 0 && (
               <div>
                 <h3 className="mb-2 text-sm font-semibold">{p.propertyTypeLabel} details</h3>
@@ -252,14 +256,15 @@ export function PropertyDetailPage() {
         </div>
       )}
 
-      {tab === "units" && (structure === "ROOMS_BEDS" ? <RoomsTab p={p} canManage={can.manage} onDone={done} onError={fail} onInvite={canInvite ? openInvite : undefined} /> : <UnitsTab p={p} onInvite={canInvite ? openInvite : undefined} />)}
+      {tab === "units" && (structure === "ROOMS_BEDS" ? <RoomsTab p={p} canManage={can.manage} onDone={done} onError={fail} onInvite={canInvite ? openInvite : undefined} onChangeDate={can.changeLeaseDates ? setEditDate : undefined} /> : <UnitsTab p={p} onInvite={canInvite ? openInvite : undefined} onChangeDate={can.changeLeaseDates ? setEditDate : undefined} />)}
       {tab === "reviews" && (
         <PropertyReviewsTab
           propertyId={p.id}
           units={structure === "ROOMS_BEDS" ? p.rooms.flatMap((r) => r.beds.map((b) => ({ id: b.id, label: `Room ${r.roomNumber} · Bed ${b.bedNumber}` }))) : p.units.map((u) => ({ id: u.id, label: u.name || `${unitLabel} ${u.unitNumber ?? u.code}` }))}
         />
       )}
-      {tab === "tenants" && <InvitationsTab p={p} canManage={canInvite} onInvite={() => openInvite()} reloadKey={invitesKey} />}
+      {editDate && <ChangeMoveInModal target={editDate} onClose={() => setEditDate(null)} onSaved={(m) => { setEditDate(null); void done(m)(); }} />}
+      {tab === "tenants" && <InvitationsTab p={p} canManage={can.manage && p.activeStatus === "ACTIVE"} canInvite={canInvite} onInvite={() => openInvite()} reloadKey={invitesKey} />}
       {invite && (
         <InviteTenantModal
           p={p}
@@ -273,24 +278,7 @@ export function PropertyDetailPage() {
         />
       )}
       {tab === "details" && <DetailsTab p={p} />}
-      {tab === "photos" && (
-        <section className="card p-5 sm:p-6">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-muted">New photos are reviewed before tenants see them.</p>
-            {editable && <UploadButton path={`/properties/${p.id}/images`} label="Add photos" onDone={done("Photos uploaded.")} onError={fail} />}
-          </div>
-          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-            {p.images.filter((i) => !i.inspectionId).map((img) => (
-              <li key={img.id} className="relative overflow-hidden rounded-control border border-line">
-                <AuthImage path={imagePath(img.id)} alt={labelize(img.category)} className="aspect-[4/3] w-full" />
-                <span className="absolute left-2 top-2"><StatusBadge status={img.status} /></span>
-                <span className="absolute bottom-2 left-2 rounded bg-surface/90 px-1.5 py-0.5 text-xs font-medium">{labelize(img.category)}</span>
-              </li>
-            ))}
-          </ul>
-          {p.images.length === 0 && <p className="text-sm text-muted">No photos yet.</p>}
-        </section>
-      )}
+      {tab === "photos" && <PropertyPhotosTab p={p} editable={editable} onDone={(m) => void done(m)()} onError={fail} />}
       {tab === "documents" && <PropertyDocumentsTab p={p} canManage={can.manage && p.activeStatus !== "ARCHIVED"} canVerify={can.verifyDocuments} onChanged={() => void reload()} />}
       {tab === "inspections" && <InspectionsTab p={p} canInspect={can.inspect} onDone={done} />}
       {tab === "team" && <TeamTab p={p} canAssign={can.assign} onDone={done} />}
@@ -325,7 +313,7 @@ function StatusActions({ p, can, confirm, act }: { p: PropertyDetail; can: Prope
   );
 }
 
-function UnitsTab({ p, onInvite }: { p: PropertyDetail; onInvite?: (target: string) => void }) {
+function UnitsTab({ p, onInvite, onChangeDate }: { p: PropertyDetail; onInvite?: (target: string) => void; onChangeDate?: (t: MoveInTarget) => void }) {
   const fields = p.type?.unitFields ?? [];
   if (!p.units.length) return <section className="card p-5 text-sm text-muted">No {(p.type?.unitLabel ?? "unit").toLowerCase()}s added yet.</section>;
   return (
@@ -335,14 +323,30 @@ function UnitsTab({ p, onInvite }: { p: PropertyDetail; onInvite?: (target: stri
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <p className="font-semibold">{p.type?.unitLabel ?? "Unit"} {u.unitNumber ?? ""} <span className="text-xs font-normal text-muted">{u.code}</span></p>
             <span className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={u.availabilityStatus} />
+              {u.availabilityStatus === "AVAILABLE" && futureDate(u.availableFrom) ? <Badge tone="warning">Available from {formatDate(u.availableFrom!)}</Badge> : <StatusBadge status={u.availabilityStatus} />}
               {u.pricing?.monthlyRent && <Badge tone="brand">{formatMoney(u.pricing.monthlyRent)}/mo</Badge>}
-              {onInvite && u.activeStatus === "ACTIVE" && u.availabilityStatus !== "OCCUPIED" && (
+              {u.pendingInvitation && <Badge tone="warning">Invited · {u.pendingInvitation.recipientName}</Badge>}
+              {onInvite && u.activeStatus === "ACTIVE" && u.availabilityStatus !== "OCCUPIED" && !u.pendingInvitation && (
                 <Button size="sm" variant="secondary" leftIcon={<UserPlus className="size-4" />} onClick={() => onInvite(u.id)}>Invite tenant</Button>
               )}
             </span>
           </div>
-          <Facts items={fields.filter((f) => f.key !== "unitNumber").map((f) => [f.label, <ValueText key={f.key} value={(u as unknown as Record<string, unknown>)[f.key] ?? u.attributes[f.key]} />])} />
+          <Facts
+            items={fields
+              // "Available from" is shown inside Availability (only matters while the flat is vacant).
+              .filter((f) => f.key !== "unitNumber" && f.key !== "availableFrom")
+              .map((f) => [
+                f.label,
+                f.key === "availabilityStatus" && u.availabilityStatus === "AVAILABLE" ? (
+                  <span key={f.key} className={futureDate(u.availableFrom) ? "text-warning" : "text-success"}>{futureDate(u.availableFrom) ? `From ${formatDate(u.availableFrom!)}` : "Available now"}</span>
+                ) : f.key === "availabilityStatus" && u.availabilityStatus === "OCCUPIED" && u.occupancy ? (
+                  <OccupiedSince key={f.key} occ={u.occupancy} place={`${p.type?.unitLabel ?? "Unit"} ${u.unitNumber ?? u.code}`} onChangeDate={onChangeDate} />
+                ) : (
+                  <ValueText key={f.key} value={(u as unknown as Record<string, unknown>)[f.key] ?? u.attributes[f.key]} />
+                ),
+              ])}
+          />
+          {u.occupancy && <DateChangeHistory occ={u.occupancy} />}
           {u.floors && u.floors.length > 0 && (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-sm">
@@ -357,7 +361,7 @@ function UnitsTab({ p, onInvite }: { p: PropertyDetail; onInvite?: (target: stri
   );
 }
 
-function RoomsTab({ p, canManage, onDone, onError, onInvite }: { p: PropertyDetail; canManage: boolean; onDone: (t: string) => () => Promise<void>; onError: (t: string) => void; onInvite?: (target: string) => void }) {
+function RoomsTab({ p, canManage, onDone, onError, onInvite, onChangeDate }: { p: PropertyDetail; canManage: boolean; onDone: (t: string) => () => Promise<void>; onError: (t: string) => void; onInvite?: (target: string) => void; onChangeDate?: (t: MoveInTarget) => void }) {
   const [assign, setAssign] = useState<{ roomId: string; bedId: string; bed: string } | null>(null);
   const [tenantId, setTenantId] = useState("");
   const { confirm, dialog } = useConfirm();
@@ -383,13 +387,20 @@ function RoomsTab({ p, canManage, onDone, onError, onInvite }: { p: PropertyDeta
           <p className="mb-3 text-sm">Attached bathroom: <ValueText value={r.attachedBathroom} /> · AC: <ValueText value={r.acAvailable} /></p>
           <ul className="flex flex-wrap gap-2">
             {r.beds.map((b) => (
-              <li key={b.id} className="flex items-center gap-2 rounded-control border border-line px-3 py-2 text-sm">
+              <li key={b.id} className="flex flex-wrap items-center gap-2 rounded-control border border-line px-3 py-2 text-sm">
                 <span className="font-semibold">{b.bedNumber}</span>
                 <StatusBadge status={b.availabilityStatus} />
-                {onInvite && !b.tenantId && b.availabilityStatus !== "OCCUPIED" && <Button size="sm" variant="ghost" onClick={() => onInvite(b.id)}>Invite tenant</Button>}
+                {b.pendingInvitation && <Badge tone="warning">Invited · {b.pendingInvitation.recipientName}</Badge>}
+                {onInvite && !b.tenantId && b.availabilityStatus !== "OCCUPIED" && !b.pendingInvitation && <Button size="sm" variant="ghost" onClick={() => onInvite(b.id)}>Invite tenant</Button>}
                 {canManage && !b.tenantId && ["AVAILABLE", "RESERVED"].includes(b.availabilityStatus) && <Button size="sm" variant="ghost" onClick={() => setAssign({ roomId: r.id, bedId: b.id, bed: b.bedNumber })}>Assign</Button>}
                 {canManage && b.tenantId && (
                   <Button size="sm" variant="ghost" onClick={() => confirm({ title: `Release bed ${b.bedNumber}`, message: "The bed becomes available again.", confirmLabel: "Release", onConfirm: async () => { await request(`/properties/${p.id}/rooms/${r.id}/beds/${b.id}/release`, { method: "POST" }); await onDone("Bed released.")(); } })}>Release</Button>
+                )}
+                {b.occupancy && (
+                  <span className="basis-full text-xs">
+                    <OccupiedSince occ={b.occupancy} place={`Room ${r.roomNumber} · Bed ${b.bedNumber}`} onChangeDate={onChangeDate} />
+                    <DateChangeHistory occ={b.occupancy} />
+                  </span>
                 )}
               </li>
             ))}
@@ -435,7 +446,6 @@ const POLICY_LABELS: Array<[string, string]> = [
   ["loudMusicPolicy", "Loud music"],
   ["cookingAllowed", "Cooking"],
   ["sublettingAllowed", "Subletting"],
-  ["workFromHomeAllowed", "Work from home"],
 ];
 
 function DetailsTab({ p }: { p: PropertyDetail }) {
@@ -450,7 +460,7 @@ function DetailsTab({ p }: { p: PropertyDetail }) {
       </section>
       <section className="card p-5">
         <h3 className="mb-3 font-semibold">Guest policies & restrictions</h3>
-        <Facts items={POLICY_LABELS.map(([k, l]) => [l, <ValueText key={k} value={pol[k] ?? (k.endsWith("Allowed") || k.endsWith("Required") || k.endsWith("Available") || k.endsWith("Applicable") ? "NOT_DISCLOSED" : null)} />])} />
+        <Facts items={POLICY_LABELS.filter(([k]) => k !== "cookingAllowed" || p.structure === "ROOMS_BEDS").map(([k, l]) => [l, <ValueText key={k} value={pol[k] ?? (k.endsWith("Allowed") || k.endsWith("Required") || k.endsWith("Available") || k.endsWith("Applicable") ? "NOT_DISCLOSED" : null)} />])} />
         {(pol.additionalRules ?? []).length > 0 && (
           <ul className="mt-3 list-disc pl-5 text-sm">{(pol.additionalRules ?? []).map((r) => <li key={r.title}><span className="font-medium">{r.title}</span>{r.description ? ` — ${r.description}` : ""}</li>)}</ul>
         )}
@@ -770,5 +780,80 @@ function ChangeRequestBanner({ revision, can, onEdit, onSubmit, onDiscard, onRev
         </div>
       )}
     </section>
+  );
+}
+
+/** True when an ISO date is after today (a flat that frees up later). */
+function futureDate(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  const now = new Date();
+  return d.getTime() > Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+/** Super Admin / roles with leases.change_dates: change a tenant's move-in (occupied since) date, with a reason. */
+function ChangeMoveInModal({ target, onClose, onSaved }: { target: MoveInTarget; onClose: () => void; onSaved: (message: string) => void }) {
+  const [date, setDate] = useState(target.current);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const save = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const out = await request<{ note?: string }>(`/leases/${target.leaseId}/start-date`, { method: "POST", body: { date, reason: reason.trim() } });
+      onSaved(`Move-in date changed.${out?.note ? ` ${out.note}` : ""}`);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open onClose={onClose} title={`Change move-in date — ${target.unit}`} description="Rent is due on this date every month, so unpaid rent months move with it. Paid months stay as they are. The change and your reason are recorded.">
+      {err && <Alert kind="error" className="mb-3">{err}</Alert>}
+      <Input label="Occupied since (move-in date)" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+      <div className="mt-3">
+        <Input label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Tenant actually moved in on 18 Nov" />
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button disabled={busy || reason.trim().length < 5 || !date || date === target.current} onClick={() => void save()}>Save</Button>
+      </div>
+    </Modal>
+  );
+}
+
+type MoveInTarget = { leaseId: string; unit: string; current: string };
+
+/** "Occupied by Ravi since 15 Nov 2026 [Change]" + lease end / agreed move-out. */
+function OccupiedSince({ occ, place, onChangeDate }: { occ: Occupancy; place: string; onChangeDate?: (t: MoveInTarget) => void }) {
+  return (
+    <span>
+      Occupied by {occ.tenantName} since {formatDate(occ.since)}
+      {onChangeDate && (
+        <button type="button" className="ml-2 text-xs font-semibold text-brand hover:underline" onClick={() => onChangeDate({ leaseId: occ.leaseId, unit: place, current: occ.since.slice(0, 10) })}>
+          Change
+        </button>
+      )}
+      {occ.movingOutOn ? <span className="block text-warning">Moving out on {formatDate(occ.movingOutOn)}</span> : <span className="block text-xs font-normal text-muted">Lease until {formatDate(occ.leaseEnds)}</span>}
+    </span>
+  );
+}
+
+/** Who changed the move-in date, when, from → to, and why. */
+function DateChangeHistory({ occ }: { occ: Occupancy }) {
+  if (!occ.dateChanges.length) return null;
+  return (
+    <div className="mt-3 rounded-control border border-line bg-surface p-3 text-xs">
+      <p className="mb-1 font-semibold text-ink">Move-in date changes</p>
+      <ul className="space-y-1 text-muted">
+        {occ.dateChanges.map((c) => (
+          <li key={c.id}>
+            <span className="font-medium text-ink">{formatDate(c.from)} → {formatDate(c.to)}</span> by {c.changedBy} on {formatTimestamp(c.at)} — {c.reason}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

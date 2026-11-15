@@ -18,6 +18,7 @@ import { escapeHtml } from "../services/templates/layout";
 import { printableDoc } from "./rentals.controller";
 import { receiptPan } from "./pan.controller";
 import { rentDueDates } from "../lib/rentSchedule";
+import { monthlyMaintenanceFor } from "../lib/depositPolicy";
 
 export { periodOf } from "../lib/rentSchedule";
 
@@ -26,13 +27,13 @@ export { periodOf } from "../lib/rentSchedule";
  * join date every month, from the month after joining (see rentDueDates). Unpaid dues made by an older
  * schedule (e.g. one in the joining month, or on a different day) are corrected here.
  */
-export async function ensureRentSchedule(lease: Pick<Lease, "id" | "propertyId" | "tenantId" | "landlordId" | "startDate" | "endDate" | "monthlyRent" | "rentDueDay" | "status">): Promise<void> {
+export async function ensureRentSchedule(lease: Pick<Lease, "id" | "propertyId" | "tenantId" | "landlordId" | "startDate" | "endDate" | "monthlyRent" | "rentDueDay" | "status" | "unitId" | "maintenanceCharges">): Promise<void> {
   if (lease.status !== "ACTIVE") return;
   const schedule = rentDueDates(lease.startDate, lease.endDate, new Date());
   const wanted = new Map(schedule.map((s) => [s.period, s.dueDate]));
 
   // Self-heal: only unpaid rows with no money recorded against them are touched.
-  const unpaid = await prisma.rentPayment.findMany({ where: { leaseId: lease.id, status: { in: ["DUE", "OVERDUE"] }, transactions: { none: {} } }, select: { id: true, period: true, dueDate: true } });
+  const unpaid = await prisma.rentPayment.findMany({ where: { leaseId: lease.id, status: { in: ["DUE", "OVERDUE"] }, transactions: { none: {} }, paymentRequests: { none: {} } }, select: { id: true, period: true, dueDate: true } });
   for (const row of unpaid) {
     const due = wanted.get(row.period);
     if (!due) await prisma.rentPayment.deleteMany({ where: { id: row.id, status: { in: ["DUE", "OVERDUE"] } } });
@@ -41,15 +42,23 @@ export async function ensureRentSchedule(lease: Pick<Lease, "id" | "propertyId" 
     }
   }
   if (schedule.length === 0) return;
+  const existing = new Set((await prisma.rentPayment.findMany({ where: { leaseId: lease.id, period: { in: schedule.map((x) => x.period) } }, select: { period: true } })).map((r) => r.period));
+  const missing = schedule.filter((x) => !existing.has(x.period));
+  if (!missing.length) return;
+  // Snapshot rent + monthly maintenance now; later pricing changes don't touch existing dues.
+  const rent = Number(lease.monthlyRent);
+  const maintenance = lease.maintenanceCharges !== null ? Number(lease.maintenanceCharges) : await monthlyMaintenanceFor(prisma, lease.propertyId, lease.unitId);
   await prisma.rentPayment.createMany({
     skipDuplicates: true,
-    data: schedule.map(({ period, dueDate }) => ({
+    data: missing.map(({ period, dueDate }) => ({
       leaseId: lease.id,
       propertyId: lease.propertyId,
       tenantId: lease.tenantId,
       landlordId: lease.landlordId,
       period,
-      amount: lease.monthlyRent,
+      rentAmount: rent,
+      maintenanceAmount: maintenance,
+      amount: Math.round((rent + maintenance) * 100) / 100,
       dueDate,
     })),
   });
@@ -57,6 +66,7 @@ export async function ensureRentSchedule(lease: Pick<Lease, "id" | "propertyId" 
 
 /** Rent becomes overdue the day AFTER its due date (due 15 Dec → overdue from 16 Dec). */
 export async function markOverdue(where: Prisma.RentPaymentWhereInput): Promise<void> {
+  // PARTIAL stays PARTIAL; "overdue" for it is dueDate < today (see rentDues bucketWhere).
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   await prisma.rentPayment.updateMany({ where: and(where, { status: "DUE", dueDate: { lt: today } }), data: { status: "OVERDUE" } });
@@ -80,7 +90,7 @@ export async function listRent(req: Request, res: Response): Promise<void> {
   await markOverdue(scope);
 
   const p = pagination(req);
-  const status = enumQuery(req, "status", ["DUE", "PAID", "OVERDUE", "WAIVED"] as const);
+  const status = enumQuery(req, "status", ["DUE", "PAID", "OVERDUE", "WAIVED", "PARTIAL"] as const);
   const where = and<Prisma.RentPaymentWhereInput>(scope, status && { status }, p.q ? { OR: [{ period: { contains: p.q } }, { receiptNumber: { contains: p.q } }] } : undefined);
   const [items, total, summary] = await Promise.all([
     prisma.rentPayment.findMany({ where, include: rentInclude, orderBy: [{ dueDate: "desc" }], skip: p.skip, take: p.take }),
@@ -99,59 +109,85 @@ function reference(prefix: string): string {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomBytes(3).toString("hex").toUpperCase()}`;
 }
 
-async function settle(req: Request, rentId: string, method: string, isTest: boolean, actorId: string, notes?: string) {
-  return prisma.$transaction(async (tx) => {
-    const rent = found(await tx.rentPayment.findUnique({ where: { id: rentId } }), "Rent record");
-    if (rent.status === "PAID" || rent.status === "WAIVED") fail("failed-precondition", REASONS.INVALID_STATE, "This rent is already settled.");
+export const UNPAID = ["DUE", "OVERDUE", "PARTIAL"] as const;
+
+/**
+ * Records money received against a due (full or part) inside a transaction: bumps paidAmount, sets
+ * PAID / PARTIAL, gives the due its receipt number (first payment), writes the RENT_PAYMENT transaction
+ * and the platform commission. Conditional on the paid amount it read, so concurrent payments can't
+ * double count. Shared by tenant pay, finance "record" and landlord approval of a payment proof.
+ */
+export async function applyRentPayment(
+  tx: Prisma.TransactionClient,
+  rentId: string,
+  opts: { amount?: number; method: string; isTest: boolean; actorId: string; notes?: string; referencePrefix?: string; paidAt?: Date },
+) {
+  const rent = found(await tx.rentPayment.findUnique({ where: { id: rentId } }), "Rent record");
+  if (!(UNPAID as readonly string[]).includes(rent.status)) fail("failed-precondition", REASONS.INVALID_STATE, "This rent is already settled.");
+  const outstanding = Number(rent.amount) - Number(rent.paidAmount);
+  const amount = Math.round((opts.amount ?? outstanding) * 100) / 100;
+  if (!(amount > 0)) fail("invalid-argument", REASONS.INVALID_INPUT, "Amount must be more than 0.");
+  if (amount > outstanding + 0.001) fail("invalid-argument", REASONS.INVALID_INPUT, `Only ₹${outstanding.toLocaleString("en-IN")} is due.`);
+  const newPaid = Number(rent.paidAmount) + amount;
+  const full = newPaid >= Number(rent.amount) - 0.001;
+
+  let receiptNumber = rent.receiptNumber;
+  if (!receiptNumber) {
     // Receipt number from the flat / bed / property unique ID + rent month (see receiptNumberFor).
     const lease = await tx.lease.findUniqueOrThrow({ where: { id: rent.leaseId }, select: { propertyId: true, unitId: true, bedId: true } });
     const code = await placeCode(tx, lease);
-    let receiptNumber = receiptNumberFor(code, rent.period);
+    receiptNumber = receiptNumberFor(code, rent.period);
     for (let attempt = 2; await tx.rentPayment.count({ where: { receiptNumber } }); attempt++) receiptNumber = receiptNumberFor(code, rent.period, attempt);
-    // Conditional update prevents double payment under concurrency.
-    const updated = await tx.rentPayment.updateMany({
-      where: { id: rent.id, status: { in: ["DUE", "OVERDUE"] } },
-      data: { status: "PAID", paidAt: new Date(), method, receiptNumber, recordedById: actorId },
-    });
-    if (updated.count !== 1) fail("failed-precondition", REASONS.INVALID_STATE, "This rent is already settled.");
+  }
+  const updated = await tx.rentPayment.updateMany({
+    where: { id: rent.id, status: { in: [...UNPAID] }, paidAmount: rent.paidAmount },
+    data: { status: full ? "PAID" : "PARTIAL", paidAmount: newPaid, paidAt: opts.paidAt ?? new Date(), method: opts.method, receiptNumber, recordedById: opts.actorId },
+  });
+  if (updated.count !== 1) fail("failed-precondition", REASONS.INVALID_STATE, "This rent was just updated. Refresh and try again.");
 
-    const txn = await tx.transaction.create({
+  const txn = await tx.transaction.create({
+    data: {
+      type: "RENT_PAYMENT",
+      status: "SUCCESS",
+      amount,
+      payerId: rent.tenantId,
+      payeeId: rent.landlordId,
+      propertyId: rent.propertyId,
+      rentPaymentId: rent.id,
+      method: opts.method,
+      reference: reference(opts.referencePrefix ?? (opts.isTest ? "TEST" : "TXN")),
+      isTest: opts.isTest,
+      notes: opts.notes ?? null,
+      createdById: opts.actorId,
+    },
+  });
+  const commissionSetting = await tx.platformSetting.findUnique({ where: { key: "commission_percent" } });
+  const percent = Math.max(0, Math.min(50, Number(commissionSetting?.value ?? 0)));
+  if (percent > 0) {
+    await tx.transaction.create({
       data: {
-        type: "RENT_PAYMENT",
-        status: "SUCCESS",
-        amount: rent.amount,
-        payerId: rent.tenantId,
-        payeeId: rent.landlordId,
+        type: "COMMISSION",
+        status: "PENDING",
+        amount: (amount * percent) / 100,
+        payerId: rent.landlordId,
         propertyId: rent.propertyId,
         rentPaymentId: rent.id,
-        method,
-        reference: reference(isTest ? "TEST" : "TXN"),
-        isTest,
-        notes: notes ?? null,
-        createdById: actorId,
+        method: "PLATFORM",
+        reference: reference("COM"),
+        isTest: opts.isTest,
+        notes: `${percent}% commission on ${rent.period} rent`,
+        createdById: opts.actorId,
       },
     });
-    const commissionSetting = await tx.platformSetting.findUnique({ where: { key: "commission_percent" } });
-    const percent = Math.max(0, Math.min(50, Number(commissionSetting?.value ?? 0)));
-    if (percent > 0) {
-      await tx.transaction.create({
-        data: {
-          type: "COMMISSION",
-          status: "PENDING",
-          amount: (Number(rent.amount) * percent) / 100,
-          payerId: rent.landlordId,
-          propertyId: rent.propertyId,
-          rentPaymentId: rent.id,
-          method: "PLATFORM",
-          reference: reference("COM"),
-          isTest,
-          notes: `${percent}% commission on ${rent.period} rent`,
-          createdById: actorId,
-        },
-      });
-    }
-    if (actorId !== rent.tenantId) await logActivity(req, "rent.record_payment", "rent_payment", rent.id, { amount: rent.amount.toString(), method, transaction: txn.reference }, tx);
-    return { rent, txn };
+  }
+  return { rent, txn, amount, full, outstandingAfter: Math.max(0, Number(rent.amount) - newPaid), receiptNumber };
+}
+
+async function settle(req: Request, rentId: string, method: string, isTest: boolean, actorId: string, notes?: string) {
+  return prisma.$transaction(async (tx) => {
+    const r = await applyRentPayment(tx, rentId, { method, isTest, actorId, notes });
+    if (actorId !== r.rent.tenantId) await logActivity(req, "rent.record_payment", "rent_payment", r.rent.id, { amount: r.amount, method, transaction: r.txn.reference }, tx);
+    return r;
   });
 }
 
@@ -193,12 +229,12 @@ export async function waiveRent(req: Request, res: Response): Promise<void> {
   const scope = rentWhere(me(req), "rent.collect");
   if (!scope) fail("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to do that.");
   const rent = found(await prisma.rentPayment.findFirst({ where: and(scope, { id: idParam(req) }) }), "Rent record");
-  if (!["DUE", "OVERDUE"].includes(rent.status)) fail("failed-precondition", REASONS.INVALID_STATE, "Only unpaid rent can be waived.");
+  if (!["DUE", "OVERDUE", "PARTIAL"].includes(rent.status)) fail("failed-precondition", REASONS.INVALID_STATE, "Only unpaid rent can be waived.");
   const { reason } = parseInput(waiveSchema, req.body);
   await prisma.$transaction(async (tx) => {
     await tx.rentPayment.update({ where: { id: rent.id }, data: { status: "WAIVED", recordedById: me(req).id } });
     await tx.transaction.create({
-      data: { type: "ADJUSTMENT", status: "SUCCESS", amount: rent.amount, payerId: rent.landlordId, payeeId: rent.tenantId, propertyId: rent.propertyId, rentPaymentId: rent.id, method: "WAIVER", reference: reference("ADJ"), notes: reason, createdById: me(req).id },
+      data: { type: "ADJUSTMENT", status: "SUCCESS", amount: Number(rent.amount) - Number(rent.paidAmount), payerId: rent.landlordId, payeeId: rent.tenantId, propertyId: rent.propertyId, rentPaymentId: rent.id, method: "WAIVER", reference: reference("ADJ"), notes: reason, createdById: me(req).id },
     });
     await logActivity(req, "rent.waive", "rent_payment", rent.id, { amount: rent.amount.toString(), reason }, tx);
   });

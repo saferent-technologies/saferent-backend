@@ -15,12 +15,14 @@ import { escapeHtml } from "../services/templates/layout";
 import { toContact, toPublicUser } from "./serializers";
 import { ensureRentSchedule } from "./rent.controller";
 import { ID_PREFIX } from "../properties/catalog";
-import { assignBedTx, releaseBedTx } from "../properties/controllers/room.controller";
+import { assignBedTx } from "../properties/controllers/room.controller";
 import { nextCode } from "../properties/ids";
 import { applySchema } from "../properties/schemas";
 import { audit, propertyKey, recordStatus, typeOf, withProperty } from "../properties/service";
 import { evaluateForUser } from "../services/referral.service";
 import { finalizeDueExits } from "./leaseExit.controller";
+import { depositUsableFor, monthlyMaintenanceFor } from "../lib/depositPolicy";
+import { freeLeasePlaceTx } from "../properties/occupancy";
 import { assertNoReviewOwed } from "./reviews.controller";
 
 /* ─────────────── Applications ─────────────── */
@@ -190,6 +192,8 @@ export async function decideApplication(req: Request, res: Response): Promise<vo
         securityDeposit: terms.deposit ?? 0,
         rentDueDay: dueDay,
         terms: defaultTerms(dueDay),
+        depositUsableAsRent: await depositUsableFor(tx, application.propertyId, unitId),
+        maintenanceCharges: (await monthlyMaintenanceFor(tx, application.propertyId, unitId)) || null,
         createdById: user.id,
       },
     });
@@ -244,7 +248,17 @@ function presentLease(lease: LeaseWithParties, viewerId: string) {
     ...lease,
     landlord: share ? toContact(lease.landlord) : toPublicUser(lease.landlord),
     tenant: share ? toContact(lease.tenant) : toPublicUser(lease.tenant),
+    // securityDeposit stays the original amount; this shows how much of it was used for rent and what's left.
+    deposit: { ...depositSummary(lease), usableAsRent: lease.depositUsableAsRent },
   };
+}
+
+/** Deposit at a glance: initial (as agreed), received, used to pay rent, remaining. */
+function depositSummary(l: { securityDeposit: unknown; depositPaidAt: Date | null; depositPaidAmount: unknown; depositUsedAmount: unknown }) {
+  const initial = Number(l.securityDeposit);
+  const held = l.depositPaidAt ? Number(l.depositPaidAmount ?? initial) : initial;
+  const used = Number(l.depositUsedAmount ?? 0);
+  return { initial, received: l.depositPaidAt ? held : null, usedForRent: used, remaining: Math.max(0, Math.round((held - used) * 100) / 100) };
 }
 
 /** GET /api/leases */
@@ -291,12 +305,8 @@ export async function terminateLease(req: Request, res: Response): Promise<void>
   const { reason } = parseInput(terminateSchema, req.body);
   await withProperty(lease.propertyId, async (tx) => {
     await tx.lease.update({ where: { id: lease.id }, data: { status: "TERMINATED", endedAt: new Date() } });
-    // The unit / bed becomes free again; the landlord decides when to list it as available.
-    if (lease.unitId) {
-      await tx.propertyUnit.update({ where: { id: lease.unitId }, data: { availabilityStatus: "NOT_AVAILABLE", version: { increment: 1 } } });
-      await recordStatus(tx, req, { propertyId: lease.propertyId, entityType: "UNIT", entityId: lease.unitId, field: "availabilityStatus", from: "OCCUPIED", to: "NOT_AVAILABLE", reason: "Lease terminated." });
-    }
-    if (lease.bedId) await releaseBedTx(req, tx, lease.propertyId, lease.bedId, "Lease terminated.");
+    // The unit / bed is free again (AVAILABLE) unless another active lease holds it.
+    await freeLeasePlaceTx(tx, req, lease, "Lease terminated.");
     await audit(tx, req, { propertyId: lease.propertyId, entityType: "LEASE", entityId: lease.id, action: "lease.terminate", newValue: { reason } });
     await logActivity(req, "lease.terminate", "lease", lease.id, { reason }, tx);
   });

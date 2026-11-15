@@ -96,6 +96,7 @@ export const PERMISSIONS = {
   "applications.manage": { category: "Rentals", description: "Approve or reject rental applications" },
   "leases.view": { category: "Rentals", description: "View leases" },
   "leases.manage": { category: "Rentals", description: "Manage and terminate leases" },
+  "leases.change_dates": { category: "Rentals", description: "Change a lease's move-in (occupied since) date, with a reason — every change is recorded (Super Admin by default)" },
   "enquiries.create": { category: "Rentals", description: "Send enquiries about listings" },
   "enquiries.manage": { category: "Rentals", description: "Manage enquiries and follow-ups" },
   "visits.manage": { category: "Rentals", description: "Schedule and update property visits" },

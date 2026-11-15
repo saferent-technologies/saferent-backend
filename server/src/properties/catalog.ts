@@ -154,8 +154,9 @@ const f = {
 
 const furnishing = f.select("furnishing", "Furnishing", FURNISHING, { required: true });
 const availability: FieldDef[] = [
-  { key: "availableFrom", label: "Available from", type: "date" },
-  f.select("availabilityStatus", "Availability", AVAILABILITY, { required: true }),
+  { key: "availableFrom", label: "Available from", type: "date", help: "Tenants see 'Available now' or 'Available from <date>'." },
+  // Optional: not sent → AVAILABLE (the date decides when). Only for "not ready" cases (maintenance, reserved…).
+  f.select("availabilityStatus", "Availability", AVAILABILITY, { help: "Leave empty — the 'Available from' date decides. Use only if the flat isn't ready (under maintenance / reserved / not available)." }),
 ];
 const customConfiguration = f.text("customConfiguration", "Custom configuration", { maxLength: 40, requiredWhen: { field: "configuration", equals: "CUSTOM" }, help: "e.g. B+G+2+Penthouse" });
 
@@ -213,7 +214,7 @@ export const PROPERTY_TYPES: readonly PropertyTypeDef[] = [
       f.int("totalUnits", "Total flats", { required: true, max: 10000 }),
       f.yesNo("securityAvailable", "Security available"),
       f.yesNo("liftAvailable", "Lift available"),
-      f.yesNo("parkingAvailable", "Parking available"),
+      // Parking is asked under Amenities (open / covered parking), not here.
     ],
     unitFields: [
       f.text("unitNumber", "Flat number", { required: true, maxLength: 30 }),

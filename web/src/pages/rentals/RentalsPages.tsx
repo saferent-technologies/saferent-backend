@@ -147,6 +147,7 @@ interface Lease {
   endDate: string;
   monthlyRent: string;
   securityDeposit: string;
+  deposit?: { initial: number; received: number | null; usedForRent: number; remaining: number };
   rentDueDay: number;
   terms: string | null;
   place: string | null;
@@ -198,7 +199,17 @@ export function LeasesPage() {
               <div><dt className="text-muted">Term</dt><dd>{formatDate(open.startDate)} – {formatDate(open.endDate)}</dd></div>
               <div><dt className="text-muted">Status</dt><dd><StatusBadge status={open.status} /></dd></div>
               <div><dt className="text-muted">Monthly rent</dt><dd>{formatMoney(open.monthlyRent)} (day {open.rentDueDay})</dd></div>
-              <div><dt className="text-muted">Deposit</dt><dd>{formatMoney(open.securityDeposit)}</dd></div>
+              <div>
+                <dt className="text-muted">Security deposit</dt>
+                <dd>
+                  {formatMoney(open.securityDeposit)} <span className="text-xs text-muted">(initial)</span>
+                  {open.deposit && open.deposit.usedForRent > 0 && (
+                    <span className="block text-xs">
+                      Used for rent: <span className="font-semibold">{formatMoney(open.deposit.usedForRent)}</span> · Remaining: <span className="font-semibold text-success">{formatMoney(open.deposit.remaining)}</span>
+                    </span>
+                  )}
+                </dd>
+              </div>
             </dl>
             <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-control bg-subtle p-3 font-sans text-xs text-ink-2">{open.terms}</pre>
             {(open.tenant.id === profile?.id || open.landlord.id === profile?.id) && <LandlordPanPanel leaseId={open.id} />}
@@ -318,7 +329,7 @@ export function RentPage() {
           </div>
         ))}
       </div>
-      <ListToolbar search={list.q} onSearch={list.setSearch} placeholder="Search period (2026-11) or receipt" filters={[{ name: "status", label: "Status", options: toOptions(["DUE", "OVERDUE", "PAID", "WAIVED"]) }]} values={list.filters} onFilter={list.setFilter} />
+      <ListToolbar search={list.q} onSearch={list.setSearch} placeholder="Search period (2026-11) or receipt" filters={[{ name: "status", label: "Status", options: toOptions(["DUE", "PARTIAL", "OVERDUE", "PAID", "WAIVED"]) }]} values={list.filters} onFilter={list.setFilter} />
       <DataTable
         rows={data?.items}
         loading={loading}
@@ -337,8 +348,8 @@ export function RentPage() {
             className: "text-right",
             render: (r) => (
               <span className="flex flex-wrap justify-end gap-2">
-                {["DUE", "OVERDUE"].includes(r.status) && can("rent.pay") && isTenant && data?.paymentMode === "test" && <Button size="sm" onClick={() => pay(r)}>Pay</Button>}
-                {["DUE", "OVERDUE"].includes(r.status) && finance && (
+                {["DUE", "OVERDUE", "PARTIAL"].includes(r.status) && can("rent.pay") && isTenant && data?.paymentMode === "test" && <Button size="sm" onClick={() => pay(r)}>Pay</Button>}
+                {["DUE", "OVERDUE", "PARTIAL"].includes(r.status) && finance && (
                   <>
                     <Button size="sm" variant="secondary" onClick={() => record(r)}>Record</Button>
                     <Button size="sm" variant="ghost" onClick={() => waive(r)}>Waive</Button>

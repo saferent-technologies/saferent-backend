@@ -80,6 +80,14 @@ export function ValueText({ value }: { value: unknown }) {
   if (value === "YES") return <span className="font-medium text-success">Yes</span>;
   if (value === "NO") return <span className="font-medium">No</span>;
   if (typeof value === "boolean") return <span>{value ? "Yes" : "No"}</span>;
+  // Dates come as ISO strings ("2026-11-29T00:00:00.000Z" or "2026-11-29") → "29 Nov 2026".
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/.test(value)) {
+    const d = new Date(value);
+    if (!Number.isNaN(d.getTime())) {
+      const dateOnly = value.length === 10 || /T00:00:00(\.000)?Z$/.test(value);
+      return <span>{d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", ...(dateOnly ? { timeZone: "UTC" } : {}) })}</span>;
+    }
+  }
   return <span>{typeof value === "string" && /^[A-Z_]+$/.test(value) ? labelize(value) : String(value)}</span>;
 }
 

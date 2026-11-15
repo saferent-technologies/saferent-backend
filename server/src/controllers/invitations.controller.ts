@@ -23,6 +23,7 @@ import { ensureRentSchedule } from "./rent.controller";
 import { defaultTerms } from "./rentals.controller";
 import { ensureRoleProfile } from "./users.controller";
 import { evaluateForUser, recordInvitationReferral } from "../services/referral.service";
+import { depositUsableFor } from "../lib/depositPolicy";
 import { assertNoReviewOwed, reviewsOwedBy } from "./reviews.controller";
 
 /*
@@ -164,7 +165,9 @@ export async function createInvitation(req: Request, res: Response): Promise<voi
   const property = await scopedProperty(req, "leases.manage");
   await consumeRateLimit(`invite-create:${user.id}`, RATE_LIMITS.INVITE_CREATE.limit, RATE_LIMITS.INVITE_CREATE.windowMs);
   if (property.activeStatus === "ARCHIVED" || property.activeStatus === "SUSPENDED") fail("failed-precondition", REASONS.INVALID_STATE, `This property is ${property.activeStatus.toLowerCase()}.`);
-  await assertNoReviewOwed(property.ownerId, "LANDLORD", "invite a new tenant", property.ownerId === user.id ? "you" : "landlord");
+  // The last tenant of THIS property must be reviewed (while the review window is open) before inviting the next.
+  const unreviewed = (await reviewsOwedBy(property.ownerId, "LANDLORD")).find((o) => o.propertyId === property.id);
+  if (unreviewed) fail("already-exists", REASONS.REVIEW_REQUIRED, "Review your last tenant first", { leaseId: unreviewed.leaseId });
   const input = parseInput(createSchema, req.body);
   const target = await resolveTarget(property, input.unitId, input.bedId);
   const pending = await prisma.tenantInvitation.findFirst({ where: { propertyId: property.id, unitId: target.unitId, bedId: target.bedId, status: "PENDING", expiresAt: { gt: new Date() } } });
@@ -424,6 +427,7 @@ export async function acceptInvitation(req: Request, res: Response): Promise<voi
         noticePeriodDays: inv.noticePeriodDays,
         lockInMonths: inv.lockInMonths,
         terms: leaseTermsText(inv),
+        depositUsableAsRent: await depositUsableFor(tx, inv.propertyId, inv.unitId),
         createdById: user.id,
       },
     });

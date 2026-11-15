@@ -55,13 +55,13 @@ export function inviteTargets(p: PropertyDetail): InviteTarget[] {
   if (p.structure === "ROOMS_BEDS") {
     return p.rooms.flatMap((r) =>
       r.beds
-        .filter((b) => (b.activeStatus ?? "ACTIVE") === "ACTIVE" && !b.tenantId && b.availabilityStatus !== "OCCUPIED")
+        .filter((b) => (b.activeStatus ?? "ACTIVE") === "ACTIVE" && !b.tenantId && b.availabilityStatus !== "OCCUPIED" && !b.pendingInvitation)
         .map((b) => ({ key: b.id, bedId: b.id, label: `Room ${r.roomNumber} · Bed ${b.bedNumber}`, rent: b.rent ?? r.rentPerBed, deposit: r.securityDeposit })),
     );
   }
   const unitLabel = p.type?.unitLabel ?? "Unit";
   return p.units
-    .filter((u) => u.activeStatus === "ACTIVE" && u.availabilityStatus !== "OCCUPIED")
+    .filter((u) => u.activeStatus === "ACTIVE" && u.availabilityStatus !== "OCCUPIED" && !u.pendingInvitation)
     .map((u) => ({ key: u.id, unitId: u.id, label: u.name || `${unitLabel} ${u.unitNumber ?? u.code}`, rent: u.pricing?.monthlyRent ?? p.pricing?.monthlyRent ?? null, deposit: u.pricing?.securityDeposit ?? p.pricing?.securityDeposit ?? null }));
 }
 
@@ -178,7 +178,7 @@ export function InviteTenantModal({ p, open, initialTarget, onClose, onCreated }
         </>
       ) : targets.length === 0 ? (
         <>
-          <Alert kind="info">Everything in this property is occupied. Add a {p.structure === "ROOMS_BEDS" ? "bed" : (p.type?.unitLabel ?? "unit").toLowerCase()} first, or end a lease.</Alert>
+          <Alert kind="info">Everything in this property is occupied or already has a pending invitation. Add a {p.structure === "ROOMS_BEDS" ? "bed" : (p.type?.unitLabel ?? "unit").toLowerCase()} first, or end a lease.</Alert>
           <div className="mt-4 flex justify-end"><Button variant="secondary" onClick={onClose}>Close</Button></div>
         </>
       ) : (
@@ -215,7 +215,8 @@ export function InviteTenantModal({ p, open, initialTarget, onClose, onCreated }
 const STATUS_TONE: Record<Invitation["status"], "brand" | "success" | "neutral" | "danger" | "warning"> = { PENDING: "brand", ACCEPTED: "success", REJECTED: "danger", REVOKED: "neutral", EXPIRED: "warning" };
 
 /** Property page → "Tenant invites" tab. */
-export function InvitationsTab({ p, canManage, onInvite, reloadKey }: { p: PropertyDetail; canManage: boolean; onInvite: () => void; reloadKey: number }) {
+/** canManage = New link / Revoke on existing invitations; canInvite = the "Invite tenant" button (hidden when nothing is free to invite). */
+export function InvitationsTab({ p, canManage, canInvite = canManage, onInvite, reloadKey }: { p: PropertyDetail; canManage: boolean; canInvite?: boolean; onInvite: () => void; reloadKey: number }) {
   const { data, loading, error, reload } = useQuery(() => request<Paged<Invitation>>("/invitations", { query: { propertyId: p.id, pageSize: 50 } }), [p.id, reloadKey]);
   const { confirm, dialog } = useConfirm();
   const [shown, setShown] = useState<{ link: InviteLink; phone: string | null } | null>(null);
@@ -239,7 +240,7 @@ export function InvitationsTab({ p, canManage, onInvite, reloadKey }: { p: Prope
           <h2 className="font-semibold">Tenant invitations</h2>
           <p className="text-sm text-muted">Tenant visited you and agreed? Send them a link — they sign in and accept, and the lease starts.</p>
         </div>
-        {canManage && <Button leftIcon={<UserPlus className="size-4" />} onClick={onInvite}>Invite tenant</Button>}
+        {canInvite && <Button leftIcon={<UserPlus className="size-4" />} onClick={onInvite}>Invite tenant</Button>}
       </div>
       {msg && <Alert kind={msg.kind} className="mb-3">{msg.text}</Alert>}
       {loading && !data && <div className="flex justify-center py-8"><Spinner className="size-6 text-brand" /></div>}

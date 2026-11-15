@@ -12,7 +12,7 @@ import { prisma } from "./prisma";
  */
 const DEAD_TOKEN = new Set(["messaging/registration-token-not-registered", "messaging/invalid-registration-token", "messaging/invalid-argument"]);
 
-export async function sendPush(userId: string, msg: { title: string; body: string; link?: string | null; notificationId?: string; type?: string }): Promise<void> {
+export async function sendPush(userId: string, msg: { title: string; body: string; link?: string | null; notificationId?: string; type?: string; data?: Record<string, string> }): Promise<void> {
   try {
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { firebaseUid: true, accountStatus: true } });
     if (!user || user.accountStatus !== "ACTIVE") return;
@@ -22,7 +22,7 @@ export async function sendPush(userId: string, msg: { title: string; body: strin
     const result = await messaging.sendEachForMulticast({
       tokens,
       notification: { title: msg.title.slice(0, 150), body: msg.body.slice(0, 500) },
-      data: { notificationId: msg.notificationId ?? "", link: msg.link ?? "", type: msg.type ?? "GENERAL" },
+      data: { ...(msg.data ?? {}), notificationId: msg.notificationId ?? "", link: msg.link ?? "", type: msg.type ?? "GENERAL" },
       android: { priority: "high", notification: { channelId: "saferent_default", sound: "default" } },
       apns: { payload: { aps: { sound: "default" } } },
     });

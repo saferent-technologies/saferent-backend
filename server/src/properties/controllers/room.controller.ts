@@ -88,7 +88,7 @@ export async function updateRoom(req: Request, res: Response): Promise<void> {
   const beds = await prisma.propertyBed.count({ where: { roomId: room.id, activeStatus: { not: "ARCHIVED" } } });
   const capacity = bedCapacity({ sharingType: data.sharingType ?? room.sharingType, customSharing: data.customSharing === undefined ? room.customSharing : data.customSharing });
   if (beds > capacity) fail("invalid-argument", REASONS.INVALID_INPUT, `This room already has ${beds} beds; the sharing type allows ${capacity}. Remove beds first.`);
-  if (data.activeStatus === "ARCHIVED" && (await prisma.propertyBed.count({ where: { roomId: room.id, tenantId: { not: null } } }))) {
+  if (data.activeStatus === "ARCHIVED" && (await Promise.all((await prisma.propertyBed.findMany({ where: { roomId: room.id, tenantId: { not: null } } })).map(bedOccupied))).some(Boolean)) {
     fail("failed-precondition", REASONS.INVALID_STATE, "Release the occupied beds before archiving this room.");
   }
   const delta = diff(room as unknown as Record<string, unknown>, data as Record<string, unknown>);
@@ -137,7 +137,7 @@ export async function updateBed(req: Request, res: Response): Promise<void> {
   checkVersion(bed, input.version);
   const { version: _v, ...data } = input;
   void _v;
-  if (bed.tenantId && (data.availabilityStatus || data.activeStatus === "ARCHIVED")) fail("failed-precondition", REASONS.INVALID_STATE, "This bed is occupied. Release the tenant first.");
+  if ((await bedOccupied(bed)) && (data.availabilityStatus || data.activeStatus === "ARCHIVED")) fail("failed-precondition", REASONS.INVALID_STATE, "This bed is occupied. Release the tenant first.");
   const delta = diff(bed as unknown as Record<string, unknown>, data as Record<string, unknown>);
   try {
     await withProperty(property.id, async (tx) => {
@@ -194,7 +194,7 @@ export async function assignBedTx(req: Request, propertyId: string, bedId: strin
 /** Frees a bed (manual release or lease end). */
 export async function releaseBedTx(req: Request, tx: Prisma.TransactionClient, propertyId: string, bedId: string, reason: string): Promise<void> {
   const bed = await tx.propertyBed.findUniqueOrThrow({ where: { id: bedId } });
-  if (!bed.tenantId) return;
+  if (!bed.tenantId && bed.availabilityStatus !== "OCCUPIED") return;
   await tx.propertyBed.update({ where: { id: bedId }, data: { tenantId: null, leaseId: null, occupiedSince: null, availabilityStatus: "AVAILABLE", version: { increment: 1 } } });
   await tx.bedAssignment.updateMany({ where: { bedId, endedAt: null }, data: { endedAt: new Date() } });
   await recordStatus(tx, req, { propertyId, entityType: "BED", entityId: bedId, field: "availabilityStatus", from: "OCCUPIED", to: "AVAILABLE", reason });
@@ -210,4 +210,11 @@ export async function releaseBed(req: Request, res: Response): Promise<void> {
   if (bed.leaseId && (await prisma.lease.count({ where: { id: bed.leaseId, status: "ACTIVE" } }))) fail("failed-precondition", REASONS.INVALID_STATE, "End the tenant's lease to release this bed.");
   await withProperty(property.id, (tx) => releaseBedTx(req, tx, property.id, bed.id, "Released by landlord."));
   res.json({ bed: await prisma.propertyBed.findUniqueOrThrow({ where: { id: bed.id } }) });
+}
+
+/** A bed is occupied while its lease is ACTIVE (or it was assigned by hand without a lease). Closed leases don't block edits. */
+async function bedOccupied(bed: { tenantId: string | null; leaseId: string | null }): Promise<boolean> {
+  if (!bed.tenantId) return false;
+  if (!bed.leaseId) return true;
+  return (await prisma.lease.count({ where: { id: bed.leaseId, status: "ACTIVE" } })) > 0;
 }

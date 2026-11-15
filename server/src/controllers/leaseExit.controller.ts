@@ -11,17 +11,17 @@ import { prisma } from "../lib/prisma";
 import { parseInput } from "../lib/validation";
 import { me } from "../middleware/auth";
 import { and, leaseWhere } from "../rbac/access";
-import { releaseBedTx } from "../properties/controllers/room.controller";
-import { audit, recordStatus, withProperty } from "../properties/service";
+import { freeLeasePlaceTx } from "../properties/occupancy";
+import { audit, withProperty } from "../properties/service";
 import { evaluateForUser } from "../services/referral.service";
-import { createReview, prepareReview } from "./reviews.controller";
+import { createReview } from "./reviews.controller";
 
 /*
  * Mutual lease close.
  *   Tenant wants to leave  → asks the landlord;  landlord accepts / declines.
  *   Landlord wants to close → asks the tenant;   tenant accepts / declines.
  * The lease closes only when the other side accepts — on the agreed move-out date (today or later).
- * Each side may attach an optional review; it's submitted automatically once the lease has closed.
+ * After the lease closes both sides review it (GET /reviews/pending → POST /leases/:id/review).
  */
 
 type Side = "TENANT" | "LANDLORD";
@@ -103,12 +103,8 @@ async function closeByAgreement(exitId: string): Promise<boolean> {
     if (!claimed.count) return false;
     const l = await tx.lease.updateMany({ where: { id: lease.id, status: "ACTIVE" }, data: { status, endedAt: new Date() } });
     if (!l.count) return false;
-    // The flat waits for the landlord's move-out check before it's listed again.
-    if (lease.unitId) {
-      await tx.propertyUnit.update({ where: { id: lease.unitId }, data: { availabilityStatus: "NOT_AVAILABLE", version: { increment: 1 } } });
-      await recordStatus(tx, actor, { propertyId: lease.propertyId, entityType: "UNIT", entityId: lease.unitId, field: "availabilityStatus", from: "OCCUPIED", to: "NOT_AVAILABLE", reason: "Lease closed by mutual agreement." });
-    }
-    if (lease.bedId) await releaseBedTx(actor, tx, lease.propertyId, lease.bedId, "Lease closed by mutual agreement.");
+    // The flat / bed is free again (AVAILABLE) unless another active lease holds it.
+    await freeLeasePlaceTx(tx, actor, lease, "Lease closed by mutual agreement.");
     await audit(tx, actor, { propertyId: lease.propertyId, entityType: "LEASE", entityId: lease.id, action: "lease.close_mutual", newValue: { status, exitRequestId: x.id, moveOutDate: x.moveOutDate, reason: x.reason } });
     return true;
   });
@@ -116,7 +112,7 @@ async function closeByAgreement(exitId: string): Promise<boolean> {
 
   await evaluateForUser(lease.tenantId);
   const name = lease.property.title ?? lease.property.code;
-  for (const id of [lease.tenantId, lease.landlordId]) await notify(id, "Lease closed", `The lease for "${name}" is closed as agreed. ${reason}`, "/leases");
+  for (const id of [lease.tenantId, lease.landlordId]) await notify(id, "Lease closed", `The lease for "${name}" is closed as agreed. ${reason}`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
 
   // Reviews written during the request / acceptance are submitted now. Anyone who didn't write one
   // must review before their next rental (see assertNoReviewOwed); the app asks right away.
@@ -134,7 +130,7 @@ async function closeByAgreement(exitId: string): Promise<boolean> {
     }
   }
   for (const id of [lease.tenantId, lease.landlordId].filter((i) => !submitted.has(i))) {
-    await notify(id, "How was your rental experience?", `Please review your rental at "${name}". It's needed before your next rental; both reviews are revealed together.`, "/reviews");
+    await notify(id, "How was your rental experience?", `Please review your rental at "${name}". It's needed before your next rental; both reviews are revealed together.`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
   }
   return true;
 }
@@ -158,6 +154,7 @@ export async function getExit(req: Request, res: Response): Promise<void> {
   });
 }
 
+/** Reviews are written after the lease closes (POST /leases/:id/review); a `review` sent here is ignored. */
 const reviewDraft = z.unknown().optional();
 const requestSchema = z
   .object({
@@ -178,7 +175,7 @@ export async function requestExit(req: Request, res: Response): Promise<void> {
   const input = parseInput(requestSchema, req.body);
   if (input.moveOutDate < startOfToday()) fail("invalid-argument", REASONS.INVALID_INPUT, "Move-out date can't be in the past.");
   // A review written now is checked now, but kept sealed until the lease has closed.
-  const review = input.review ? (await prepareReview(side, lease, input.review)).raw : null;
+  const review = null;
   const open = await prisma.leaseExitRequest.findFirst({ where: { leaseId: lease.id, status: { in: [...OPEN] } } });
   if (open) fail("already-exists", REASONS.CONFLICT, open.requestedByRole === side ? "You've already asked to close this lease." : "The other side has already asked to close this lease — accept or decline their request.");
   try {
@@ -194,7 +191,7 @@ export async function requestExit(req: Request, res: Response): Promise<void> {
   }
   const place = placeOf(await placeLabels([lease]), lease);
   const name = `${place ? `${place}, ` : ""}${lease.property.title ?? lease.property.code}`;
-  await notify(side === "TENANT" ? lease.landlordId : lease.tenantId, side === "TENANT" ? "Tenant wants to move out" : "Landlord wants to close the lease", `${user.fullName} asked to close the lease for ${name} on ${input.moveOutDate.toDateString()}. Reason: ${input.reason}`, "/leases");
+  await notify(side === "TENANT" ? lease.landlordId : lease.tenantId, side === "TENANT" ? "Tenant wants to move out" : "Landlord wants to close the lease", `${user.fullName} asked to close the lease for ${name} on ${input.moveOutDate.toDateString()}. Reason: ${input.reason}`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
   res.locals.message = "Request sent. The lease closes only after the other side accepts.";
   res.status(201).json({ ok: true });
 }
@@ -216,14 +213,14 @@ export async function acceptExit(req: Request, res: Response): Promise<void> {
   const { lease, side, x } = await openRequest(req);
   if (side === x.requestedByRole) fail("permission-denied", REASONS.PERMISSION_DENIED, "The other side has to accept your request.");
   const input = parseInput(acceptSchema, req.body ?? {});
-  const review = input.review ? (await prepareReview(side, lease, input.review)).raw : null;
+  const review = null;
   const done = await prisma.leaseExitRequest.updateMany({
     where: { id: x.id, status: "PENDING" },
     data: { status: "ACCEPTED", respondedById: user.id, respondedAt: new Date(), responseNote: input.note ?? null, responderReview: (review ?? undefined) as Prisma.InputJsonValue | undefined },
   });
   if (!done.count) fail("failed-precondition", REASONS.INVALID_STATE, "This request was just changed. Refresh and try again.");
   await logActivity(req, "lease.exit_accept", "lease", lease.id, { exitRequestId: x.id, moveOutDate: x.moveOutDate });
-  await notify(x.requestedById, "Close request accepted", `Your request to close the lease for "${lease.property.title ?? lease.property.code}" was accepted. It closes on ${x.moveOutDate.toDateString()}.`, "/leases");
+  await notify(x.requestedById, "Close request accepted", `Your request to close the lease for "${lease.property.title ?? lease.property.code}" was accepted. It closes on ${x.moveOutDate.toDateString()}.`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
   const closedNow = x.moveOutDate <= new Date() ? await closeByAgreement(x.id) : false;
   res.locals.message = closedNow ? "Accepted — the lease is now closed." : `Accepted — the lease closes on ${x.moveOutDate.toDateString()}.`;
   res.json({ ok: true, closed: closedNow });
@@ -240,7 +237,7 @@ export async function declineExit(req: Request, res: Response): Promise<void> {
   const done = await prisma.leaseExitRequest.updateMany({ where: { id: x.id, status: "PENDING" }, data: { status: "DECLINED", openLeaseId: null, respondedById: user.id, respondedAt: new Date(), responseNote: note } });
   if (!done.count) fail("failed-precondition", REASONS.INVALID_STATE, "This request was just changed. Refresh and try again.");
   await logActivity(req, "lease.exit_decline", "lease", lease.id, { exitRequestId: x.id, note });
-  await notify(x.requestedById, "Close request declined", `Your request to close the lease for "${lease.property.title ?? lease.property.code}" was declined: ${note}`, "/leases");
+  await notify(x.requestedById, "Close request declined", `Your request to close the lease for "${lease.property.title ?? lease.property.code}" was declined: ${note}`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
   res.locals.message = "Declined. The lease stays active.";
   res.json({ ok: true });
 }
@@ -251,7 +248,7 @@ export async function cancelExit(req: Request, res: Response): Promise<void> {
   if (side !== x.requestedByRole) fail("permission-denied", REASONS.PERMISSION_DENIED, "Only the side that asked can cancel.");
   const done = await prisma.leaseExitRequest.updateMany({ where: { id: x.id, status: "PENDING" }, data: { status: "CANCELLED", openLeaseId: null } });
   if (!done.count) fail("failed-precondition", REASONS.INVALID_STATE, "This request was just answered. Refresh and check.");
-  await notify(side === "TENANT" ? lease.landlordId : lease.tenantId, "Close request withdrawn", `The request to close the lease for "${lease.property.title ?? lease.property.code}" was withdrawn.`, "/leases");
+  await notify(side === "TENANT" ? lease.landlordId : lease.tenantId, "Close request withdrawn", `The request to close the lease for "${lease.property.title ?? lease.property.code}" was withdrawn.`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
   res.locals.message = "Request cancelled";
   res.json({ ok: true });
 }

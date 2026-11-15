@@ -82,13 +82,11 @@ const POLICY_FIELDS: Record<string, Array<[string, string]>> = {
     ["petsAllowed", "Pets"],
     ["smokingAllowed", "Smoking"],
     ["partiesAllowed", "Parties"],
-    ["cookingAllowed", "Cooking"],
     ["sublettingAllowed", "Subletting"],
-    ["workFromHomeAllowed", "Work from home"],
+    // Cooking is asked only for PG / hostel (added below); work-from-home is no longer asked.
   ],
   COMMERCIAL: [
     ["smokingAllowed", "Smoking"],
-    ["cookingAllowed", "Cooking"],
     ["sublettingAllowed", "Subletting"],
     ["landlordApprovalRequired", "Landlord approval for changes"],
   ],
@@ -182,7 +180,7 @@ export function computeCompleteness(input: CompletenessInput, weights: Completen
   add("utilities", "Utilities", fraction(utilFields.map(([key, label]) => [disclosed(input.utility?.[key]), label])));
 
   // Policies
-  const policyFields = POLICY_FIELDS[t.category];
+  const policyFields = t.structure === "ROOMS_BEDS" ? [...POLICY_FIELDS[t.category], ["cookingAllowed", "Cooking"] as [string, string]] : POLICY_FIELDS[t.category];
   add("policies", "Guest policies and restrictions", fraction(policyFields.map(([key, label]) => [disclosed(input.policy?.[key]), label])));
 
   // Amenities

@@ -144,7 +144,7 @@ export async function dashboard(req: Request, res: Response): Promise<void> {
       const [properties, pendingApps, pendingRent, income, maint] = await Promise.all([
         prisma.property.groupBy({ by: ["publicationStatus"], where: { ownerId: user.id, activeStatus: { not: "ARCHIVED" } }, _count: { _all: true } }),
         prisma.rentalApplication.count({ where: { property: { ownerId: user.id }, status: "PENDING" } }),
-        prisma.rentPayment.aggregate({ where: { landlordId: user.id, status: { in: ["DUE", "OVERDUE"] } }, _sum: { amount: true }, _count: { _all: true } }),
+        prisma.rentPayment.aggregate({ where: { landlordId: user.id, status: { in: ["DUE", "OVERDUE", "PARTIAL"] } }, _sum: { amount: true }, _count: { _all: true } }),
         prisma.rentPayment.aggregate({ where: { landlordId: user.id, status: "PAID", paidAt: { gte: startOfMonth() } }, _sum: { amount: true } }),
         prisma.maintenanceRequest.count({ where: { landlordId: user.id, status: { in: ["OPEN", "ASSIGNED", "ACCEPTED", "IN_PROGRESS"] } } }),
       ]);
@@ -169,7 +169,7 @@ export async function dashboard(req: Request, res: Response): Promise<void> {
       });
       if (lease) await ensureRentSchedule(lease);
       const [nextDue, applications, openMaint] = await Promise.all([
-        prisma.rentPayment.findFirst({ where: { tenantId: user.id, status: { in: ["DUE", "OVERDUE"] } }, orderBy: { dueDate: "asc" } }),
+        prisma.rentPayment.findFirst({ where: { tenantId: user.id, status: { in: ["DUE", "OVERDUE", "PARTIAL"] } }, orderBy: { dueDate: "asc" } }),
         prisma.rentalApplication.count({ where: { tenantId: user.id, status: "PENDING" } }),
         prisma.maintenanceRequest.count({ where: { raisedById: user.id, status: { notIn: ["CLOSED", "CANCELLED"] } } }),
       ]);
@@ -246,7 +246,7 @@ export async function propertyReport(req: Request, res: Response): Promise<void>
   const showMoney = user.roles.some((r) => r === "LANDLORD" || r === "SUPER_ADMIN" || r === "FINANCE_ADMIN") || !!user.permissions["rent.view"]?.includes("ALL");
   const [paid, pending, leases, maint] = await Promise.all([
     showMoney ? prisma.rentPayment.groupBy({ by: ["propertyId"], where: { propertyId: { in: ids }, status: "PAID" }, _sum: { amount: true } }) : [],
-    showMoney ? prisma.rentPayment.groupBy({ by: ["propertyId"], where: { propertyId: { in: ids }, status: { in: ["DUE", "OVERDUE"] } }, _sum: { amount: true } }) : [],
+    showMoney ? prisma.rentPayment.groupBy({ by: ["propertyId"], where: { propertyId: { in: ids }, status: { in: ["DUE", "OVERDUE", "PARTIAL"] } }, _sum: { amount: true } }) : [],
     prisma.lease.groupBy({ by: ["propertyId"], where: { propertyId: { in: ids }, status: "ACTIVE" }, _count: { _all: true } }),
     prisma.maintenanceRequest.groupBy({ by: ["propertyId"], where: { propertyId: { in: ids }, status: { notIn: ["CLOSED", "CANCELLED"] } }, _count: { _all: true } }),
   ]);

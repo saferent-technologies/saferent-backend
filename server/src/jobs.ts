@@ -2,6 +2,7 @@ import { finalizeDueExits } from "./controllers/leaseExit.controller";
 import { publishDueReviews } from "./controllers/reviews.controller";
 import { rebuildLocations } from "./properties/locations";
 import { sendRentNotifications } from "./services/rentNotifications";
+import { endExpiredLeases } from "./services/leaseExpiry";
 
 /** Search-suggestion places are rebuilt from the properties at most once an hour (safety net). */
 let lastLocationsRebuild = 0;
@@ -24,6 +25,7 @@ const EVERY_MS = 10 * 60 * 1000;
 async function runOnce(): Promise<void> {
   for (const [name, job] of [
     ["lease-exits", finalizeDueExits],
+    ["lease-expiry", endExpiredLeases],
     ["review-publication", publishDueReviews],
     ["locations", rebuildLocationsHourly],
     ["rent-notifications", sendRentNotifications],
