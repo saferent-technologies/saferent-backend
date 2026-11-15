@@ -107,7 +107,7 @@ export async function useDepositForDue(req: Request, res: Response): Promise<voi
     });
     await logActivity(req, "rent.use_deposit_request", "rent_payment", d.id, { requestId: created.id, amount });
     await notify(d.landlordId, "Pay rent from deposit?", `${firstName(user.fullName)} asked to pay ${periodLabel(d.period)} rent (${inr(amount)}) from the security deposit. Please approve or reject.`, "/rent/requests", "PAYMENT_SUCCESS");
-    res.locals.message = amount < balance ? `Sent to your landlord — ${inr(amount)} from the deposit, ${inr(balance - amount)} still to pay` : "Sent to your landlord";
+    res.locals.message = amount < balance ? `Sent to your landlord. ${inr(amount)} from the deposit, ${inr(balance - amount)} still to pay` : "Sent to your landlord";
     res.status(201).json({ paymentRequest: { id: created.id, type: created.type, status: created.status, amount, rejectReason: null, createdAt: created.createdAt } });
   } catch (err) {
     if ((err as { code?: string }).code === "P2002") fail("already-exists", REASONS.CONFLICT, "There's already a pending request for this month. Wait for your landlord to respond.");
@@ -221,7 +221,7 @@ export async function approvePaymentRequest(req: Request, res: Response): Promis
     "/rent",
     "PAYMENT_SUCCESS",
   );
-  res.locals.message = result.full ? "Approved — marked as paid" : `Approved — ${inr(result.outstandingAfter)} still due`;
+  res.locals.message = result.full ? "Approved and marked as paid" : `Approved. ${inr(result.outstandingAfter)} still due`;
   res.json({ id: r.id, status: "APPROVED", due: { id: r.rentPaymentId, status: result.full ? "PAID" : "PARTIAL", balance: result.outstandingAfter }, receipt: { id: r.rentPaymentId, number: result.receiptNumber } });
 }
 

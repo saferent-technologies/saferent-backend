@@ -208,7 +208,7 @@ export async function adminPutConfig(req: Request, res: Response): Promise<void>
     conflict(err);
   }
   if (!saved.changed.length) {
-    res.locals.message = "Saved — nothing changed";
+    res.locals.message = "Saved. Nothing changed";
   } else {
     res.locals.message = `Configuration saved as version ${saved.version}`;
   }

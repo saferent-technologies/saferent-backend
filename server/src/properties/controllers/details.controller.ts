@@ -157,10 +157,10 @@ export async function savePricing(tx: Tx, req: Request, property: Property, unit
   if (listing !== "SALE" && input.salePrice) fail("invalid-argument", REASONS.INVALID_INPUT, "A sale price only applies to properties listed for sale.");
   // Buildings with separately rented units / rooms: the building only has common charges and terms.
   if (!unitId && (input.monthlyRent || input.securityDeposit || input.salePrice)) {
-    if (pricedPerRoom(property.propertyTypeKey)) fail("invalid-argument", REASONS.INVALID_INPUT, "For a PG or hostel, set the rent and deposit on each room or bed — the building only has common charges.");
+    if (pricedPerRoom(property.propertyTypeKey)) fail("invalid-argument", REASONS.INVALID_INPUT, "For a PG or hostel, set the rent and deposit on each room or bed. The building only has common charges.");
     if (pricedPerUnit(property.propertyTypeKey, property.attributes as Record<string, unknown> | null)) {
       const unit = (propertyTypeDef(property.propertyTypeKey)?.unitLabel ?? "unit").toLowerCase();
-      fail("invalid-argument", REASONS.INVALID_INPUT, `Set the rent, deposit or price on each ${unit} — the building only has common charges.`);
+      fail("invalid-argument", REASONS.INVALID_INPUT, `Set the rent, deposit or price on each ${unit}. The building only has common charges.`);
     }
   }
   const scopeKey = unitId ?? PROPERTY_SCOPE;

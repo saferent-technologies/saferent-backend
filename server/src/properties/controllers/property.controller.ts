@@ -324,7 +324,7 @@ export async function updateProperty(req: Request, res: Response): Promise<void>
   // APPROVED / PUBLISHED: the change request's working copy; the live listing stays as it is.
   const property = await editTarget(req);
   const respond = async (message: string) => {
-    res.locals.message = property.revisionOfId ? "Saved to your changes. Submit them for verification — your listing stays live meanwhile." : message;
+    res.locals.message = property.revisionOfId ? "Saved to your changes. Submit them for verification. Your listing stays live meanwhile." : message;
     const live = property.revisionOfId ? await prisma.property.findUniqueOrThrow({ where: { id: property.revisionOfId } }) : null;
     res.json({ property: live ? await draftView(live, property.id) : presentProperty(await loadAggregate(prisma, property.id)) });
   };
@@ -371,7 +371,7 @@ export async function updateProperty(req: Request, res: Response): Promise<void>
     await updateWithVersion(tx, property.id, property.version, data);
     if (Object.keys(delta.new).length) await audit(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, action: "property.update", oldValue: delta.old, newValue: delta.new });
     if (nextPublication !== property.publicationStatus) {
-      await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "publicationStatus", from: property.publicationStatus, to: nextPublication, reason: "Listing details changed — re-verification required." });
+      await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "publicationStatus", from: property.publicationStatus, to: nextPublication, reason: "Listing details changed. Re-verification required." });
     }
   });
   // The old address's places lose this property when the address changed (the new ones are synced by withProperty).

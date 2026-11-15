@@ -122,8 +122,8 @@ export function sanitizeText(text: string): string {
 
 /** Reviews must not share personal contact details or links. Returns the problem, or null when fine. */
 export function contentProblem(text: string): string | null {
-  if (PHONE.test(text)) return "Remove phone numbers — reviews must not share personal contact details.";
-  if (EMAIL.test(text)) return "Remove email addresses — reviews must not share personal contact details.";
+  if (PHONE.test(text)) return "Remove phone numbers. Reviews must not share personal contact details.";
+  if (EMAIL.test(text)) return "Remove email addresses. Reviews must not share personal contact details.";
   if (LINK.test(text)) return "Links aren't allowed in reviews.";
   if (/(.)\1{14,}/.test(text)) return "Please write a real review.";
   return null;

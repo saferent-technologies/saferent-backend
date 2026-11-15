@@ -99,7 +99,7 @@ export async function assignProvider(req: Request, res: Response): Promise<void>
   const provider = await prisma.user.findFirst({ where: { id: providerId, role: "SERVICE_PROVIDER", accountStatus: "ACTIVE" } });
   if (!provider) fail("invalid-argument", REASONS.INVALID_INPUT, "Choose an active service provider.");
   await prisma.maintenanceRequest.update({ where: { id: r.id }, data: { assignedProviderId: providerId, status: "ASSIGNED" } });
-  await notify(providerId, "New job assigned", `${r.title} — ${r.property.locality ?? r.property.city}.`, "/maintenance", "MAINTENANCE");
+  await notify(providerId, "New job assigned", `${r.title}, ${r.property.locality ?? r.property.city}.`, "/maintenance", "MAINTENANCE");
   await notify(r.raisedById, "Service provider assigned", `${provider.fullName} will handle "${r.title}".`, "/maintenance", "MAINTENANCE");
   res.json({ ok: true });
 }
@@ -143,7 +143,7 @@ export async function updateJob(req: Request, res: Response): Promise<void> {
     },
   });
   for (const id of new Set([r.landlordId, r.raisedById])) {
-    await notify(id, input.status === "COMPLETED" ? "Job completed" : "Work started", `"${r.title}"${input.serviceCharge ? ` — charge ₹${input.serviceCharge}` : ""}.`, "/maintenance", "MAINTENANCE");
+    await notify(id, input.status === "COMPLETED" ? "Job completed" : "Work started", `"${r.title}"${input.serviceCharge ? `, charge ₹${input.serviceCharge}` : ""}.`, "/maintenance", "MAINTENANCE");
   }
   res.json({ ok: true });
 }

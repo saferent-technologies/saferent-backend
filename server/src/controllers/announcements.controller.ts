@@ -95,9 +95,10 @@ export async function createAnnouncement(req: Request, res: Response): Promise<v
       return a;
     });
 
-    const preview = input.body.length > 120 ? `${input.body.slice(0, 117)}…` : input.body;
+    const preview = input.body.slice(0, 120);
     for (const tenantId of byTenant.keys()) {
-      await notify(tenantId, input.title, preview, `/announcements/${created.id}`, undefined, { type: "ANNOUNCEMENT", announcementId: created.id });
+      // Data-only push: the app builds the notification and loads the picture with the tenant's token.
+      await notify(tenantId, input.title, preview, `/announcements/${created.id}`, undefined, { type: "ANNOUNCEMENT", announcementId: created.id }, { dataOnly: true, imageUrl: created.imageKey ? imageUrl(created.id) : null });
     }
     console.info("[announcements] sent", { announcementId: created.id, recipients: byTenant.size });
     res.locals.message = `Sent to ${byTenant.size} tenant${byTenant.size > 1 ? "s" : ""}`;

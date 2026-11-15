@@ -33,7 +33,7 @@ export const consentItemsSchema = z
       seen.add(c.type);
       if (VERSIONED.includes(c.type) && !c.granted) ctx.addIssue({ code: "custom", message: `${c.type} can only be accepted (granted must be true).`, path: [i, "granted"] });
       if (VERSIONED.includes(c.type) && !c.version) ctx.addIssue({ code: "custom", message: `${c.type} needs a version.`, path: [i, "version"] });
-      if (c.type === "WHATSAPP" && c.version !== "") ctx.addIssue({ code: "custom", message: 'WHATSAPP has no version — send "".', path: [i, "version"] });
+      if (c.type === "WHATSAPP" && c.version !== "") ctx.addIssue({ code: "custom", message: 'WHATSAPP has no version. Send "".', path: [i, "version"] });
     });
   });
 

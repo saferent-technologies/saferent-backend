@@ -48,7 +48,7 @@ const uploadSchema = z
     requestId: z.string().uuid().optional().or(z.literal("").transform(() => undefined)),
   })
   .strict()
-  .refine((v) => [v.unitId, v.roomId, v.bedId].filter(Boolean).length <= 1, { message: "Choose one flat, room or bed — or the whole property.", path: ["unitId"] })
+  .refine((v) => [v.unitId, v.roomId, v.bedId].filter(Boolean).length <= 1, { message: "Choose one flat, room or bed, or the whole property.", path: ["unitId"] })
   .refine((v) => !v.documentDate || !v.expiryDate || v.expiryDate >= v.documentDate, { message: "Expiry date must be after the document date.", path: ["expiryDate"] });
 
 /** Wraps a handler so uploaded files are deleted if authorization or validation fails. */

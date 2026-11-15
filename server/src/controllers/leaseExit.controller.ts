@@ -177,7 +177,7 @@ export async function requestExit(req: Request, res: Response): Promise<void> {
   // A review written now is checked now, but kept sealed until the lease has closed.
   const review = null;
   const open = await prisma.leaseExitRequest.findFirst({ where: { leaseId: lease.id, status: { in: [...OPEN] } } });
-  if (open) fail("already-exists", REASONS.CONFLICT, open.requestedByRole === side ? "You've already asked to close this lease." : "The other side has already asked to close this lease — accept or decline their request.");
+  if (open) fail("already-exists", REASONS.CONFLICT, open.requestedByRole === side ? "You've already asked to close this lease." : "The other side has already asked to close this lease. Accept or decline their request.");
   try {
     await prisma.$transaction(async (tx) => {
       await tx.leaseExitRequest.create({
@@ -222,7 +222,7 @@ export async function acceptExit(req: Request, res: Response): Promise<void> {
   await logActivity(req, "lease.exit_accept", "lease", lease.id, { exitRequestId: x.id, moveOutDate: x.moveOutDate });
   await notify(x.requestedById, "Close request accepted", `Your request to close the lease for "${lease.property.title ?? lease.property.code}" was accepted. It closes on ${x.moveOutDate.toDateString()}.`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
   const closedNow = x.moveOutDate <= new Date() ? await closeByAgreement(x.id) : false;
-  res.locals.message = closedNow ? "Accepted — the lease is now closed." : `Accepted — the lease closes on ${x.moveOutDate.toDateString()}.`;
+  res.locals.message = closedNow ? "Accepted. The lease is now closed." : `Accepted. The lease closes on ${x.moveOutDate.toDateString()}.`;
   res.json({ ok: true, closed: closedNow });
 }
 

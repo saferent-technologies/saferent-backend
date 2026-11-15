@@ -223,7 +223,7 @@ export function presentPublic(p: PropertyAggregate) {
       YES: "Yes",
       NO: "No",
       NOT_APPLICABLE: "Not applicable",
-      NOT_DISCLOSED: "Not disclosed by the landlord — ask before you rent.",
+      NOT_DISCLOSED: "Not disclosed by the landlord. Ask before you rent.",
     },
   };
 }

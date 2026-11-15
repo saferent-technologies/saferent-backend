@@ -320,7 +320,7 @@ export async function landlordUpdate(req: Request, res: Response): Promise<void>
     });
     await savePhotos(req, r.id, update.id);
     const what = changes ? `${STATUS_LABEL[input.status!]}` : "New remark";
-    await notify(r.raisedById, `Request update: ${what}`, `"${r.title}"${input.remark ? ` — ${input.remark}` : ""}`, link(r.id), "MAINTENANCE", { requestId: r.id });
+    await notify(r.raisedById, `Request update: ${what}`, `"${r.title}"${input.remark ? `: ${input.remark}` : ""}`, link(r.id), "MAINTENANCE", { requestId: r.id });
     res.locals.message = "Update sent to the tenant";
     res.json({ request: await detail(r.id, user.id) });
   } catch (err) {
@@ -368,8 +368,8 @@ export async function reopenRequest(req: Request, res: Response): Promise<void> 
       return tx.maintenanceUpdate.create({ data: { requestId: r.id, byId: user.id, byRole: "TENANT", kind: "REOPENED", fromStatus: "RESOLVED", toStatus: "OPEN", remark } });
     });
     await savePhotos(req, r.id, update.id);
-    await notify(r.landlordId, "Request reopened", `${user.fullName}: "${r.title}" — ${remark}`, link(r.id), "MAINTENANCE", { requestId: r.id });
-    res.locals.message = "Reopened — your landlord has been told";
+    await notify(r.landlordId, "Request reopened", `${user.fullName}: "${r.title}". ${remark}`, link(r.id), "MAINTENANCE", { requestId: r.id });
+    res.locals.message = "Reopened. Your landlord has been told";
     res.json({ request: await detail(r.id, user.id) });
   } catch (err) {
     await dropUploads(req);
@@ -399,7 +399,7 @@ export async function remindRequest(req: Request, res: Response): Promise<void> 
 export async function cancelRequest(req: Request, res: Response): Promise<void> {
   const user = me(req);
   const r = await ownRequest(req);
-  if (!["OPEN", "ASSIGNED", "DECLINED"].includes(r.status)) fail("failed-precondition", REASONS.INVALID_STATE, "Work has already started on this request — mark it resolved instead.");
+  if (!["OPEN", "ASSIGNED", "DECLINED"].includes(r.status)) fail("failed-precondition", REASONS.INVALID_STATE, "Work has already started on this request. Mark it resolved instead.");
   const { remark } = parseInput(remarkSchema, req.body ?? {});
   await prisma.$transaction(async (tx) => {
     const done = await tx.maintenanceRequest.updateMany({ where: { id: r.id, status: r.status }, data: { status: "CANCELLED" } });

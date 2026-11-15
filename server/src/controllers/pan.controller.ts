@@ -150,7 +150,7 @@ export async function requestPan(req: Request, res: Response): Promise<void> {
   const data = { status: "PENDING" as const, note: input.note || null, requestedAt: new Date(), decidedAt: null, decidedById: null };
   await prisma.panShareRequest.upsert({ where: { leaseId: lease.id }, create: { leaseId: lease.id, tenantId: lease.tenantId, landlordId: lease.landlordId, ...data }, update: data });
   await logActivity(req, "pan.request", "lease", lease.id);
-  await notify(lease.landlordId, "PAN requested", `${user.fullName} asked you to share your PAN for their HRA claim ("${leaseName(lease)}"). You decide — it's only shared if you approve.`, "/profile");
+  await notify(lease.landlordId, "PAN requested", `${user.fullName} asked you to share your PAN for their HRA claim ("${leaseName(lease)}"). You decide. It's only shared if you approve.`, "/profile");
   res.json({ ok: true });
 }
 

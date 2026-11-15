@@ -268,7 +268,7 @@ export async function rentReceipt(req: Request, res: Response): Promise<void> {
   const landlordPan = await receiptPan(rent.lease.id, rent.lease.landlord.id);
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(printableDoc(`Rent receipt ${rent.receiptNumber}`, `
-    <h1>Rent Receipt${test ? " (TEST — no money received)" : ""}</h1>
+    <h1>Rent Receipt${test ? " (TEST, no money received)" : ""}</h1>
     <p class="muted">Receipt no. ${escapeHtml(rent.receiptNumber ?? "")}</p>
     <table>
       <tr><th>Property</th><td>${place ? `${escapeHtml(place)}, ` : ""}${escapeHtml(rent.lease.property.title ?? rent.lease.property.code)}, ${escapeHtml(rent.lease.property.city ?? "")}</td></tr>

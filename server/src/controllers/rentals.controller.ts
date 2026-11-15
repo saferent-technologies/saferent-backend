@@ -301,7 +301,7 @@ export async function terminateLease(req: Request, res: Response): Promise<void>
   if (lease.status !== "ACTIVE") fail("failed-precondition", REASONS.INVALID_STATE, "Only active leases can be terminated.");
   // Landlords and tenants close a lease by mutual agreement (POST /leases/:id/exit). Direct termination
   // is kept only for SafeRent staff handling disputes.
-  if (!can(req, "leases.manage", "ALL")) fail("permission-denied", REASONS.PERMISSION_DENIED, "Send a close request instead — the lease closes when the other side accepts.");
+  if (!can(req, "leases.manage", "ALL")) fail("permission-denied", REASONS.PERMISSION_DENIED, "Send a close request instead. The lease closes when the other side accepts.");
   const { reason } = parseInput(terminateSchema, req.body);
   await withProperty(lease.propertyId, async (tx) => {
     await tx.lease.update({ where: { id: lease.id }, data: { status: "TERMINATED", endedAt: new Date() } });
@@ -344,11 +344,11 @@ export async function leaseAgreement(req: Request, res: Response): Promise<void>
   const address = [p.addressLine, p.locality, p.city, p.state, p.pincode].filter(Boolean).join(", ");
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   const title = p.title ?? p.code;
-  res.send(printableDoc(`Lease Agreement — ${title}`, `
+  res.send(printableDoc(`Lease Agreement: ${title}`, `
     <h1>Residential Lease Agreement</h1>
     <p class="muted">Agreement ID: ${escapeHtml(lease.code ?? lease.id)} · Status: ${lease.status}</p>
     <table>
-      <tr><th>Property</th><td>${escapeHtml(title)}${lease.unit ? ` — ${escapeHtml(lease.unit.name ?? lease.unit.unitNumber ?? lease.unit.code)}` : ""}<br>${escapeHtml(address)}</td></tr>
+      <tr><th>Property</th><td>${escapeHtml(title)}${lease.unit ? `, ${escapeHtml(lease.unit.name ?? lease.unit.unitNumber ?? lease.unit.code)}` : ""}<br>${escapeHtml(address)}</td></tr>
       <tr><th>Landlord</th><td>${escapeHtml(lease.landlord.fullName)}</td></tr>
       <tr><th>Tenant</th><td>${escapeHtml(lease.tenant.fullName)}</td></tr>
       <tr><th>Term</th><td>${d(lease.startDate)} to ${d(lease.endDate)}</td></tr>

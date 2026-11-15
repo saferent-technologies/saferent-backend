@@ -67,7 +67,7 @@ export async function myReferrals(req: Request, res: Response): Promise<void> {
     const c = map.get(type)!;
     if (!c.enabled) continue;
     const { code, created } = await ensureCode(user.id, kind);
-    if (created) await notify(user.id, "Your referral link is ready", kind === "TENANT" ? `Share it with friends — you get ₹${c.rewardAmount ?? 0} credit when they join and finish onboarding.` : "Share it with landlords — you get a free month of the top plan when they're verified.", "/referrals");
+    if (created) await notify(user.id, "Your referral link is ready", kind === "TENANT" ? `Share it with friends. You get ₹${c.rewardAmount ?? 0} credit when they join and finish onboarding.` : "Share it with landlords. You get a free month of the top plan when they're verified.", "/referrals");
     const url = linkFor(code.code);
     codes.push({
       kind,
@@ -76,7 +76,7 @@ export async function myReferrals(req: Request, res: Response): Promise<void> {
       expiresAt: code.expiresAt,
       opens: code.opens,
       reward: kind === "TENANT" ? `₹${c.rewardAmount ?? 0} per friend` : `${c.durationMonths ?? 1} free month(s) of the top landlord plan`,
-      shareText: kind === "TENANT" ? `Join me on SafeRent — verified homes and simple rent. Sign up with my link: ${url}` : `List your property on SafeRent — verified tenants, rent tracking and more. Join with my link: ${url}`,
+      shareText: kind === "TENANT" ? `Join me on SafeRent: verified homes and simple rent. Sign up with my link: ${url}` : `List your property on SafeRent: verified tenants, rent tracking and more. Join with my link: ${url}`,
       terms: c.terms,
     });
   }
@@ -295,7 +295,7 @@ export async function adminAction(req: Request, res: Response): Promise<void> {
       await evaluateReferral(r.id, actor.id);
       break;
     case "REJECT": {
-      if (!open) fail("failed-precondition", REASONS.INVALID_STATE, r.rewardStatus === "REWARD_CREDITED" ? "Already rewarded — use Reverse." : "This referral is already closed.");
+      if (!open) fail("failed-precondition", REASONS.INVALID_STATE, r.rewardStatus === "REWARD_CREDITED" ? "Already rewarded. Use Reverse." : "This referral is already closed.");
       const done = await prisma.referral.updateMany({ where: { id: r.id, status: { in: [...PENDING] } }, data: { status: "REJECTED", rewardStatus: "NOT_DUE", rejectionReason: reason } });
       if (!done.count) fail("failed-precondition", REASONS.INVALID_STATE, "This referral just changed. Refresh and try again.");
       await log();

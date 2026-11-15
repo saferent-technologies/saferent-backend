@@ -181,7 +181,7 @@ export async function remindDue(req: Request, res: Response): Promise<void> {
   const user = me(req);
   await markOverdue({ landlordId: user.id });
   const due = found(await prisma.rentPayment.findFirst({ where: { id: idParam(req), landlordId: user.id }, include: rentInclude }), "Rent due");
-  if (!isUnpaid(due.status)) fail("failed-precondition", REASONS.INVALID_STATE, due.status === "PAID" ? "This rent is already paid." : "This rent was waived — nothing to remind.");
+  if (!isUnpaid(due.status)) fail("failed-precondition", REASONS.INVALID_STATE, due.status === "PAID" ? "This rent is already paid." : "This rent was waived. Nothing to remind.");
   const firstName = due.lease.tenant.fullName.split(/\s+/)[0] || due.lease.tenant.fullName;
   const now = new Date();
   const claimed = await prisma.rentPayment.updateMany({
@@ -229,7 +229,7 @@ export async function receiptPdf(req: Request, res: Response): Promise<void> {
   const paidText = rs(Number(r.paidAmount));
   const lines: PdfLine[] = [
     { kind: "text", text: "SafeRent", size: 20, bold: true, color: [0.13, 0.36, 0.86] },
-    { kind: "text", text: test ? "Rent Receipt (TEST - no money received)" : r.status === "PARTIAL" ? "Rent Receipt (part payment)" : "Rent Receipt", size: 15, bold: true },
+    { kind: "text", text: test ? "Rent Receipt (TEST, no money received)" : r.status === "PARTIAL" ? "Rent Receipt (part payment)" : "Rent Receipt", size: 15, bold: true },
     { kind: "text", text: `Receipt no. ${r.receiptNumber ?? ""}`, size: 10, color: [0.42, 0.45, 0.5] },
     { kind: "rule" },
     { kind: "row", label: r.status === "PARTIAL" ? "Paid so far" : "Amount paid", value: paidText, size: 13 },
@@ -520,6 +520,6 @@ export async function reportDepositRefund(req: Request, res: Response): Promise<
   if (input.refunded !== "YES") {
     await notify(lease.landlordId, "Deposit refund", input.refunded === "NO" ? "Your former tenant says the security deposit hasn't been refunded yet." : `Your former tenant says ₹${amount.toLocaleString("en-IN")} of the security deposit was refunded.`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
   }
-  res.locals.message = "Thanks — saved";
+  res.locals.message = "Thanks, saved";
   res.json({ refund: { refunded: input.refunded, amount, reportedAt: new Date() } });
 }

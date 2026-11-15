@@ -40,7 +40,7 @@ const mediaLink = z
   .default("");
 /** Images for the app: PNG / JPG / WEBP only — SVG links are refused (the app doesn't render SVG). */
 const SVG_LINK = /\.svgz?([?#].*)?$/i;
-const imageLink = mediaLink.refine((v) => !SVG_LINK.test(v), { message: "SVG isn't supported — use a PNG, JPG or WEBP image." });
+const imageLink = mediaLink.refine((v) => !SVG_LINK.test(v), { message: "SVG isn't supported. Use a PNG, JPG or WEBP image." });
 /** Legal document version, e.g. "2026-11-01" or "v3". Letters, digits, dot, dash, underscore; max 32. */
 const legalVersion = z.string().trim().regex(/^[A-Za-z0-9._-]{1,32}$/, "Use a version like 2026-11-01 (letters, numbers, . - _ ; max 32).").default("2026-11-01");
 const color = (def: string) => z.string().trim().regex(/^#[0-9A-Fa-f]{6}$/, "Use a colour like #F97316.").default(def);
@@ -48,7 +48,7 @@ const semver = (def: string) => z.string().trim().regex(/^\d{1,4}\.\d{1,4}\.\d{1
 const phone = z
   .string()
   .trim()
-  .refine((v) => v === "" || /^\+?\d{10,15}$/.test(v), { message: "Enter a phone number with 10–15 digits, e.g. +919876543210." })
+  .refine((v) => v === "" || /^\+?\d{10,15}$/.test(v), { message: "Enter a phone number with 10 to 15 digits, e.g. +919876543210." })
   .default("");
 const isoDate = z
   .string()

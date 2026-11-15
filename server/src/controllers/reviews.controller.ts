@@ -468,7 +468,7 @@ export async function reportReview(req: Request, res: Response): Promise<void> {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") fail("already-exists", REASONS.CONFLICT, "You've already reported this review.");
     throw err;
   }
-  res.locals.message = "Thanks — SafeRent will look at this review.";
+  res.locals.message = "Thanks, SafeRent will look at this review.";
   res.status(201).json({ ok: true });
 }
 
@@ -587,7 +587,7 @@ export async function resolveReviewReport(req: Request, res: Response): Promise<
     await tx.reviewModerationLog.create({ data: { reviewId: report.reviewId, action: `REPORT_${decision}`, fromStatus: report.review.status, toStatus: null, reason: resolution, moderatorId: user.id } });
     await logActivity(req, `review_report.${decision.toLowerCase()}`, "review_report", report.id, { reviewId: report.reviewId, resolution }, tx);
   });
-  await notify(report.reportedById, "Your report was reviewed", decision === "UPHELD" ? "Thanks — we acted on the review you reported." : `We reviewed your report and kept the review: ${resolution}`, "/reviews");
+  await notify(report.reportedById, "Your report was reviewed", decision === "UPHELD" ? "Thanks, we acted on the review you reported." : `We reviewed your report and kept the review: ${resolution}`, "/reviews");
   res.locals.message = "Report closed";
   res.json({ ok: true });
 }

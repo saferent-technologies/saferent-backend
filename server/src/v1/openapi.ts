@@ -12,10 +12,10 @@ type Doc = { summary: string; body?: z.ZodType; query?: z.ZodType; multipart?: R
 
 /** Detailed docs for the property APIs (bodies / queries are converted from the zod schemas). */
 const DOCS: Record<string, Doc> = {
-  "GET /public/listings": { summary: "Public website search (no login): PUBLISHED, ACTIVE listings with availability — same filters as /browse. Owner identity is never included." },
+  "GET /public/listings": { summary: "Public website search (no login): PUBLISHED, ACTIVE listings with availability, same filters as /browse. Owner identity is never included." },
   "GET /public/listings/{propertyId}": { summary: "Public listing details (no login). Exact map coordinates are withheld; apply / enquire need a signed-in tenant." },
   "GET /public/images/{imageId}": { summary: "Approved photo of a published listing (no login, cacheable)." },
-  "POST /userProfile": { summary: "User profile screen after OTP (POST or PUT) — one call for first-time users (creates the account, 201) and existing users (200). Body: isProfileCompleted, role (LANDLORD|TENANT), fullName (required for new accounts), gender, dateOfBirth (YYYY-MM-DD, 18+), city, state, email?, occupation?, referralCode? (new only), consents? [{type TERMS|PRIVACY|WHATSAPP, version, granted}], clientAcceptedAt?, source, appVersion?. A new account must accept TERMS + PRIVACY. Returns user, isProfileCompleted, missingFields, role, roles, termsAccepted, consents." },
+  "POST /userProfile": { summary: "User profile screen after OTP (POST or PUT). One call for first-time users (creates the account, 201) and existing users (200). Body: isProfileCompleted, role (LANDLORD|TENANT), fullName (required for new accounts), gender, dateOfBirth (YYYY-MM-DD, 18+), city, state, email?, occupation?, referralCode? (new only), consents? [{type TERMS|PRIVACY|WHATSAPP, version, granted}], clientAcceptedAt?, source, appVersion?. A new account must accept TERMS + PRIVACY. Returns user, isProfileCompleted, missingFields, role, roles, termsAccepted, consents." },
   "PUT /userProfile": { summary: "Same as POST /userProfile." },
   "PUT /devices/fcm-token": { summary: "Save / refresh this device's FCM push token: { fcmToken, platform: ANDROID|IOS|WEB, appVersion? }. Also accepted in the body of POST /auth/phone/complete; send { fcmToken } to POST /auth/logout to remove it." },
   "GET /admin/users/{uid}/consents": { summary: "Full consent history for a Firebase uid, newest first (consents.view; read-only)." },
@@ -69,7 +69,7 @@ const DOCS: Record<string, Doc> = {
   "POST /properties/{propertyId}/rooms/{roomId}/beds/{bedId}/release": { summary: "Release a bed" },
   "POST /properties/{propertyId}/images": {
     summary: "Upload photos (multipart/form-data)",
-    multipart: { files: "1–10 image files; formats and size per GET /app/config → properties (content is checked, not just the extension)", category: "Image category", unitId: "optional", roomId: "optional", inspectionId: "optional — inspection evidence" },
+    multipart: { files: "1 to 10 image files; formats and size per GET /app/config → properties (content is checked, not just the extension)", category: "Image category", unitId: "optional", roomId: "optional", inspectionId: "optional, inspection evidence" },
   },
   "PATCH /properties/{propertyId}/images/{imageId}": { summary: "Change image category / display order", body: S.imageUpdateSchema },
   "POST /properties/{propertyId}/documents": { summary: "Upload a private document (multipart/form-data)", multipart: { file: "One file; formats and size per GET /app/config → documents", docType: "Document type", unitId: "optional" } },
@@ -147,7 +147,7 @@ export function buildOpenApi(router: Router, serverUrl = "/api/v1") {
         "",
         "**Headers.** `X-Client-Platform: ANDROID | IOS | ADMIN_PANEL` (recorded in audit logs), optional `X-Request-Id`, and `X-Firebase-AppCheck` when App Check is enforced.",
         "",
-        "**Responses.** `{ success, message, data, meta }` on success; `{ success: false, message, errorCode, reason, data: null }` on error. Error codes: VALIDATION_ERROR (400, `details.issues` lists fields), UNAUTHENTICATED (401), SESSION_REQUIRED, FORBIDDEN (403), NOT_FOUND (404 — also returned for records outside your scope), CONFLICT (409 — duplicates, stale `version`), INVALID_STATE / PRECONDITION_FAILED (412), RATE_LIMITED (429), INTERNAL_ERROR (500).",
+        "**Responses.** `{ success, message, data, meta }` on success; `{ success: false, message, errorCode, reason, data: null }` on error. Error codes: VALIDATION_ERROR (400, `details.issues` lists fields), UNAUTHENTICATED (401), SESSION_REQUIRED, FORBIDDEN (403), NOT_FOUND (404, also returned for records outside your scope), CONFLICT (409, duplicates, stale `version`), INVALID_STATE / PRECONDITION_FAILED (412), RATE_LIMITED (429), INTERNAL_ERROR (500).",
         "",
         "**Pagination.** `?page=1&pageSize=20` (max 100); `meta` returns page, pageSize, total, totalPages.",
         "",

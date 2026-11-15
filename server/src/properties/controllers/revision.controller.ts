@@ -170,6 +170,6 @@ export async function reviewRevision(req: Request, res: Response): Promise<void>
   await removeUnusedFiles(removedFiles);
   void syncLocationsForProperty(property.id, property);
   await notify(property.ownerId, "Your changes are live 🎉", `"${title}" now shows your updated details.`, `/properties/${property.id}`);
-  res.locals.message = "Changes approved — the listing is updated";
+  res.locals.message = "Changes approved. The listing is updated";
   res.json({ property: propertySummary(await prisma.property.findUniqueOrThrow({ where: { id: property.id } })) });
 }

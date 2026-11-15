@@ -139,14 +139,14 @@ async function settlePaid(topupId: string, payment: { id: string; method: string
     await prisma.$transaction(async (tx) => {
       const claimed = await tx.walletTopup.updateMany({ where: { id: topup.id, status: { in: ["CREATED", "PENDING", "FAILED"] } }, data: { status: "PAID", providerPaymentId: payment.id, method: payment.method, paidAt: new Date(), failureReason: null } });
       if (!claimed.count) return;
-      await creditWallet(tx, { userId: topup.userId, amount: Number(topup.amount), key: `topup:${topup.id}`, type: "TOPUP", bucket: "CASH", note: `Added via ${PROVIDERS[topup.provider].label} (${topup.code})${topup.testMode ? " — TEST" : ""}`, actorId: topup.userId });
+      await creditWallet(tx, { userId: topup.userId, amount: Number(topup.amount), key: `topup:${topup.id}`, type: "TOPUP", bucket: "CASH", note: `Added via ${PROVIDERS[topup.provider].label} (${topup.code})${topup.testMode ? " (TEST)" : ""}`, actorId: topup.userId });
       credited = true;
     });
   } catch (err) {
     if ((err as { code?: string }).code === "P2002") return false; // already credited / payment reused
     throw err;
   }
-  if (credited) await notify(topup.userId, `₹${Number(topup.amount).toFixed(2)} added to your wallet`, `Payment ${payment.id} received${topup.testMode ? " (test mode — no real money)" : ""}.`, "/wallet");
+  if (credited) await notify(topup.userId, `₹${Number(topup.amount).toFixed(2)} added to your wallet`, `Payment ${payment.id} received${topup.testMode ? " (test mode, no real money)" : ""}.`, "/wallet");
   return credited;
 }
 
