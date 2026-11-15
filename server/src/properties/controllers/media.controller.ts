@@ -1,3 +1,4 @@
+import { appConfig } from "../../appConfig/service";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { RATE_LIMITS, REASONS } from "../../config/constants";
@@ -8,19 +9,17 @@ import { prisma } from "../../lib/prisma";
 import { consumeRateLimit } from "../../lib/rateLimit";
 import { discardUploads, storage } from "../../lib/uploads";
 import { parseInput } from "../../lib/validation";
-import { can, me } from "../../middleware/auth";
+import { can, hasRole, me } from "../../middleware/auth";
 import { imageUrl } from "../presenters";
 import { documentVerifySchema, imageUpdateSchema, imageUploadSchema } from "../schemas";
-import { audit, childKey, inScope, isModerator, scopedProperty, withProperty } from "../service";
-import { canEditContent } from "../workflow";
+import { audit, childKey, inScope, isModerator, withProperty } from "../service";
+import { editTarget } from "../revisions";
 import { evaluateForUser } from "../../services/referral.service";
 
-const MAX_IMAGES = 40;
 
 async function editable(req: Request) {
-  const property = await scopedProperty(req, "properties.manage");
-  const decision = canEditContent(property, isModerator(req));
-  if (!decision.ok) fail("failed-precondition", REASONS.INVALID_STATE, decision.reason);
+  // APPROVED / PUBLISHED listings: the working copy of their change request (the live data never changes here).
+  const property = await editTarget(req);
   return property;
 }
 
@@ -48,7 +47,9 @@ export const uploadImages = cleanupOnError(async (req, res) => {
   if (input.roomId && !(await prisma.propertyRoom.count({ where: { id: input.roomId, propertyId: property.id } }))) fail("invalid-argument", REASONS.INVALID_INPUT, "Room not found in this property.");
   const inspection = typeof inspectionId === "string" && inspectionId ? found(await prisma.propertyInspection.findFirst({ where: { id: inspectionId, propertyId: property.id } }), "Inspection") : null;
   const existing = await prisma.propertyImage.count({ where: { propertyId: property.id } });
-  if (existing + files.length > MAX_IMAGES) fail("invalid-argument", REASONS.INVALID_INPUT, `A property can have at most ${MAX_IMAGES} photos.`);
+  // Limit from Admin → App configuration → Properties.
+  const maxImages = (await appConfig()).properties.maxImages;
+  if (existing + files.length > maxImages) fail("invalid-argument", REASONS.INVALID_INPUT, `A property can have at most ${maxImages} photos.`);
   const user = me(req);
   const created = await withProperty(property.id, async (tx) => {
     const rows = [];
@@ -127,7 +128,10 @@ export async function getImageFile(req: Request, res: Response): Promise<void> {
 export async function verifyDocument(req: Request, res: Response): Promise<void> {
   const doc = found(await prisma.propertyDocument.findFirst({ where: childKey(req, "docId"), include: { property: { select: { id: true, ownerId: true, title: true, code: true } } } }), "Document");
   if (!(await inScope(req, "documents.verify", doc.propertyId))) fail("not-found", REASONS.NOT_FOUND, "Document not found.");
-  if (doc.property.ownerId === me(req).id || doc.uploadedById === me(req).id) fail("permission-denied", REASONS.PERMISSION_DENIED, "You cannot verify a document you uploaded or own.");
+  // Four-eyes rule for staff: nobody verifies a document they uploaded or own — except a Super Admin,
+  // who can upload and verify (recorded in the audit trail like any other verification).
+  const superAdmin = hasRole(req, "SUPER_ADMIN");
+  if (!superAdmin && (doc.property.ownerId === me(req).id || doc.uploadedById === me(req).id)) fail("permission-denied", REASONS.PERMISSION_DENIED, "You cannot verify a document you uploaded or own.");
   if (!doc.needsVerification) fail("failed-precondition", REASONS.INVALID_STATE, "Only ownership documents are verified by SafeRent.");
   const input = parseInput(documentVerifySchema, req.body);
   await withProperty(doc.propertyId, async (tx) => {

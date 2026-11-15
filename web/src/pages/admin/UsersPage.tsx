@@ -20,19 +20,37 @@ import { useListParams } from "@/hooks/useListParams";
 import { useQuery } from "@/hooks/useQuery";
 import { Avatar } from "@/layouts/DashboardLayout";
 import { request } from "@/services/api";
-import type { Paged, UserProfile } from "@/types/auth";
+import type { Paged, UserDeletion, UserProfile } from "@/types/auth";
 import { ALL_ROLES, ROLE_LABELS, STAFF_ROLES } from "@/utils/constants";
 import { errorMessage } from "@/utils/errors";
-import { formatDate, toOptions } from "@/utils/format";
+import { formatDate, formatTimestamp } from "@/utils/format";
+import { Tabs } from "@/components/ui/Tabs";
 
 const ROLE_OPTIONS = ALL_ROLES.map((r) => ({ value: r, label: ROLE_LABELS[r] }));
+
+type StatusTab = "" | "ACTIVE" | "SUSPENDED" | "DEACTIVATED" | "DELETED";
+type Counts = Record<"ALL" | "ACTIVE" | "SUSPENDED" | "DEACTIVATED" | "DELETED", number>;
+type UserRow = UserProfile & { deletion: UserDeletion | null };
+const STATUS_TABS: Array<{ value: StatusTab; label: string; count: keyof Counts }> = [
+  { value: "", label: "All", count: "ALL" },
+  { value: "ACTIVE", label: "Active", count: "ACTIVE" },
+  { value: "SUSPENDED", label: "Suspended", count: "SUSPENDED" },
+  { value: "DEACTIVATED", label: "Deactivated", count: "DEACTIVATED" },
+  { value: "DELETED", label: "Deleted", count: "DELETED" },
+];
+
+/** Name shown for a row: deleted accounts show who they were. */
+const displayName = (u: UserRow) => (u.deletion?.formerName ? u.deletion.formerName : u.fullName);
+const contactOf = (u: UserRow) => u.email ?? u.phoneNumber ?? u.deletion?.formerEmail ?? u.deletion?.formerPhone;
 
 export function UsersPage() {
   const navigate = useNavigate();
   const { can } = useAuth();
   const list = useListParams(["role", "status"]);
   const [creating, setCreating] = useState(false);
-  const { data, loading, error, reload } = useQuery(() => request<Paged<UserProfile>>("/users", { query: list.query }), [list.query]);
+  const { data, loading, error, reload } = useQuery(() => request<Paged<UserRow> & { counts?: Counts }>("/users", { query: list.query }), [list.query]);
+  const status = (list.filters.status ?? "") as StatusTab;
+  const deletedTab = status === "DELETED";
 
   return (
     <>
@@ -47,13 +65,20 @@ export function UsersPage() {
           )
         }
       />
+      <Tabs
+        idPrefix="user-status"
+        layout="wrap"
+        className="mb-4"
+        value={status}
+        onChange={(v) => list.setFilter("status", v)}
+        items={STATUS_TABS.map((t) => ({ value: t.value, label: data?.counts ? `${t.label} (${data.counts[t.count]})` : t.label }))}
+      />
       <ListToolbar
         search={list.q}
         onSearch={list.setSearch}
         placeholder="Search name, email or phone"
         filters={[
           { name: "role", label: "Role", options: ROLE_OPTIONS },
-          { name: "status", label: "Status", options: toOptions(["ACTIVE", "SUSPENDED", "DEACTIVATED"]) },
         ]}
         values={list.filters}
         onFilter={list.setFilter}
@@ -64,31 +89,49 @@ export function UsersPage() {
         error={error}
         rowKey={(u) => u.id}
         onRowClick={(u) => navigate(`/users/${u.id}`)}
-        empty="No users match these filters."
+        empty={deletedTab ? "No deleted accounts." : "No users match these filters."}
         columns={[
           {
             key: "name",
             header: "User",
             render: (u) => (
               <span className="flex items-center gap-3">
-                <Avatar name={u.fullName} image={u.profileImage} size="size-8" />
+                <Avatar name={displayName(u)} image={u.profileImage} size="size-8" />
                 <span className="min-w-0">
-                  <span className="block truncate font-semibold">{u.fullName}</span>
-                  <span className="block truncate text-xs text-muted">{u.email ?? u.phoneNumber}</span>
+                  <span className="block truncate font-semibold">{displayName(u)}</span>
+                  <span className="block truncate text-xs text-muted">{contactOf(u)}</span>
                 </span>
               </span>
             ),
           },
           { key: "role", header: "Role", render: (u) => <span className="flex items-center gap-1.5">{ROLE_LABELS[u.role]}{u.isFounder && <Badge tone="brand">Founder</Badge>}</span> },
-          { key: "status", header: "Status", render: (u) => <StatusBadge status={u.accountStatus} /> },
-          { key: "last", header: "Last sign-in", render: (u) => formatDate(u.lastLoginAt), className: "hidden lg:table-cell" },
+          ...(deletedTab
+            ? [
+                { key: "deletedAt", header: "Deleted on", render: (u: UserRow) => formatTimestamp(u.deletion?.deletedAt ?? null) },
+                { key: "deletedBy", header: "Deleted by", render: (u: UserRow) => u.deletion?.deletedBy?.fullName ?? "—" },
+                {
+                  key: "reason",
+                  header: "Reason",
+                  render: (u: UserRow) => <span className="line-clamp-2 max-w-xs text-sm" title={u.deletion?.reason ?? ""}>{u.deletion?.reason ?? "—"}</span>,
+                  className: "hidden lg:table-cell",
+                },
+              ]
+            : [
+                { key: "status", header: "Status", render: (u: UserRow) => <StatusBadge status={u.accountStatus} /> },
+                { key: "last", header: "Last sign-in", render: (u: UserRow) => formatDate(u.lastLoginAt), className: "hidden lg:table-cell" },
+              ]),
         ]}
         mobile={(u) => (
           <div className="flex items-center gap-3">
-            <Avatar name={u.fullName} image={u.profileImage} />
+            <Avatar name={displayName(u)} image={u.profileImage} />
             <div className="min-w-0 flex-1">
-              <p className="truncate font-semibold">{u.fullName}</p>
-              <p className="truncate text-xs text-muted">{ROLE_LABELS[u.role]} · {u.email ?? u.phoneNumber}</p>
+              <p className="truncate font-semibold">{displayName(u)}</p>
+              <p className="truncate text-xs text-muted">{ROLE_LABELS[u.role]} · {contactOf(u)}</p>
+              {u.deletion && (
+                <p className="truncate text-xs text-muted">
+                  Deleted {formatTimestamp(u.deletion.deletedAt)} by {u.deletion.deletedBy?.fullName ?? "—"} · {u.deletion.reason}
+                </p>
+              )}
             </div>
             <StatusBadge status={u.accountStatus} />
           </div>

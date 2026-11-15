@@ -38,6 +38,7 @@ Browser ─▶ App Check ─▶ Firebase ID token ─▶ active SafeRent account
 | `users.manage` | **ALL** | **ALL** | — | — | — | — | — | — | — | — | — |
 | `roles.manage` 🔒 | **ALL** | — | — | — | — | — | — | — | — | — | — |
 | `settings.manage` 🔒 | **ALL** | — | — | — | — | — | — | — | — | — | — |
+| `app_config.manage` | **ALL** | — | — | — | — | — | — | — | — | — | — |
 | `subscriptions.manage` | **ALL** | — | — | — | — | — | — | — | — | — | — |
 | `audit_logs.view` | **ALL** | **ALL** | — | — | — | — | — | — | — | — | — |
 | `reports.view` | **ALL** | **ALL** | **ALL** | ASG | — | — | **ALL** | own | — | — | — |

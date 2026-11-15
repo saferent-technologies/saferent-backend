@@ -1,10 +1,11 @@
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getAppCheck } from "firebase-admin/app-check";
 import { getAuth } from "firebase-admin/auth";
+import { getMessaging } from "firebase-admin/messaging";
 
 /**
- * Firebase Admin SDK — used ONLY for Authentication (verifying ID tokens, custom claims,
- * email action links). Credentials come from GOOGLE_APPLICATION_CREDENTIALS (service account
+ * Firebase Admin SDK — used for Authentication (verifying ID tokens, custom claims, email action
+ * links) and push notifications (FCM). Credentials come from GOOGLE_APPLICATION_CREDENTIALS (service account
  * JSON kept outside git). All application data lives in MySQL.
  */
 if (getApps().length === 0) {
@@ -16,3 +17,4 @@ if (getApps().length === 0) {
 
 export const adminAuth = getAuth();
 export const appCheck = getAppCheck();
+export const messaging = getMessaging();

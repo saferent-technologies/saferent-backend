@@ -1,6 +1,7 @@
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
+import { serveAssetLinks } from "./lib/appLinks";
 import { allowedOrigins, env } from "./config/env";
 import { errorHandler, notFound } from "./middleware/errorHandler";
 import { api } from "./routes";
@@ -15,6 +16,8 @@ app.set("json replacer", (_key: string, value: unknown) => (typeof value === "bi
 app.set("trust proxy", env.TRUST_PROXY);
 
 app.use(helmet());
+// Android App Links — before CORS / auth / everything else; never redirected.
+app.get("/.well-known/assetlinks.json", serveAssetLinks);
 app.use(
   cors({
     origin: (origin, callback) => callback(null, !origin || allowedOrigins.includes(origin)),

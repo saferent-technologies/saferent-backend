@@ -74,6 +74,9 @@ export const listPropertiesQuery = z.object({
 
 export const browseQuery = z.object({
   city: z.string().trim().max(80).optional(),
+  /** Exact place from a location suggestion (GET /browse/locations). */
+  locality: z.string().trim().max(120).optional(),
+  state: z.string().trim().max(80).optional(),
   category: z.enum(CATEGORIES).optional(),
   propertyType: z.string().trim().max(40).optional(),
   listingType: z.enum(LISTING_TYPES).optional(),
@@ -82,16 +85,25 @@ export const browseQuery = z.object({
   bedrooms: z.coerce.number().int().min(0).max(30).optional(),
   furnishing: z.enum(["UNFURNISHED", "SEMI_FURNISHED", "FULLY_FURNISHED"]).optional(),
   availableOnly: z.enum(["true", "false"]).default("true"),
-  sort: z.enum(["newest", "rent_asc", "rent_desc", "completeness"]).default("newest"),
+  sort: z.enum(["newest", "rent_asc", "rent_desc", "completeness", "nearest"]).default("newest"),
+  /** "Near me": the device position + radius (km). Adds distanceKm to every item; sort=nearest orders by it. */
+  lat: z.coerce.number().min(-90).max(90).optional(),
+  lng: z.coerce.number().min(-180).max(180).optional(),
+  radiusKm: z.coerce.number().min(0.5).max(100).default(10),
 });
 
 export const reviewSchema = z
   .object({
     decision: z.enum(["APPROVE", "REJECT"]),
     reason: z.string().trim().max(500).optional(),
+    /** Approve without a verified ownership document (listings.approve_manual); `reason` required. */
+    withoutOwnershipDocument: z.boolean().optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
+    if (v.withoutOwnershipDocument && (v.decision !== "APPROVE" || !v.reason || v.reason.length < 5)) {
+      ctx.addIssue({ code: "custom", path: ["reason"], message: "Give a reason (at least 5 characters) for approving without an ownership document." });
+    }
     if (v.decision === "REJECT" && (!v.reason || v.reason.length < 5)) {
       ctx.addIssue({ code: "custom", path: ["reason"], message: "Give a reason (at least 5 characters) when rejecting." });
     }
@@ -298,6 +310,8 @@ export function policyProblems(p: Record<string, unknown>): string[] {
 export const amenitiesSchema = z
   .object({
     unitId: z.string().uuid().optional(),
+    /** PG / Hostel: amenities of one room. */
+    roomId: z.string().uuid().optional(),
     items: z.array(z.object({ key: z.string().trim().min(2).max(40), status: disclosure.default("YES"), notes: optText(255) }).strict()).max(60).default([]),
     custom: z.array(z.object({ label: z.string().trim().min(2).max(60), status: disclosure.default("YES"), notes: optText(255) }).strict()).max(20).default([]),
   })

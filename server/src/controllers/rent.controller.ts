@@ -17,39 +17,52 @@ import { and, rentWhere } from "../rbac/access";
 import { escapeHtml } from "../services/templates/layout";
 import { printableDoc } from "./rentals.controller";
 import { receiptPan } from "./pan.controller";
-import { billingPeriods } from "../lib/rentSchedule";
+import { rentDueDates } from "../lib/rentSchedule";
 
 export { periodOf } from "../lib/rentSchedule";
 
-/** Idempotently creates DUE rows for every billing period of an ACTIVE lease up to this month. */
+/**
+ * Idempotently creates the rent dues of an ACTIVE lease up to this month. Rent is due on the tenant's
+ * join date every month, from the month after joining (see rentDueDates). Unpaid dues made by an older
+ * schedule (e.g. one in the joining month, or on a different day) are corrected here.
+ */
 export async function ensureRentSchedule(lease: Pick<Lease, "id" | "propertyId" | "tenantId" | "landlordId" | "startDate" | "endDate" | "monthlyRent" | "rentDueDay" | "status">): Promise<void> {
   if (lease.status !== "ACTIVE") return;
-  const periods = billingPeriods(lease.startDate, lease.endDate, new Date());
-  if (periods.length === 0) return;
+  const schedule = rentDueDates(lease.startDate, lease.endDate, new Date());
+  const wanted = new Map(schedule.map((s) => [s.period, s.dueDate]));
+
+  // Self-heal: only unpaid rows with no money recorded against them are touched.
+  const unpaid = await prisma.rentPayment.findMany({ where: { leaseId: lease.id, status: { in: ["DUE", "OVERDUE"] }, transactions: { none: {} } }, select: { id: true, period: true, dueDate: true } });
+  for (const row of unpaid) {
+    const due = wanted.get(row.period);
+    if (!due) await prisma.rentPayment.deleteMany({ where: { id: row.id, status: { in: ["DUE", "OVERDUE"] } } });
+    else if (row.dueDate.getTime() !== due.getTime()) {
+      await prisma.rentPayment.updateMany({ where: { id: row.id, status: { in: ["DUE", "OVERDUE"] } }, data: { dueDate: due, status: "DUE", dueNotifiedAt: null, overdueNotifiedAt: null } });
+    }
+  }
+  if (schedule.length === 0) return;
   await prisma.rentPayment.createMany({
     skipDuplicates: true,
-    data: periods.map((period) => {
-      const [y, m] = period.split("-").map(Number);
-      return {
-        leaseId: lease.id,
-        propertyId: lease.propertyId,
-        tenantId: lease.tenantId,
-        landlordId: lease.landlordId,
-        period,
-        amount: lease.monthlyRent,
-        dueDate: new Date(y, m - 1, lease.rentDueDay),
-      };
-    }),
+    data: schedule.map(({ period, dueDate }) => ({
+      leaseId: lease.id,
+      propertyId: lease.propertyId,
+      tenantId: lease.tenantId,
+      landlordId: lease.landlordId,
+      period,
+      amount: lease.monthlyRent,
+      dueDate,
+    })),
   });
 }
 
-async function markOverdue(where: Prisma.RentPaymentWhereInput): Promise<void> {
+/** Rent becomes overdue the day AFTER its due date (due 15 Dec → overdue from 16 Dec). */
+export async function markOverdue(where: Prisma.RentPaymentWhereInput): Promise<void> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   await prisma.rentPayment.updateMany({ where: and(where, { status: "DUE", dueDate: { lt: today } }), data: { status: "OVERDUE" } });
 }
 
-const rentInclude = {
+export const rentInclude = {
   lease: { select: { id: true, code: true, unitId: true, bedId: true, property: { select: { id: true, code: true, title: true, city: true } }, tenant: { select: { id: true, fullName: true } }, landlord: { select: { id: true, fullName: true } } } },
 } satisfies Prisma.RentPaymentInclude;
 
@@ -155,7 +168,7 @@ export async function payRent(req: Request, res: Response): Promise<void> {
   const rent = found(await prisma.rentPayment.findFirst({ where: { id: idParam(req), tenantId: user.id } }), "Rent record");
   const { rent: paid, txn } = await settle(req, rent.id, "ONLINE_TEST", true, user.id);
   await writeAuditLog({ action: "rent.paid", outcome: "success", userId: user.id, metadata: { rentId: paid.id, reference: txn.reference, test: true }, ...requestMeta(req) });
-  await notify(paid.landlordId, "Rent received", `Rent for ${paid.period} was paid (test mode).`, "/rent");
+  await notify(paid.landlordId, "Rent received", `Rent for ${paid.period} was paid (test mode).`, "/rent", "PAYMENT_SUCCESS");
   res.json({ ok: true, reference: txn.reference, test: true });
 }
 
@@ -168,8 +181,8 @@ export async function recordRent(req: Request, res: Response): Promise<void> {
   const rent = found(await prisma.rentPayment.findFirst({ where: and(scope, { id: idParam(req) }) }), "Rent record");
   const input = parseInput(recordSchema, req.body);
   const { txn } = await settle(req, rent.id, input.method, false, me(req).id, input.notes);
-  await notify(rent.tenantId, "Payment recorded", `Your rent for ${rent.period} was recorded as paid.`, "/rent");
-  await notify(rent.landlordId, "Rent received", `Rent for ${rent.period} was recorded (${input.method}).`, "/rent");
+  await notify(rent.tenantId, "Payment recorded", `Your rent for ${rent.period} was recorded as paid.`, "/rent", "PAYMENT_SUCCESS");
+  await notify(rent.landlordId, "Rent received", `Rent for ${rent.period} was recorded (${input.method}).`, "/rent", "PAYMENT_SUCCESS");
   res.json({ ok: true, reference: txn.reference });
 }
 

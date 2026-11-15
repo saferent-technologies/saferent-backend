@@ -9,6 +9,8 @@ import type { Request } from "express";
 import { REASONS } from "../config/constants";
 import { fail } from "../lib/errors";
 import { found } from "../lib/http";
+import { syncLocationsForProperty } from "./locations";
+import { liveIdOf } from "./draftIds";
 import { prisma } from "../lib/prisma";
 import { can, me } from "../middleware/auth";
 import { and, propertyWhere } from "../rbac/access";
@@ -48,13 +50,16 @@ export function childKey(req: Request, name: string): { id: string } | { code: s
 export async function scopedProperty(req: Request, permission: PermissionKey, where: Prisma.PropertyWhereInput = propertyKey(req)): Promise<Property> {
   const scope = propertyWhere(me(req), permission);
   if (!scope) fail("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to access this property.");
-  return found(await prisma.property.findFirst({ where: and(scope, where) }), "Property");
+  // Change-request working copies are never addressed directly (they're reached through the live property).
+  return found(await prisma.property.findFirst({ where: and(scope, where, { revisionOfId: null }) }), "Property");
 }
 
 export async function inScope(req: Request, permission: PermissionKey, propertyId: string): Promise<boolean> {
   const scope = propertyWhere(me(req), permission);
   if (!scope) return false;
-  return (await prisma.property.count({ where: and(scope, { id: propertyId }) })) > 0;
+  // A working copy's photos are in scope when its live property is.
+  const id = await liveIdOf(prisma, propertyId);
+  return (await prisma.property.count({ where: and(scope, { id }) })) > 0;
 }
 
 /** Moderators verify listings (listings.approve). */
@@ -98,10 +103,12 @@ export interface AuditInput {
 /** Append-only property audit log entry (never contains passwords, OTPs or tokens). */
 export async function audit(tx: Tx, req: Request, entry: AuditInput): Promise<void> {
   const user = req.user;
+  // Edits made in a change request are logged on the live property.
+  const propertyId = entry.propertyId ? await liveIdOf(tx, entry.propertyId) : null;
   await tx.propertyAuditLog.create({
     data: {
       eventId: randomUUID(),
-      propertyId: entry.propertyId,
+      propertyId,
       entityType: entry.entityType,
       entityId: entry.entityId,
       action: entry.action,
@@ -121,8 +128,9 @@ export async function recordStatus(
   e: { propertyId: string; entityType: "PROPERTY" | "UNIT" | "ROOM" | "BED"; entityId: string; field: string; from: string | null; to: string; reason?: string | null },
 ): Promise<void> {
   if (e.from === e.to) return;
+  const propertyId = await liveIdOf(tx, e.propertyId);
   await tx.propertyStatusHistory.create({
-    data: { propertyId: e.propertyId, entityType: e.entityType, entityId: e.entityId, field: e.field, fromValue: e.from, toValue: e.to, reason: e.reason ?? null, actorId: req.user?.id ?? null },
+    data: { propertyId, entityType: e.entityType, entityId: e.entityId, field: e.field, fromValue: e.from, toValue: e.to, reason: e.reason ?? null, actorId: req.user?.id ?? null },
   });
   await audit(tx, req, { propertyId: e.propertyId, entityType: e.entityType, entityId: e.entityId, action: `status.${e.field}`, oldValue: { [e.field]: e.from }, newValue: { [e.field]: e.to, reason: e.reason ?? null } });
 }
@@ -138,7 +146,7 @@ export const aggregateInclude = {
   amenities: { orderBy: { label: "asc" } },
   pricing: { include: { charges: { orderBy: { kind: "asc" } } } },
   images: { orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }], select: { id: true, unitId: true, roomId: true, inspectionId: true, category: true, slot: true, displayOrder: true, status: true, createdAt: true } },
-  documents: { orderBy: { createdAt: "desc" }, select: { id: true, code: true, unitId: true, docType: true, originalName: true, status: true, verifiedAt: true, rejectionReason: true, createdAt: true } },
+  documents: { orderBy: { createdAt: "desc" }, select: { id: true, code: true, unitId: true, docType: true, originalName: true, status: true, verifiedAt: true, rejectionReason: true, createdAt: true, needsVerification: true, isCurrent: true, archivedAt: true } },
   assignments: { include: { user: { select: { id: true, fullName: true, role: true } } } },
 } satisfies Prisma.PropertyInclude;
 
@@ -241,7 +249,7 @@ export async function refreshAggregates(tx: Tx, propertyId: string): Promise<Pro
 
 /** Runs `fn` in a transaction and refreshes the aggregates of the property before committing. */
 export async function withProperty<T>(propertyId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
-  return prisma.$transaction(
+  const out = await prisma.$transaction(
     async (tx) => {
       const out = await fn(tx);
       await refreshAggregates(tx, propertyId);
@@ -249,4 +257,7 @@ export async function withProperty<T>(propertyId: string, fn: (tx: Tx) => Promis
     },
     { timeout: 20_000 },
   );
+  // Search suggestions (locations) follow the property's address / status — after commit, in the background.
+  void syncLocationsForProperty(propertyId);
+  return out;
 }

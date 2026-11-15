@@ -7,6 +7,8 @@ import multer from "multer";
 import { REASONS, UPLOADS } from "../config/constants";
 import { AppError } from "./errors";
 import { sniffMime } from "./upload-sniff";
+import { allowedMimes, maxUploadBytes, UPLOAD_CEILING_MB } from "../appConfig/schema";
+import { appConfig } from "../appConfig/service";
 
 export { sniffMime } from "./upload-sniff";
 
@@ -32,7 +34,8 @@ function uploader(folder: string, allowed: readonly string[]) {
       destination: dir,
       filename: (_req, file, cb) => cb(null, `${randomUUID()}${EXT[file.mimetype] ?? ""}`),
     }),
-    limits: { fileSize: UPLOADS.MAX_BYTES, files: 10 },
+    // Hard ceiling; the configured limit (Admin → App configuration) is checked after upload.
+    limits: { fileSize: UPLOAD_CEILING_MB * 1024 * 1024, files: 10 },
     fileFilter: (_req, file, cb) => {
       if (allowed.includes(file.mimetype)) cb(null, true);
       else cb(new AppError("invalid-argument", REASONS.INVALID_INPUT, "Unsupported file type."));
@@ -51,25 +54,39 @@ async function readHead(file: string): Promise<Uint8Array> {
   }
 }
 
-/** Rejects (and deletes) uploads whose content does not match their declared type, e.g. a script renamed to .jpg. */
-async function verifyContent(req: Request, _res: Response, next: NextFunction): Promise<void> {
-  const files = [...((req.files as Express.Multer.File[] | undefined) ?? []), ...(req.file ? [req.file] : [])];
-  const bad: Express.Multer.File[] = [];
-  for (const file of files) {
-    if (sniffMime(await readHead(file.path)) !== file.mimetype) bad.push(file);
-  }
-  if (bad.length) {
-    await Promise.all(files.map((f) => unlink(f.path).catch(() => undefined)));
-    return next(new AppError("invalid-argument", REASONS.INVALID_INPUT, "The file content does not match its type. Upload a real JPG, PNG, WEBP or PDF."));
-  }
-  next();
+const LABEL: Record<string, string> = { "image/jpeg": "JPG", "image/png": "PNG", "image/webp": "WEBP", "application/pdf": "PDF" };
+
+/**
+ * Rejects (and deletes) uploads whose content does not match their declared type (e.g. a script
+ * renamed to .jpg), and enforces the configured formats and size (Admin → App configuration).
+ */
+function verifyContent(kind: "image" | "document") {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    const files = [...((req.files as Express.Multer.File[] | undefined) ?? []), ...(req.file ? [req.file] : [])];
+    const drop = async (message: string) => {
+      await Promise.all(files.map((f) => unlink(f.path).catch(() => undefined)));
+      next(new AppError("invalid-argument", REASONS.INVALID_INPUT, message));
+    };
+    for (const file of files) {
+      if (sniffMime(await readHead(file.path)) !== file.mimetype) return drop("The file content does not match its type. Upload a real JPG, PNG, WEBP or PDF.");
+    }
+    if (!files.length) return next();
+    const cfg = await appConfig();
+    const allowed = allowedMimes(cfg, kind);
+    const maxBytes = maxUploadBytes(cfg, kind);
+    for (const file of files) {
+      if (!allowed.includes(file.mimetype)) return drop(`Allowed formats: ${[...new Set(allowed.map((m) => LABEL[m] ?? m))].join(", ")}.`);
+      if (file.size > maxBytes) return drop(`Files can be up to ${Math.round(maxBytes / 1048576)} MB.`);
+    }
+    next();
+  };
 }
 
-export const uploadImages = (folder: string, max = 10): RequestHandler[] => [uploader(folder, UPLOADS.IMAGE_TYPES).array("files", max), verifyContent];
-export const uploadDocument = (folder: string): RequestHandler[] => [uploader(folder, UPLOADS.DOCUMENT_TYPES).single("file"), verifyContent];
-export const uploadAvatar: RequestHandler[] = [uploader("avatars", UPLOADS.IMAGE_TYPES).single("file"), verifyContent];
+export const uploadImages = (folder: string, max = 10): RequestHandler[] => [uploader(folder, UPLOADS.IMAGE_TYPES).array("files", max), verifyContent("image")];
+export const uploadDocument = (folder: string): RequestHandler[] => [uploader(folder, UPLOADS.DOCUMENT_TYPES).single("file"), verifyContent("document")];
+export const uploadAvatar: RequestHandler[] = [uploader("avatars", UPLOADS.IMAGE_TYPES).single("file"), verifyContent("image")];
 /** Owner-verification selfies (never public; served only to the owner and reviewers). */
-export const uploadSelfie: RequestHandler[] = [uploader("kyc", UPLOADS.IMAGE_TYPES).single("file"), verifyContent];
+export const uploadSelfie: RequestHandler[] = [uploader("kyc", UPLOADS.IMAGE_TYPES).single("file"), verifyContent("image")];
 
 /**
  * Storage driver used by controllers. Today: local disk under server/uploads. To move to Firebase

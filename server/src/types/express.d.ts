@@ -13,6 +13,8 @@ declare global {
     interface Request {
       /** Verified Firebase ID token (set by `authenticate`). */
       auth?: DecodedIdToken;
+      /** The account row for the token's uid, looked up by `authenticate` (null = no account yet). */
+      accountRow?: User | null;
       /** Active SafeRent user + effective permissions (set by `loadUser`). */
       user?: AuthedUser;
       /** Valid second-factor session (set by `requireSession`). */

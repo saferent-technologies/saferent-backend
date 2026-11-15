@@ -123,6 +123,8 @@ export interface Unit {
   activeStatus: string;
   attributes: Record<string, unknown>;
   floors?: Array<{ id: string; floorNumber: number; label: string | null; bedrooms: number; bathrooms: number; kitchens: number; livingRooms: number; balconies: number; additionalDetails: string | null }>;
+  /** The flat's own amenities (apartments: the building's common ones are on the property). */
+  amenities?: Array<{ id: string; key: string; label: string; status: Disclosure; notes: string | null }>;
   pricing?: Pricing | null;
   utilities?: Utilities | null;
   version: number;
@@ -140,6 +142,8 @@ export interface Bed {
 }
 
 export interface Room {
+  /** Amenities of this room (PG / hostel). */
+  amenities?: Array<{ id: string; key: string; label: string; status: Disclosure; notes: string | null }>;
   id: string;
   code: string;
   roomNumber: string;
@@ -167,6 +171,9 @@ export interface CompletenessSection {
 }
 
 export interface PropertySummary {
+  /** A change request is open (draft / under verification / rejected). */
+  hasDraftChanges?: boolean;
+  changesStatus?: string | null;
   id: string;
   code: string;
   title: string | null;
@@ -215,12 +222,25 @@ export interface PropertyDetail extends PropertySummary {
   amenities: Array<{ id: string; key: string; label: string; status: Disclosure; notes: string | null }>;
   pricing: Pricing | null;
   images: Array<{ id: string; unitId: string | null; roomId: string | null; inspectionId: string | null; category: string; slot: number | null; displayOrder: number; status: string; createdAt: string }>;
-  documents: Array<{ id: string; code: string; unitId: string | null; docType: string; originalName: string; status: string; verifiedAt: string | null; rejectionReason: string | null; createdAt: string }>;
+  documents: Array<{ id: string; code: string; unitId: string | null; docType: string; originalName: string; status: string; verifiedAt: string | null; rejectionReason: string | null; createdAt: string; needsVerification?: boolean; isCurrent?: boolean; archivedAt?: string | null }>;
   assignments: Array<{ id: string; type: "MANAGER" | "AGENT"; user: { id: string; fullName: string; role: string } }>;
   completeness: { score: number; sections: CompletenessSection[]; note: string };
 }
 
+export interface PendingRevision {
+  id: string;
+  status: "DRAFT" | "PENDING_VERIFICATION" | "APPROVED" | "REJECTED" | "DISCARDED";
+  changedSections: string[];
+  createdAt: string;
+  submittedAt: string | null;
+  decidedAt: string | null;
+  moderationNote: string | null;
+}
+
 export interface PropertyCan {
+  editRevision?: boolean;
+  submitRevision?: boolean;
+  discardRevision?: boolean;
   manage: boolean;
   review: boolean;
   verifyDocuments: boolean;
@@ -255,4 +275,13 @@ export const imagePath = (imageId: string) => `/files/property-images/${imageId}
 export function rentRange(from: string | null, to: string | null, money: (v: string) => string): string {
   if (!from) return "Rent not disclosed";
   return to && to !== from ? `${money(from)} – ${money(to)}` : money(from);
+}
+
+/**
+ * Building → separately rented units: the building has common details, amenities, photos and charges;
+ * rent, deposit, amenities and photos belong to each unit (flat / portion / shop / villa).
+ */
+export function unitPriced(p: { propertyType: string; building?: Record<string, unknown> | null }): boolean {
+  if (["APARTMENT", "INDEPENDENT_BUILDING", "COMMERCIAL_COMPLEX"].includes(p.propertyType)) return true;
+  return p.propertyType === "VILLA" && p.building?.villaListing === "COMMUNITY";
 }

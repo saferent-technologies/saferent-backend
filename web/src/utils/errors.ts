@@ -26,7 +26,8 @@ const GENERIC = "Something went wrong. Please try again.";
 const REASON_MESSAGES: Record<string, string> = {
   UNAUTHENTICATED: "Please sign in to continue.",
   NOT_AUTHORIZED: "This account is not authorized to access the SafeRent admin portal.",
-  ACCOUNT_DISABLED: "This account has been disabled. Contact your security administrator.",
+  ACCOUNT_DISABLED: "This account has been disabled. Contact SafeRent support.",
+  ACCOUNT_DELETED: "This account has been deleted. Contact SafeRent support if you think this is a mistake.",
   INVALID_DOMAIN: "This account is not authorized to access the SafeRent admin portal.",
   WRONG_SIGN_IN_METHOD: "Please start again from the sign-in page.",
   ACCOUNT_MISMATCH: "This account is not authorized to access the SafeRent admin portal.",
@@ -92,7 +93,7 @@ interface FirebaseLikeError {
 }
 
 /** SafeRent API reasons whose server message is written for users (it says exactly what to fix). */
-const SPECIFIC_API_REASONS = new Set(["INVALID_INPUT", "INVALID_STATE", "CONFLICT", "VERSION_CONFLICT", "NOT_FOUND", "PERMISSION_DENIED", "ALREADY_REGISTERED", "FOUNDER_PROTECTED", "SERVICE_NOT_CONFIGURED"]);
+const SPECIFIC_API_REASONS = new Set(["INVALID_INPUT", "INVALID_STATE", "CONFLICT", "VERSION_CONFLICT", "NOT_FOUND", "PERMISSION_DENIED", "ALREADY_REGISTERED", "FOUNDER_PROTECTED", "SERVICE_NOT_CONFIGURED", "MAINTENANCE_MODE", "FEATURE_DISABLED", "LOGIN_METHOD_DISABLED"]);
 
 function isBlockingFunctionRejection(err: FirebaseLikeError): boolean {
   // Errors thrown by beforeUserCreated / beforeUserSignedIn arrive as auth/internal-error

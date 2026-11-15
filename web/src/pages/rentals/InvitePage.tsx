@@ -1,4 +1,4 @@
-import { CheckCircle2, Home, XCircle } from "lucide-react";
+import { CheckCircle2, Home, Star, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { PageHeader } from "@/components/PageHeader";
@@ -13,6 +13,7 @@ import { request } from "@/services/api";
 import { errorMessage } from "@/utils/errors";
 import { formatDate, formatMoney } from "@/utils/format";
 import { clearPendingInvite } from "@/routes/pendingInvite";
+import { LeaseReviewModal } from "@/pages/reviews/ReviewsPages";
 
 interface InvitationView {
   code: string;
@@ -45,8 +46,12 @@ export function InvitePage() {
   const navigate = useNavigate();
   const { refresh } = useAuth();
   const { confirm, dialog } = useConfirm();
-  const { data, loading, error, reload } = useQuery(() => request<{ invitation: InvitationView }>(`/invitations/token/${encodeURIComponent(token)}`), [token]);
+  const { data, loading, error, reload } = useQuery(
+    () => request<{ invitation: InvitationView; reviewRequired?: { leaseId: string; propertyName: string } | null }>(`/invitations/token/${encodeURIComponent(token)}`),
+    [token],
+  );
   const [busy, setBusy] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
   // The link has been opened while signed in — no need to come back to it after sign-in.
@@ -122,6 +127,14 @@ export function InvitePage() {
           </div>
         ) : !inv.canAccept ? (
           <Alert kind="warning">{inv.message ?? "This invitation is no longer open."}</Alert>
+        ) : data.reviewRequired ? (
+          // A finished lease must be reviewed before starting a new one (the server enforces it too).
+          <div className="space-y-3 border-t border-line pt-4">
+            <Alert kind="info">Before you accept, please review your previous rental at "{data.reviewRequired.propertyName}". It takes a minute.</Alert>
+            <div className="flex justify-end">
+              <Button leftIcon={<Star className="size-4" />} onClick={() => setReviewOpen(true)}>Review previous rental</Button>
+            </div>
+          </div>
         ) : (
           <div className="flex flex-col-reverse gap-2 border-t border-line pt-4 sm:flex-row sm:justify-end">
             <Button
@@ -161,6 +174,17 @@ export function InvitePage() {
         )}
       </section>
       {dialog}
+      {reviewOpen && data.reviewRequired && (
+        <LeaseReviewModal
+          leaseId={data.reviewRequired.leaseId}
+          title={`Review your rental at ${data.reviewRequired.propertyName}`}
+          onClose={() => setReviewOpen(false)}
+          onSubmitted={() => {
+            setReviewOpen(false);
+            void reload();
+          }}
+        />
+      )}
     </div>
   );
 }

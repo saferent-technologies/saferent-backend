@@ -1,46 +1,54 @@
-import { Mail, Smartphone } from "lucide-react";
-import { useState } from "react";
+import { ArrowLeft } from "lucide-react";
+import { Link } from "react-router";
 import { EmailLoginForm } from "@/authentication/EmailLoginForm";
 import { PhoneLoginForm } from "@/authentication/PhoneLoginForm";
 import { Alert } from "@/components/ui/Alert";
-import { Tabs } from "@/components/ui/Tabs";
 import { useAuth } from "@/hooks/useAuth";
 import { AuthCard, AuthLayout } from "@/layouts/AuthLayout";
+import { PATHS } from "@/utils/constants";
 
-type Method = "email" | "phone";
-
-export function LoginPage() {
+function NoticeBanner() {
   const { notice } = useAuth();
-  const [method, setMethod] = useState<Method>("phone");
+  if (!notice) return null;
+  return (
+    <Alert kind={notice.kind} className="mb-5">
+      {notice.message}
+    </Alert>
+  );
+}
 
+const backHome = (
+  <Link to={PATHS.home} className="mb-4 inline-flex items-center gap-1.5 text-sm font-semibold text-muted hover:text-brand-dark">
+    <ArrowLeft className="size-4" /> Back to homes
+  </Link>
+);
+
+/** /login — landlords, tenants, agents and service providers: phone number + OTP only. */
+export function LoginPage() {
   return (
     <AuthLayout>
-      <AuthCard title="Welcome to SafeRent" subtitle="Sign in to your SafeRent account.">
-        {notice && (
-          <Alert kind={notice.kind} className="mb-5">
-            {notice.message}
-          </Alert>
-        )}
-
-        <Tabs<Method>
-          idPrefix="login"
-          className="mb-6"
-          value={method}
-          onChange={setMethod}
-          items={[
-            { value: "phone", label: "Phone", icon: <Smartphone className="size-4 shrink-0" /> },
-            { value: "email", label: "Staff email", icon: <Mail className="size-4 shrink-0" /> },
-          ]}
-        />
-
-        <div role="tabpanel" id={`login-panel-${method}`} aria-labelledby={`login-tab-${method}`}>
-          {method === "email" ? <EmailLoginForm /> : <PhoneLoginForm />}
-        </div>
-        <p className="mt-5 text-center text-xs text-muted">
-          {method === "phone" ? "Landlords, tenants, agents and service providers: sign in or create an account with your phone number." : "For SafeRent team members with an @saferenttechnologies.com email."}
-        </p>
+      {backHome}
+      <AuthCard title="Sign in or create an account" subtitle="Use your mobile number — we'll send you a one-time code.">
+        <NoticeBanner />
+        <PhoneLoginForm />
+        <p className="mt-5 text-center text-xs text-muted">For landlords, tenants, property agents and service providers.</p>
       </AuthCard>
-      <p className="mt-6 text-center text-xs text-muted">Your sign-ins are protected with one-time codes and recorded for security.</p>
+    </AuthLayout>
+  );
+}
+
+/**
+ * /employee — SafeRent team only: company email + password + email code. Landlord and tenant
+ * accounts can't sign in here (the server only accepts staff accounts with a company email).
+ */
+export function EmployeeLoginPage() {
+  return (
+    <AuthLayout variant="employee">
+      <AuthCard title="Employee sign in" subtitle="For SafeRent team members with an @saferenttechnologies.com email.">
+        <NoticeBanner />
+        <EmailLoginForm />
+      </AuthCard>
+      <p className="mt-6 text-center text-xs text-muted">Every sign-in is protected with a one-time code and recorded for security.</p>
     </AuthLayout>
   );
 }

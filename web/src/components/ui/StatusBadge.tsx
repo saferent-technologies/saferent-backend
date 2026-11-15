@@ -54,6 +54,7 @@ const TONES: Record<string, Tone> = {
   TERMINATED: "danger",
   SUSPENDED: "danger",
   DEACTIVATED: "danger",
+  DELETED: "neutral",
   DECLINED: "danger",
   REVERSED: "danger",
   URGENT: "danger",

@@ -243,7 +243,7 @@ function VersionsModal({ doc, onClose, onError }: { doc: DocRow; onClose: () => 
 
 /* ─── Landlord: property page → Documents ─── */
 
-export function PropertyDocumentsTab({ p, canManage, canVerify }: { p: PropertyDetail; canManage: boolean; canVerify: boolean }) {
+export function PropertyDocumentsTab({ p, canManage, canVerify, onChanged }: { p: PropertyDetail; canManage: boolean; canVerify: boolean; onChanged?: () => void }) {
   const [filter, setFilter] = useState({ target: "", docType: "", archived: false });
   const [page, setPage] = useState(1);
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
@@ -259,6 +259,7 @@ export function PropertyDocumentsTab({ p, canManage, canVerify }: { p: PropertyD
   const requests = useQuery(() => request<Paged<DocRequest>>(`/properties/${p.id}/document-requests`), [p.id], canManage);
   const options = useMemo(() => targetOptions(p), [p]);
   const ok = async (text: string) => {
+    onChanged?.();
     setMsg({ kind: "success", text });
     await Promise.all([docs.reload(), canManage ? requests.reload() : Promise.resolve()]);
   };
@@ -342,6 +343,11 @@ export function PropertyDocumentsTab({ p, canManage, canVerify }: { p: PropertyD
         <p className="mb-3 text-xs text-muted">Private by default — only you, assigned managers and SafeRent verifiers can open them. Shared documents are visible only to the tenant(s) of that property or unit. Every download is logged.</p>
         {docs.loading && !docs.data && <div className="flex justify-center py-8"><Spinner className="size-6 text-brand" /></div>}
         {docs.error && <Alert kind="error">{docs.error}</Alert>}
+        {canVerify && docs.data && !filter.archived && !docs.data.items.some((d) => d.needsVerification) && (
+          <Alert kind="info" className="mb-3">
+            No ownership document to verify. Only a sale deed, property tax receipt, electricity bill or ownership proof can be verified — ask the owner to upload one, or use “Approve without document” with a reason.
+          </Alert>
+        )}
         {docs.data && docs.data.items.length === 0 && <p className="py-6 text-center text-sm text-muted">{filter.archived ? "No archived documents." : "No documents yet. Upload a rental agreement, electricity bill, tax receipt or any other document."}</p>}
         <ul className="divide-y divide-line">
           {docs.data?.items.map((d) => (

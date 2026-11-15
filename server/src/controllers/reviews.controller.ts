@@ -34,8 +34,9 @@ import { inScope } from "../properties/service";
 
 /*
  * Two-way rental reviews. Every rule about who may review what comes from the lease in the database —
- * never from ids sent by the client. Reviews are optional: nothing in move-out, leases or invitations
- * checks for them.
+ * never from ids sent by the client. Reviews are REQUIRED once a lease ends: while the review window is
+ * open, a tenant who still owes a review can't apply / accept an invitation / be given a new lease, and
+ * a landlord who owes one can't invite or approve a new tenant (see assertNoReviewOwed).
  */
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -154,6 +155,39 @@ export async function pendingReviews(req: Request, res: Response): Promise<void>
       };
     });
   res.json({ items });
+}
+
+/** Finished leases this user still has to review (window open, rental actually happened), newest first. */
+export async function reviewsOwedBy(userId: string, side?: ReviewerRole): Promise<Array<{ leaseId: string; role: ReviewerRole; propertyName: string }>> {
+  const days = await reviewWindowDays();
+  const party = side === "TENANT" ? [{ tenantId: userId }] : side === "LANDLORD" ? [{ landlordId: userId }] : [{ tenantId: userId }, { landlordId: userId }];
+  const leases = await prisma.lease.findMany({
+    where: { OR: party, status: { in: ["ENDED", "TERMINATED"] }, endedAt: { gt: new Date(Date.now() - days * DAY) }, reviews: { none: { reviewerId: userId } } },
+    select: leaseSelect,
+    orderBy: { endedAt: "desc" },
+    take: 20,
+  });
+  return leases
+    .map((l) => ({ l, e: reviewEligibility(l, userId, { windowDays: days, alreadyReviewed: false }) }))
+    .filter((x) => x.e.eligible && (!side || (x.e as { role: ReviewerRole }).role === side))
+    .map(({ l, e }) => ({ leaseId: l.id, role: (e as { role: ReviewerRole }).role, propertyName: l.property.title ?? l.property.code }));
+}
+
+/**
+ * Blocks the next rental step until the previous one is reviewed. `who` words the message for the
+ * person making the request (e.g. a manager inviting for the owner, or a landlord approving a tenant).
+ */
+export async function assertNoReviewOwed(userId: string, side: ReviewerRole, action: string, who: "you" | "landlord" | "tenant" = "you"): Promise<void> {
+  const owed = await reviewsOwedBy(userId, side);
+  if (!owed.length) return;
+  const first = owed[0];
+  const message =
+    who === "you"
+      ? `Please review your previous rental at "${first.propertyName}" before you ${action}. It takes a minute.`
+      : who === "landlord"
+        ? `The property owner must first review their previous tenant at "${first.propertyName}" before they can ${action}.`
+        : `This tenant must first review their previous rental at "${first.propertyName}" before they can ${action}.`;
+  fail("failed-precondition", REASONS.REVIEW_REQUIRED, message, { leaseId: who === "you" ? first.leaseId : undefined, pendingReviews: owed.length });
 }
 
 async function partyLease(req: Request) {

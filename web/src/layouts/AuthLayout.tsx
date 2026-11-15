@@ -1,19 +1,33 @@
-import { KeyRound, ShieldCheck, Users } from "lucide-react";
+import { BadgeCheck, Home, KeyRound, ReceiptIndianRupee, ShieldCheck, Users } from "lucide-react";
 import type { ReactNode } from "react";
 import { Logo } from "@/components/ui/Logo";
 import { COMPANY_NAME } from "@/utils/constants";
 
-const highlights = [
-  { icon: ShieldCheck, title: "Two-step verification", text: "Every sign-in is confirmed with a one-time code." },
-  { icon: KeyRound, title: "Role-based access", text: "Only authorized Super Admins can enter." },
-  { icon: Users, title: "Full audit trail", text: "Security events are recorded automatically." },
-];
+const PANELS = {
+  customer: {
+    heading: "Verified homes. Honest renting.",
+    highlights: [
+      { icon: BadgeCheck, title: "Verified owners & listings", text: "Owners are verified with DigiLocker before they can list." },
+      { icon: ReceiptIndianRupee, title: "Every charge upfront", text: "Rent, deposit and maintenance are disclosed before you apply." },
+      { icon: Home, title: "Rent, agreements & receipts", text: "Your whole rental, from application to move-out, in one place." },
+    ],
+  },
+  employee: {
+    heading: "SafeRent employee portal.",
+    highlights: [
+      { icon: ShieldCheck, title: "Two-step verification", text: "Every sign-in is confirmed with a one-time code." },
+      { icon: KeyRound, title: "Role-based access", text: "Only SafeRent team members can enter." },
+      { icon: Users, title: "Full audit trail", text: "Security events are recorded automatically." },
+    ],
+  },
+} as const;
 
 /**
  * Mobile/tablet: a single centered card.
  * Desktop (≥1024px): branded illustration panel on the left, card on the right.
  */
-export function AuthLayout({ children }: { children: ReactNode }) {
+export function AuthLayout({ children, variant = "customer" }: { children: ReactNode; variant?: keyof typeof PANELS }) {
+  const panel = PANELS[variant];
   return (
     <div className="flex min-h-dvh w-full overflow-x-hidden bg-canvas">
       <aside className="relative hidden w-[44%] max-w-[640px] flex-col justify-between overflow-hidden bg-gradient-to-br from-brand to-brand-dark p-10 text-white lg:flex xl:p-14">
@@ -25,9 +39,9 @@ export function AuthLayout({ children }: { children: ReactNode }) {
         </div>
 
         <div className="relative max-w-md">
-          <h2 className="text-3xl font-bold leading-tight tracking-tight xl:text-4xl">Secure administration for the SafeRent platform.</h2>
+          <h2 className="text-3xl font-bold leading-tight tracking-tight xl:text-4xl">{panel.heading}</h2>
           <ul className="mt-8 space-y-5">
-            {highlights.map(({ icon: Icon, title, text }) => (
+            {panel.highlights.map(({ icon: Icon, title, text }) => (
               <li key={title} className="flex gap-4">
                 <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-white/15">
                   <Icon className="size-5" />

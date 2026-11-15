@@ -9,12 +9,16 @@ import * as profile from "../controllers/profile.controller";
 import * as assignments from "../controllers/properties.controller";
 import * as rentals from "../controllers/rentals.controller";
 import * as rent from "../controllers/rent.controller";
+import * as rentDues from "../controllers/rentDues.controller";
 import * as invitations from "../controllers/invitations.controller";
 import * as reviews from "../controllers/reviews.controller";
 import * as referrals from "../controllers/referrals.controller";
 import * as leaseExit from "../controllers/leaseExit.controller";
 import * as pan from "../controllers/pan.controller";
 import * as kyc from "../controllers/kyc.controller";
+import * as appCfg from "../controllers/appConfig.controller";
+import * as consents from "../controllers/consents.controller";
+import * as demographicsCtl from "../controllers/demographics.controller";
 import * as payments from "../controllers/payments.controller";
 import * as documents from "../controllers/documents.controller";
 import * as roles from "../controllers/roles.controller";
@@ -22,15 +26,20 @@ import * as userOverview from "../controllers/userOverview.controller";
 import * as users from "../controllers/users.controller";
 import { uploadAvatar, uploadDocument, uploadImages, uploadSelfie } from "../lib/uploads";
 import { verifyAppCheck } from "../middleware/appCheck";
-import { authenticate, loadUser, protect as p, requireAnyPermission } from "../middleware/auth";
+import { authenticate, authenticateAllowBlocked, loadUser, protect as p, requireAnyPermission } from "../middleware/auth";
 import * as browse from "../properties/controllers/browse.controller";
+import * as publicSite from "../properties/controllers/public.controller";
+import * as appAssets from "../controllers/appAssets.controller";
 import * as details from "../properties/controllers/details.controller";
 import * as inspections from "../properties/controllers/inspection.controller";
 import * as media from "../properties/controllers/media.controller";
 import * as pc from "../properties/controllers/property.controller";
+import * as revisions from "../properties/controllers/revision.controller";
+import * as geo from "../properties/controllers/geo.controller";
 import * as rooms from "../properties/controllers/room.controller";
 import * as units from "../properties/controllers/unit.controller";
 import { writeLimit } from "../middleware/writeLimit";
+import { publicLimit } from "../middleware/publicLimit";
 
 /**
  * SafeRent API. Every business route is wrapped in `p(...)`:
@@ -44,12 +53,29 @@ api.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+/* ─── Public website (no login): published listings and their approved photos, read-only ─── */
+const publicReads = publicLimit(120, 60_000);
+const publicPhotos = publicLimit(600, 60_000);
+api.get("/public/locations", verifyAppCheck, publicReads, browse.locationSuggestions);
+api.get("/public/listings", verifyAppCheck, publicReads, publicSite.listPublicListings);
+api.get("/public/listings/:propertyId", verifyAppCheck, publicReads, publicSite.getPublicListing);
+api.get("/public/images/:imageId", publicPhotos, publicSite.getPublicImage);
+
+/* ─── App configuration (public, no login): what the Android app needs before / without signing in ─── */
+api.get("/app/config", verifyAppCheck, appCfg.getPublicConfig);
+api.get("/app/config/version", verifyAppCheck, appCfg.getPublicConfigVersion);
+api.get("/app/config/check-update", verifyAppCheck, appCfg.checkUpdate);
+// Files uploaded for the splash / onboarding (public: shown before sign-in).
+api.get("/app/assets/:file", publicLimit(600, 60_000), appAssets.serveAppAsset);
+
 /* ─── Auth (login flows) ─── */
 const signedIn = [verifyAppCheck, authenticate];
 const account_ = [...signedIn, loadUser];
 api.post("/auth/password-reset", verifyAppCheck, auth.requestPasswordReset);
-api.post("/auth/logout", signedIn, auth.logout);
+api.post("/auth/logout", verifyAppCheck, authenticateAllowBlocked, auth.logout);
 api.get("/auth/me", signedIn, auth.me);
+api.put("/devices/fcm-token", signedIn, auth.updateFcmToken);
+api.get("/admin/users/:uid/consents", p("consents.view"), consents.adminUserConsents);
 api.post("/auth/phone/complete", signedIn, auth.completePhoneLogin);
 api.post("/auth/register", signedIn, auth.register);
 api.post("/auth/email-otp/request", account_, auth.requestEmailOtp);
@@ -59,6 +85,10 @@ api.post("/auth/session/rebind", account_, auth.rebindSession);
 /* ─── Own account ─── */
 api.get("/profile", p("profile.manage"), profile.getProfile);
 api.put("/profile", p("profile.manage"), profile.updateProfile);
+// User profile screen (after OTP): one call for first-time users (creates the account) and existing users
+// (updates it); also records the Terms / Privacy / WhatsApp consents sent with it.
+api.post("/userProfile", verifyAppCheck, authenticate, demographicsCtl.demographics);
+api.put("/userProfile", verifyAppCheck, authenticate, demographicsCtl.demographics);
 api.post("/profile/image", p("profile.manage"), uploadAvatar, profile.uploadProfileImage);
 api.get("/profile/image/:userId", p(), profile.getProfileImage);
 api.get("/profile/pan", p("profile.manage"), pan.getMyPan);
@@ -82,7 +112,9 @@ api.post("/users", p("users.manage"), users.createUser);
 api.get("/users/:id/overview", p(), requireAnyPermission("users.view", "payments.view", "rent.view", "wallet.adjust", "support.manage"), userOverview.userOverview);
 api.get("/users/:id", p(), requireAnyPermission("users.view", "payments.view", "rent.view", "wallet.adjust", "support.manage"), users.getUser);
 api.patch("/users/:id", p("users.manage"), users.updateUser);
-api.post("/users/:id/status", p("users.manage"), users.setUserStatus);
+api.post("/users/:id/status", p("users.deactivate"), users.setUserStatus);
+api.delete("/users/:id", p("users.delete"), users.deleteUser);
+api.post("/users/:id/restore", p("users.delete"), users.restoreUser);
 api.post("/users/:id/revoke-sessions", p("users.manage"), users.revokeSessions);
 api.post("/users/:id/role", p("roles.manage"), users.assignRole);
 api.post("/users/:id/roles", p("users.manage"), users.addUserRole);
@@ -94,6 +126,8 @@ api.put("/roles/:role/permissions", p("roles.manage"), roles.setRolePermissions)
 api.post("/roles/:role/reset", p("roles.manage"), roles.resetRole);
 
 /* ─── Property catalog (shared by Android, iOS and the Admin Panel) ─── */
+/* Device location → address (Google Maps; key stays on the server). Used by the add-property address step. */
+api.get("/geo/reverse", p("properties.create"), geo.reverseGeocode);
 api.get("/property-types", p(), pc.listPropertyTypes);
 api.get("/property-types/manage", p("property_types.manage"), pc.listManagedPropertyTypes);
 api.patch("/property-types/:typeKey", p("property_types.manage"), pc.setPropertyTypeEnabled);
@@ -102,6 +136,7 @@ api.get("/settings/completeness-weights", p("settings.manage"), pc.getCompletene
 api.put("/settings/completeness-weights", p("settings.manage"), pc.putCompletenessWeights);
 
 /* ─── Tenant search & listing pages ─── */
+api.get("/browse/locations", p("properties.browse"), browse.locationSuggestions);
 api.get("/browse", p("properties.browse"), browse.browseProperties);
 api.get("/browse/:propertyId", p("properties.browse"), browse.browseProperty);
 api.post("/browse/:propertyId/apply", p("applications.create"), rentals.applyForProperty);
@@ -118,6 +153,13 @@ api.patch("/properties/:propertyId", p("properties.manage"), write, pc.updatePro
 api.delete("/properties/:propertyId", p("properties.manage"), write, pc.archiveProperty);
 api.get("/properties/:propertyId/completeness", p("properties.view"), pc.getCompleteness);
 api.post("/properties/:propertyId/submit", p("properties.manage"), write, pc.submitProperty);
+/* Change requests for approved / live listings (edits wait for SafeRent before going live). */
+api.post("/properties/:propertyId/revision/submit", p("properties.manage"), write, revisions.submitRevision);
+api.delete("/properties/:propertyId/revision", p("properties.manage"), write, revisions.discardRevision);
+api.get("/admin/property-revisions", p("listings.approve"), revisions.listRevisions);
+api.get("/admin/property-revisions/:revisionId", p("listings.approve"), revisions.getRevision);
+api.post("/admin/property-revisions/:revisionId/review", p("listings.approve"), write, revisions.reviewRevision);
+api.get("/properties/:propertyId/possible-duplicates", p("listings.approve"), pc.possibleDuplicates);
 api.post("/properties/:propertyId/review", p("listings.approve"), write, pc.reviewProperty);
 api.post("/properties/:propertyId/publish", p(), requireAnyPermission("properties.manage", "listings.approve"), write, pc.publishProperty);
 api.post("/properties/:propertyId/unpublish", p(), requireAnyPermission("properties.manage", "listings.approve"), write, pc.unpublishProperty);
@@ -224,6 +266,7 @@ api.get("/wallet", p(), referrals.myWallet);
 api.get("/wallet/transactions", p(), referrals.myWalletTransactions);
 api.post("/wallet/redeem", p(), referrals.redeem);
 api.post("/users/:id/kyc", p("users.manage"), referrals.decideKyc);
+api.post("/users/:id/kyc/manual-verify", p("kyc.verify_manual"), referrals.manualVerifyKyc);
 api.get("/kyc/me", p("profile.manage"), kyc.myKyc);
 api.post("/kyc/digilocker/start", p("profile.manage"), kyc.startDigiLocker);
 api.post("/kyc/digilocker/complete", p("profile.manage"), kyc.completeDigiLocker);
@@ -231,6 +274,13 @@ api.post("/kyc/selfie", p("profile.manage"), uploadSelfie, kyc.uploadSelfie);
 api.post("/kyc/submit", p("profile.manage"), kyc.submitKyc);
 api.get("/kyc/files/:userId/:kind", p(), kyc.kycFile);
 api.get("/admin/kyc", p("users.manage"), kyc.kycQueue);
+/* App configuration — Admin (app_config.manage) */
+api.get("/admin/app-config", p("app_config.manage"), appCfg.adminGetConfig);
+api.put("/admin/app-config", p("app_config.manage"), appCfg.adminPutConfig);
+api.get("/admin/app-config/history", p("app_config.manage"), appCfg.adminHistory);
+api.get("/admin/app-config/history/:id", p("app_config.manage"), appCfg.adminHistoryItem);
+api.post("/admin/app-config/rollback/:id", p("app_config.manage"), appCfg.adminRollback);
+api.post("/admin/app-config/assets", p("app_config.manage"), appAssets.receiveAppAsset, appAssets.uploadAppAsset);
 api.get("/admin/kyc/:userId", p("users.manage"), kyc.kycDetail);
 api.get("/admin/referrals/summary", p("referrals.manage"), referrals.adminSummary);
 api.get("/admin/referrals", p("referrals.manage"), referrals.adminList);
@@ -281,6 +331,10 @@ api.patch("/visits/:id", p("visits.manage"), ops.updateVisit);
 
 /* ─── Rent & finance (financial permissions only) ─── */
 api.get("/rent", p("rent.view"), rent.listRent);
+/* Landlord rent screen (Android): month buckets, reminders, receipt PDF. */
+api.get("/rent/dues", p("rent.view"), rentDues.listDues);
+api.post("/rent/dues/:id/remind", p("rent.view"), rentDues.remindDue);
+api.get("/rent/receipts/:id/pdf", p("rent.view"), rentDues.receiptPdf);
 api.post("/rent/generate", p("rent.collect"), rent.generateDues);
 api.post("/rent/:id/pay", p("rent.pay"), rent.payRent);
 api.post("/rent/:id/record", p("rent.collect"), rent.recordRent);

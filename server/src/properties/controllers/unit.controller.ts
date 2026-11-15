@@ -10,8 +10,8 @@ import { maxUnits, UNIT_COLUMNS, unitPrefix, type PropertyTypeDef } from "../cat
 import { fieldsSchema, flatValues, mergeAttributes, splitValues } from "../fields";
 import { nextCode, nextCodes } from "../ids";
 import { duplexFloorsSchema, versionField } from "../schemas";
-import { audit, checkVersion, childKey, diff, isModerator, recordStatus, scopedProperty, typeOf, withProperty, type Tx } from "../service";
-import { canEditContent } from "../workflow";
+import { audit, checkVersion, childKey, diff, recordStatus, scopedProperty, typeOf, withProperty, type Tx } from "../service";
+import { editTarget, leaseRowIds } from "../revisions";
 import { savePricing } from "./details.controller";
 
 const SETTABLE_AVAILABILITY = ["AVAILABLE", "RESERVED", "UNDER_MAINTENANCE", "NOT_AVAILABLE"];
@@ -40,9 +40,8 @@ function uniqueViolation(error: unknown): boolean {
 }
 
 async function loadEditable(req: Request) {
-  const property = await scopedProperty(req, "properties.manage");
-  const decision = canEditContent(property, isModerator(req));
-  if (!decision.ok) fail("failed-precondition", REASONS.INVALID_STATE, decision.reason);
+  // APPROVED / PUBLISHED listings: the working copy of their change request (the live data never changes here).
+  const property = await editTarget(req);
   return property;
 }
 
@@ -167,7 +166,7 @@ export async function updateUnit(req: Request, res: Response): Promise<void> {
   const body = parseUnitBody(type, req.body);
   checkVersion(unit, body.version);
 
-  const activeLease = await prisma.lease.count({ where: { unitId: unit.id, status: "ACTIVE" } });
+  const activeLease = await prisma.lease.count({ where: { unitId: { in: leaseRowIds(unit) }, status: "ACTIVE" } });
   if (activeLease && body.columns.availabilityStatus && body.columns.availabilityStatus !== "OCCUPIED") {
     fail("failed-precondition", REASONS.INVALID_STATE, "This unit has an active lease. End the lease before changing its availability.");
   }
@@ -203,7 +202,7 @@ export async function archiveUnit(req: Request, res: Response): Promise<void> {
   const type = typeOf(property);
   const unit = await scopedUnit(req, property.id);
   if (type.structure === "SINGLE_UNIT") fail("failed-precondition", REASONS.INVALID_STATE, `The ${type.unitLabel?.toLowerCase() ?? "unit"} of a ${type.label.toLowerCase()} cannot be removed. Archive the property instead.`);
-  if (await prisma.lease.count({ where: { unitId: unit.id, status: "ACTIVE" } })) fail("failed-precondition", REASONS.INVALID_STATE, "End the active lease before archiving this unit.");
+  if (await prisma.lease.count({ where: { unitId: { in: leaseRowIds(unit) }, status: "ACTIVE" } })) fail("failed-precondition", REASONS.INVALID_STATE, "End the active lease before archiving this unit.");
   await withProperty(property.id, async (tx) => {
     await tx.propertyUnit.update({ where: { id: unit.id }, data: { activeStatus: "ARCHIVED", availabilityStatus: "NOT_AVAILABLE", version: { increment: 1 } } });
     await recordStatus(tx, req, { propertyId: property.id, entityType: "UNIT", entityId: unit.id, field: "activeStatus", from: unit.activeStatus, to: "ARCHIVED" });

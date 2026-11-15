@@ -1,5 +1,8 @@
+import { enforceAppConfig } from "./appConfig";
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { REASONS, SESSION } from "../config/constants";
+import type { DecodedIdToken } from "firebase-admin/auth";
+import { accountBlockedError, accountGate } from "../lib/accountBlock";
 import { writeAuditLog } from "../lib/audit";
 import { AppError, fail } from "../lib/errors";
 import { adminAuth } from "../lib/firebaseAdmin";
@@ -12,22 +15,49 @@ import type { AuthedUser } from "../types/express";
 import { verifyAppCheck } from "./appCheck";
 
 /**
- * Verifies the Firebase ID token sent as `Authorization: Bearer <token>`.
- * checkRevoked=true rejects disabled users and tokens revoked by a password change / session revoke.
+ * Verifies the Firebase ID token sent as `Authorization: Bearer <token>`, then — before any route logic —
+ * checks the account status in our DB: an account that isn't ACTIVE gets 403 ACCOUNT_DELETED /
+ * ACCOUNT_DISABLED with details (see lib/accountBlock.ts). Deleting / deactivating / suspending only changes
+ * users.account_status; the Firebase user is never deleted or disabled.
+ * checkRevoked=true rejects tokens revoked by a password change / session revoke — but a revoked (or, for
+ * older accounts, Firebase-disabled) token whose signature is valid is still checked for a blocked account
+ * first, so a blocked user always gets the 403 with the reason rather than a generic 401.
  */
-export async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
-  const header = req.get("authorization") ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (!token) return next(new AppError("unauthenticated", REASONS.UNAUTHENTICATED, "Please sign in to continue."));
-  try {
-    req.auth = await adminAuth.verifyIdToken(token, true);
+function makeAuthenticate(gate: boolean) {
+  return async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
+    const header = req.get("authorization") ?? "";
+    const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+    if (!token) return next(new AppError("unauthenticated", REASONS.UNAUTHENTICATED, "Please sign in to continue."));
+    let decoded: DecodedIdToken;
+    try {
+      decoded = await adminAuth.verifyIdToken(token, true);
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === "auth/id-token-revoked" || code === "auth/user-disabled") {
+        // Valid signature, but revoked / disabled: answer with the account status when it's blocked.
+        const unchecked = await adminAuth.verifyIdToken(token, false).catch(() => null);
+        if (unchecked) {
+          const { blocked } = await accountGate(unchecked);
+          if (blocked) return next(blocked);
+        }
+        if (code === "auth/user-disabled") return next(new AppError("permission-denied", REASONS.ACCOUNT_DISABLED, "This account has been disabled."));
+      }
+      return next(new AppError("unauthenticated", REASONS.SESSION_REQUIRED, "Your session has expired. Please sign in again."));
+    }
+    req.auth = decoded;
+    if (!gate) return next();
+    const { row, blocked } = await accountGate(decoded);
+    if (blocked) return next(blocked);
+    req.accountRow = row;
     next();
-  } catch (error) {
-    const code = (error as { code?: string }).code;
-    if (code === "auth/user-disabled") return next(new AppError("permission-denied", REASONS.ACCOUNT_DISABLED, "This account has been disabled."));
-    next(new AppError("unauthenticated", REASONS.SESSION_REQUIRED, "Your session has expired. Please sign in again."));
-  }
+  };
 }
+
+/** Token + account-status gate. Used by every signed-in route (phone/complete, /auth/me, protect(...), …). */
+export const authenticate = makeAuthenticate(true);
+
+/** Token only, no status gate — just for sign-out, so a blocked user can still remove their device token. */
+export const authenticateAllowBlocked = makeAuthenticate(false);
 
 /**
  * Loads the SafeRent account for the Firebase user (MySQL is the source of truth for roles)
@@ -37,7 +67,8 @@ export async function loadUser(req: Request, _res: Response, next: NextFunction)
   const token = req.auth;
   if (!token) return next(new AppError("unauthenticated", REASONS.UNAUTHENTICATED, "Please sign in to continue."));
 
-  const user = await prisma.user.findUnique({ where: { firebaseUid: token.uid } });
+  // Already looked up (and status-checked) by authenticate.
+  const user = req.accountRow !== undefined ? req.accountRow : await prisma.user.findUnique({ where: { firebaseUid: token.uid } });
   if (!user) {
     const phone = token.firebase?.sign_in_provider === "phone";
     return next(
@@ -46,9 +77,7 @@ export async function loadUser(req: Request, _res: Response, next: NextFunction)
         : new AppError("permission-denied", REASONS.NOT_AUTHORIZED, "This account is not authorized."),
     );
   }
-  if (user.accountStatus !== "ACTIVE") {
-    return next(new AppError("permission-denied", REASONS.ACCOUNT_DISABLED, "This account has been disabled."));
-  }
+  if (user.accountStatus !== "ACTIVE") return next(await accountBlockedError(user));
   const roles = await rolesFor(user);
   req.user = { ...user, roles, permissions: await effectivePermissionsFor(user, roles) };
   next();
@@ -102,7 +131,8 @@ export function requireAnyPermission(...permissions: PermissionKey[]): RequestHa
  *   App Check → Firebase token → active SafeRent account → verified session → permissions
  */
 export function protect(...permissions: PermissionKey[]): RequestHandler[] {
-  const chain: RequestHandler[] = [verifyAppCheck, authenticate, loadUser, requireSession];
+  // enforceAppConfig: maintenance mode + feature switches from Admin → App configuration.
+  const chain: RequestHandler[] = [verifyAppCheck, authenticate, loadUser, requireSession, enforceAppConfig];
   if (permissions.length) chain.push(requirePermission(...permissions));
   return chain;
 }

@@ -49,7 +49,7 @@ interface TokenState {
   provider: string | null;
 }
 
-const BLOCKING_REASONS = new Set(["NOT_AUTHORIZED", "ACCOUNT_DISABLED", "ACCOUNT_MISMATCH", "SESSION_REQUIRED", "UNAUTHENTICATED"]);
+const BLOCKING_REASONS = new Set(["NOT_AUTHORIZED", "ACCOUNT_DISABLED", "ACCOUNT_DELETED", "ACCOUNT_MISMATCH", "SESSION_REQUIRED", "UNAUTHENTICATED"]);
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 export function AuthProvider({ children }: { children: ReactNode }) {

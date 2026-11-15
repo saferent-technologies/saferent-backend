@@ -118,7 +118,8 @@ async function closeByAgreement(exitId: string): Promise<boolean> {
   const name = lease.property.title ?? lease.property.code;
   for (const id of [lease.tenantId, lease.landlordId]) await notify(id, "Lease closed", `The lease for "${name}" is closed as agreed. ${reason}`, "/leases");
 
-  // Reviews written during the request / acceptance are submitted now (optional, never required).
+  // Reviews written during the request / acceptance are submitted now. Anyone who didn't write one
+  // must review before their next rental (see assertNoReviewOwed); the app asks right away.
   const submitted = new Set<string>();
   for (const [userId, draft] of [
     [x.requestedById, x.requesterReview],
@@ -133,7 +134,7 @@ async function closeByAgreement(exitId: string): Promise<boolean> {
     }
   }
   for (const id of [lease.tenantId, lease.landlordId].filter((i) => !submitted.has(i))) {
-    await notify(id, "How was your rental experience?", `You can now review your rental at "${name}". It's optional; both reviews are revealed together.`, "/reviews");
+    await notify(id, "How was your rental experience?", `Please review your rental at "${name}". It's needed before your next rental; both reviews are revealed together.`, "/reviews");
   }
   return true;
 }

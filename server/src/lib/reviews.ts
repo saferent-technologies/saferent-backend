@@ -4,7 +4,8 @@
  * Two-way, double-blind reviews tied to a real, finished lease:
  *  - the tenant reviews the landlord, the landlord reviews the tenant;
  *  - neither side sees the other's review until both are in, or the review window closes;
- *  - reviews are optional and never block move-out, a new lease or a new invitation.
+ *  - reviews are required once a lease ends: a pending review blocks the next application, invitation
+ *    or lease for that side (never move-out itself), while the review window is open.
  */
 
 export type ReviewerRole = "TENANT" | "LANDLORD";

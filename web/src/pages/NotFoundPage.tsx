@@ -8,8 +8,8 @@ export function NotFoundPage() {
   return (
     <AuthLayout>
       <AuthCard title="Page not found" subtitle="The page you're looking for doesn't exist or has moved.">
-        <Button fullWidth size="lg" onClick={() => navigate(PATHS.dashboard)}>
-          Go to dashboard
+        <Button fullWidth size="lg" onClick={() => navigate(PATHS.home)}>
+          Go to the home page
         </Button>
       </AuthCard>
     </AuthLayout>

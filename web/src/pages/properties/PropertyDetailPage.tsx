@@ -23,9 +23,10 @@ import { errorMessage } from "@/utils/errors";
 import { formatDate, formatMoney, formatTimestamp, labelize } from "@/utils/format";
 import { CompletenessMeter, CostBreakdownView, Facts, ValueText } from "./components";
 import { InvitationsTab, InviteTenantModal } from "./TenantInvites";
+import { PossibleDuplicates } from "./PossibleDuplicates";
 import { PropertyDocumentsTab } from "./PropertyDocuments";
 import { PropertyReviewsTab } from "@/pages/reviews/ReviewsPages";
-import { imagePath, rentRange, type PropertyCan, type PropertyDetail } from "./types";
+import { imagePath, rentRange, type PendingRevision, type PropertyCan, type PropertyDetail } from "./types";
 
 type Tab = "overview" | "units" | "tenants" | "reviews" | "details" | "photos" | "documents" | "inspections" | "team" | "history";
 
@@ -35,7 +36,7 @@ export function PropertyDetailPage() {
   const navigate = useNavigate();
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const { can: hasPermission } = useAuth();
-  const { data, loading, error, reload } = useQuery(() => request<{ property: PropertyDetail; can: PropertyCan }>(`/properties/${id}`), [id]);
+  const { data, loading, error, reload } = useQuery(() => request<{ property: PropertyDetail; can: PropertyCan; pendingRevision: PendingRevision | null; lastRevision: PendingRevision | null }>(`/properties/${id}`), [id]);
   const { confirm, dialog } = useConfirm();
   const tab = (params.get("tab") as Tab | null) ?? "overview";
   const [invite, setInvite] = useState<{ target?: string } | null>(null);
@@ -56,6 +57,8 @@ export function PropertyDetailPage() {
     await request(path, { method: "POST", body: typeof body === "function" ? (body as (r?: string) => unknown)(reason) : body });
     await done(success)();
   };
+  // A verified ownership document (sale deed / tax receipt / power bill) is needed to approve.
+  const hasOwnershipProof = p.documents.some((d) => d.needsVerification && d.status === "APPROVED" && d.isCurrent !== false && !d.archivedAt);
   const structure = p.structure;
   const unitLabel = p.type?.unitLabel ?? "Unit";
 
@@ -101,7 +104,7 @@ export function PropertyDetailPage() {
             {canInvite && <Button variant="secondary" leftIcon={<UserPlus className="size-4" />} onClick={() => openInvite()}>Invite tenant</Button>}
             {editable && (
               <Button variant="secondary" leftIcon={<Pencil className="size-4" />} onClick={() => navigate(`/properties/${p.id}/edit?step=${p.publicationStatus === "DRAFT" ? Math.max(3, p.wizardStep) : 3}`)}>
-                {p.publicationStatus === "DRAFT" ? "Continue draft" : "Edit"}
+                {p.publicationStatus === "DRAFT" ? "Continue draft" : data.pendingRevision && data.pendingRevision.status !== "PENDING_VERIFICATION" ? "Continue changes" : "Edit"}
               </Button>
             )}
             {can.manage && p.publicationStatus === "DRAFT" && (
@@ -136,7 +139,32 @@ export function PropertyDetailPage() {
             )}
             {can.review && p.publicationStatus === "PENDING_VERIFICATION" && (
               <>
-                <Button leftIcon={<CheckCircle2 className="size-4" />} onClick={() => confirm({ title: "Approve and verify", message: "Confirm the details, photos and documents match. Pending photos are approved too.", confirmLabel: "Approve", onConfirm: act(`/properties/${p.id}/review`, { decision: "APPROVE" }, "Approved and verified.") })}>Approve</Button>
+                <Button
+                  leftIcon={<CheckCircle2 className="size-4" />}
+                  onClick={() => {
+                    setMsg(null);
+                    confirm({ title: "Approve and go live", message: "Confirm the details, photos and documents match. Pending photos are approved too, and the listing goes live for tenants right away.", confirmLabel: "Approve", onConfirm: act(`/properties/${p.id}/review`, { decision: "APPROVE" }, "Approved — the listing is live.") });
+                  }}
+                >
+                  Approve
+                </Button>
+                {!hasOwnershipProof && hasPermission("listings.approve_manual") && (
+                  <Button
+                    variant="secondary"
+                    leftIcon={<ShieldAlert className="size-4" />}
+                    onClick={() =>
+                      confirm({
+                        title: "Approve without document",
+                        message: "This listing has no verified ownership document. Approve it only after you've confirmed ownership another way — it goes live for tenants right away. Your name and reason are recorded.",
+                        confirmLabel: "Approve",
+                        reason: { label: "Reason (e.g. ownership checked at site visit)", required: true, minLength: 5 },
+                        onConfirm: act(`/properties/${p.id}/review`, (reason?: string) => ({ decision: "APPROVE", withoutOwnershipDocument: true, reason }), "Approved without an ownership document — the listing is live."),
+                      })
+                    }
+                  >
+                    Approve without document
+                  </Button>
+                )}
                 <Button variant="danger" leftIcon={<XCircle className="size-4" />} onClick={() => confirm({ title: "Reject", message: "Tell the owner what to fix.", tone: "danger", confirmLabel: "Reject", reason: { label: "Reason", required: true, minLength: 5 }, onConfirm: act(`/properties/${p.id}/review`, (reason?: string) => ({ decision: "REJECT", reason }), "Rejected with feedback.") })}>Reject</Button>
               </>
             )}
@@ -144,9 +172,34 @@ export function PropertyDetailPage() {
         }
       />
       {msg && <Alert kind={msg.kind} className="mb-4">{msg.text}</Alert>}
+      {data.pendingRevision && (
+        <ChangeRequestBanner
+          revision={data.pendingRevision}
+          can={can}
+          onReview={can.review ? () => navigate(`/moderation/changes/${data.pendingRevision!.id}`) : undefined}
+          onEdit={() => navigate(`/properties/${p.id}/edit?step=3`)}
+          onSubmit={() => act(`/properties/${p.id}/revision/submit`, {}, "Changes sent for verification. Your listing stays live meanwhile.")().catch((e) => fail(errorMessage(e)))}
+          onDiscard={() =>
+            confirm({
+              title: "Discard changes",
+              message: "Your unsent changes are deleted. The live listing stays exactly as it is.",
+              tone: "danger",
+              confirmLabel: "Discard",
+              onConfirm: async () => {
+                await request(`/properties/${p.id}/revision`, { method: "DELETE" });
+                await done("Changes discarded.")();
+              },
+            })
+          }
+        />
+      )}
+      {!data.pendingRevision && data.lastRevision?.status === "APPROVED" && data.lastRevision.decidedAt && Date.now() - new Date(data.lastRevision.decidedAt).getTime() < 7 * 86400_000 && (
+        <Alert kind="success" className="mb-4">Your last changes were approved on {formatDate(data.lastRevision.decidedAt)} and are live.</Alert>
+      )}
       {p.publicationStatus === "REJECTED" && p.moderationNote && <Alert kind="warning" title="Changes requested" className="mb-4">{p.moderationNote}</Alert>}
       {p.activeStatus === "SUSPENDED" && <Alert kind="error" title="Suspended" className="mb-4">{p.moderationNote ?? "This property is suspended by SafeRent."}</Alert>}
       {p.publicationStatus === "PENDING_VERIFICATION" && <Alert kind="info" className="mb-4">SafeRent is verifying this property. Editing is locked until the review is complete.</Alert>}
+      {can.review && p.publicationStatus === "PENDING_VERIFICATION" && <PossibleDuplicates propertyId={p.id} />}
 
       <div className="mb-5 overflow-x-auto">
         <Tabs<Tab> idPrefix="prop" className="min-w-[44rem]" value={tab} onChange={(v) => setParams({ tab: v }, { replace: true })} items={tabs} />
@@ -238,7 +291,7 @@ export function PropertyDetailPage() {
           {p.images.length === 0 && <p className="text-sm text-muted">No photos yet.</p>}
         </section>
       )}
-      {tab === "documents" && <PropertyDocumentsTab p={p} canManage={can.manage && p.activeStatus !== "ARCHIVED"} canVerify={can.verifyDocuments} />}
+      {tab === "documents" && <PropertyDocumentsTab p={p} canManage={can.manage && p.activeStatus !== "ARCHIVED"} canVerify={can.verifyDocuments} onChanged={() => void reload()} />}
       {tab === "inspections" && <InspectionsTab p={p} canInspect={can.inspect} onDone={done} />}
       {tab === "team" && <TeamTab p={p} canAssign={can.assign} onDone={done} />}
       {tab === "history" && <HistoryTab id={p.id} />}
@@ -668,5 +721,54 @@ function HistoryTab({ id }: { id: string }) {
         {audit.data && <Pagination page={audit.data.page} totalPages={audit.data.totalPages} total={audit.data.total} onPage={setPage} />}
       </section>
     </div>
+  );
+}
+
+const SECTION_LABELS: Record<string, string> = {
+  basic: "Title & description",
+  location: "Location",
+  building: "Building details",
+  units: "Units",
+  rooms: "Rooms & beds",
+  pricing: "Rent & charges",
+  utilities: "Utilities",
+  policies: "House rules",
+  amenities: "Amenities",
+  photos: "Photos",
+};
+export const sectionLabel = (k: string) => SECTION_LABELS[k] ?? k;
+
+/** Change request of a live listing: what's happening and what the owner can do. */
+function ChangeRequestBanner({ revision, can, onEdit, onSubmit, onDiscard, onReview }: { revision: PendingRevision; can: PropertyCan; onEdit: () => void; onSubmit: () => void; onDiscard: () => void; onReview?: () => void }) {
+  const pending = revision.status === "PENDING_VERIFICATION";
+  const rejected = revision.status === "REJECTED";
+  return (
+    <section className={`card mb-4 flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between ${rejected ? "border-danger/40" : pending ? "border-brand/40" : "border-warning/40"}`}>
+      <div className="min-w-0">
+        <p className="font-semibold">
+          {pending ? "Your changes are being verified" : rejected ? "SafeRent asked for changes" : "You have unsent changes"}
+        </p>
+        <p className="mt-0.5 text-sm text-muted">
+          {pending
+            ? `Sent ${revision.submittedAt ? formatDate(revision.submittedAt) : ""}. The listing stays live with its current details until they're approved.`
+            : rejected
+              ? (revision.moderationNote ?? "Fix the changes and send them again.")
+              : "Tenants still see the current listing. Submit your changes so SafeRent can verify them."}
+        </p>
+        {revision.changedSections.length > 0 && <p className="mt-1 text-xs text-muted">Changed: {revision.changedSections.map(sectionLabel).join(", ")}</p>}
+      </div>
+      {pending && onReview && (
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Button leftIcon={<CheckCircle2 className="size-4" />} onClick={onReview}>Review changes</Button>
+        </div>
+      )}
+      {!pending && (
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {can.editRevision && <Button variant="secondary" leftIcon={<Pencil className="size-4" />} onClick={onEdit}>Continue editing</Button>}
+          {can.discardRevision && <Button variant="ghost" onClick={onDiscard}>Discard</Button>}
+          {can.submitRevision && <Button leftIcon={<Send className="size-4" />} onClick={onSubmit}>Submit changes</Button>}
+        </div>
+      )}
+    </section>
   );
 }

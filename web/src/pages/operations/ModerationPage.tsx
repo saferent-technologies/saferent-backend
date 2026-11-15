@@ -16,15 +16,17 @@ import { useQuery } from "@/hooks/useQuery";
 import { request } from "@/services/api";
 import type { Paged } from "@/types/auth";
 import { formatTimestamp, labelize, toOptions } from "@/utils/format";
+import { Badge } from "@/components/ui/Badge";
 import { imagePath } from "../properties/types";
+import { ChangesTab } from "./PropertyChanges";
 
 interface Queue {
-  properties: Array<{ id: string; code: string; title: string | null; city: string | null; propertyTypeLabel: string; completenessScore: number; submittedAt: string | null; owner: { fullName: string } | null }>;
+  properties: Array<{ id: string; code: string; title: string | null; city: string | null; propertyTypeLabel: string; completenessScore: number; submittedAt: string | null; owner: { fullName: string } | null; possibleDuplicates?: number }>;
   images: Array<{ id: string; category: string; createdAt: string; property: { id: string; code: string; title: string | null } }>;
   documents: Array<{ id: string; code: string; docType: string; originalName: string; createdAt: string; property: { id: string; code: string; title: string | null } }>;
 }
 
-type Tab = "listings" | "images" | "documents" | "fraud";
+type Tab = "listings" | "changes" | "images" | "documents" | "fraud";
 
 export function ModerationPage() {
   const { can } = useAuth();
@@ -33,13 +35,14 @@ export function ModerationPage() {
   const tabs = (
     [
       { value: "listings", label: "Listings", perm: "listings.approve" },
+      { value: "changes", label: "Changes", perm: "listings.approve" },
       { value: "images", label: "Images", perm: "listings.approve" },
       { value: "documents", label: "Documents", perm: "documents.verify" },
       { value: "fraud", label: "Fraud reports", perm: "fraud.manage" },
     ] as const
   ).filter((t) => can(t.perm));
   const tab: Tab = tabs.find((t) => t.value === params.get("tab"))?.value ?? tabs[0]?.value ?? "listings";
-  const { data, loading, error, reload } = useQuery(() => request<Queue>("/properties/review-queue"), [], tab !== "fraud");
+  const { data, loading, error, reload } = useQuery(() => request<Queue>("/properties/review-queue"), [], tab !== "fraud" && tab !== "changes");
   const [msg, setMsg] = useState<string | null>(null);
   const { confirm, dialog } = useConfirm();
 
@@ -52,10 +55,10 @@ export function ModerationPage() {
   return (
     <>
       <PageHeader title="Moderation" description="Review listings, photos and ownership documents before tenants see them." />
-      <Tabs<Tab> idPrefix="mod" className="mb-5 max-w-2xl" value={tab} onChange={(v) => setParams({ tab: v }, { replace: true })} items={tabs.map((t) => ({ value: t.value, label: t.label + (data && t.value !== "fraud" ? ` (${data[t.value === "listings" ? "properties" : t.value].length})` : "") }))} />
+      <Tabs<Tab> idPrefix="mod" className="mb-5 max-w-2xl" value={tab} onChange={(v) => setParams({ tab: v }, { replace: true })} items={tabs.map((t) => ({ value: t.value, label: t.label + (data && t.value !== "fraud" && t.value !== "changes" ? ` (${data[t.value === "listings" ? "properties" : t.value].length})` : "") }))} />
       {msg && <Alert kind="success" className="mb-4">{msg}</Alert>}
       {error && <Alert kind="error">{error}</Alert>}
-      {tab !== "fraud" && loading && !data && <div className="flex justify-center py-16"><Spinner className="size-7 text-brand" /></div>}
+      {tab !== "fraud" && tab !== "changes" && loading && !data && <div className="flex justify-center py-16"><Spinner className="size-7 text-brand" /></div>}
 
       {tab === "listings" && data && (
         <DataTable
@@ -67,6 +70,7 @@ export function ModerationPage() {
             { key: "owner", header: "Owner", render: (l) => l.owner?.fullName ?? "—" },
             { key: "score", header: "Completeness", render: (l) => `${l.completenessScore}%` },
             { key: "updated", header: "Submitted", render: (l) => formatTimestamp(l.submittedAt), className: "hidden lg:table-cell" },
+            { key: "duplicates", header: "Duplicate check", render: (l) => (l.possibleDuplicates ? <Badge tone="warning">Maybe duplicate ({l.possibleDuplicates})</Badge> : <span className="text-xs text-muted">—</span>) },
             { key: "actions", header: "", className: "text-right", render: (l) => <Button size="sm" onClick={() => navigate(`/properties/${l.id}`)}>Review</Button> },
           ]}
         />
@@ -107,6 +111,7 @@ export function ModerationPage() {
       )}
 
       {tab === "fraud" && <FraudTab />}
+      {tab === "changes" && <ChangesTab />}
       {dialog}
     </>
   );

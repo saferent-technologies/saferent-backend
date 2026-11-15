@@ -1,3 +1,4 @@
+import { pricedPerRoom, pricedPerUnit, propertyTypeDef } from "../catalog";
 import type { Prisma, Property } from "@prisma/client";
 import type { Request, Response } from "express";
 import { REASONS } from "../../config/constants";
@@ -7,15 +8,14 @@ import { prisma } from "../../lib/prisma";
 import { parseInput } from "../../lib/validation";
 import { costBreakdown, type ChargeLike } from "../costs";
 import { amenitiesSchema, policiesSchema, policyProblems, pricingSchema, utilitiesSchema, utilityProblems } from "../schemas";
-import { audit, diff, isModerator, scopedProperty, withProperty, type Tx } from "../service";
-import { canEditContent } from "../workflow";
+import { audit, diff, scopedProperty, withProperty, type Tx } from "../service";
+import { editTarget } from "../revisions";
 
 const PROPERTY_SCOPE = "PROPERTY";
 
 async function editable(req: Request) {
-  const property = await scopedProperty(req, "properties.manage");
-  const decision = canEditContent(property, isModerator(req));
-  if (!decision.ok) fail("failed-precondition", REASONS.INVALID_STATE, decision.reason);
+  // APPROVED / PUBLISHED listings: the working copy of their change request (the live data never changes here).
+  const property = await editTarget(req);
   return property;
 }
 
@@ -109,6 +109,9 @@ export async function putAmenities(req: Request, res: Response): Promise<void> {
     const unit = found(await prisma.propertyUnit.findFirst({ where: { id: input.unitId, propertyId: property.id }, select: { id: true } }), "Unit");
     scopeKey = unit.id;
     unitId = unit.id;
+  } else if (input.roomId) {
+    const room = found(await prisma.propertyRoom.findFirst({ where: { id: input.roomId, propertyId: property.id }, select: { id: true } }), "Room");
+    scopeKey = room.id;
   }
   const catalog = await prisma.amenityDefinition.findMany({ where: { active: true } });
   const category = property.category;
@@ -152,6 +155,14 @@ export async function savePricing(tx: Tx, req: Request, property: Property, unit
   const listing = property.listingType;
   if (listing === "SALE" && input.monthlyRent) fail("invalid-argument", REASONS.INVALID_INPUT, "A property listed for sale has a sale price, not a monthly rent.");
   if (listing !== "SALE" && input.salePrice) fail("invalid-argument", REASONS.INVALID_INPUT, "A sale price only applies to properties listed for sale.");
+  // Buildings with separately rented units / rooms: the building only has common charges and terms.
+  if (!unitId && (input.monthlyRent || input.securityDeposit || input.salePrice)) {
+    if (pricedPerRoom(property.propertyTypeKey)) fail("invalid-argument", REASONS.INVALID_INPUT, "For a PG or hostel, set the rent and deposit on each room or bed — the building only has common charges.");
+    if (pricedPerUnit(property.propertyTypeKey, property.attributes as Record<string, unknown> | null)) {
+      const unit = (propertyTypeDef(property.propertyTypeKey)?.unitLabel ?? "unit").toLowerCase();
+      fail("invalid-argument", REASONS.INVALID_INPUT, `Set the rent, deposit or price on each ${unit} — the building only has common charges.`);
+    }
+  }
   const scopeKey = unitId ?? PROPERTY_SCOPE;
   const current = await tx.propertyPricing.findUnique({ where: { propertyId_scopeKey: { propertyId: property.id, scopeKey } }, include: { charges: true } });
   const { charges, ...core } = input;

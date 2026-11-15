@@ -42,7 +42,9 @@ function completeApartment(): CompletenessInput {
     ),
     amenityCount: 6,
     pricing: [
-      { unitId: null, values: { monthlyRent: "25000.00", securityDeposit: "100000.00", rentDueDay: 5, noticePeriodDays: 30, lockInPeriodMonths: 6, agreementChargesPaidBy: "SHARED" }, charges: [{ kind: "MAINTENANCE", billing: "FIXED_MONTHLY" }] },
+      // Apartment: common charges and terms on the building, rent and deposit on each flat.
+      { unitId: null, values: { rentDueDay: 5, noticePeriodDays: 30, lockInPeriodMonths: 6, agreementChargesPaidBy: "SHARED" }, charges: [{ kind: "MAINTENANCE", billing: "FIXED_MONTHLY" }] },
+      ...["u1", "u2", "u3"].map((id) => ({ unitId: id, values: { monthlyRent: "25000.00", securityDeposit: "100000.00" }, charges: [] })),
     ],
     documents: [{ docType: "OWNERSHIP_PROOF", status: "APPROVED" }],
   };
@@ -97,6 +99,11 @@ describe("submission readiness", () => {
   });
   it("passes for a complete apartment", () => {
     expect(submissionProblems(completeApartment())).toEqual([]);
+  });
+  it("apartments need rent on every flat — a building-level rent doesn't count", () => {
+    const input = completeApartment();
+    input.pricing = [{ unitId: null, values: { monthlyRent: "25000.00" }, charges: [] }, { unitId: "u1", values: { monthlyRent: "25000.00" }, charges: [] }];
+    expect(submissionProblems(input)).toContain("Add the rent.");
   });
   it("requires floor-wise details for a duplex and a sale price for SALE listings", () => {
     const duplex: CompletenessInput = {

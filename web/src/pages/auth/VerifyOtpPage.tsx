@@ -1,3 +1,4 @@
+import { toEmployeePath } from "@/routes/portal";
 import { MailCheck } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
@@ -13,7 +14,7 @@ import { OTP_LENGTH, PATHS } from "@/utils/constants";
 import { AppError, toAppError } from "@/utils/errors";
 
 const RESTART_REASONS = new Set(["OTP_EXPIRED", "OTP_TOO_MANY_ATTEMPTS", "OTP_ALREADY_USED", "CHALLENGE_NOT_FOUND"]);
-const SIGN_OUT_REASONS = new Set(["NOT_AUTHORIZED", "ACCOUNT_DISABLED", "ACCOUNT_MISMATCH", "WRONG_SIGN_IN_METHOD", "UNAUTHENTICATED"]);
+const SIGN_OUT_REASONS = new Set(["NOT_AUTHORIZED", "ACCOUNT_DISABLED", "ACCOUNT_DELETED", "ACCOUNT_MISMATCH", "WRONG_SIGN_IN_METHOD", "UNAUTHENTICATED"]);
 
 export function VerifyOtpPage() {
   const navigate = useNavigate();
@@ -33,7 +34,7 @@ export function VerifyOtpPage() {
     const appError = toAppError(err);
     if (SIGN_OUT_REASONS.has(appError.reason)) {
       await logout({ kind: "error", message: appError.message });
-      navigate(PATHS.login, { replace: true });
+      navigate(PATHS.employeeLogin, { replace: true });
       return;
     }
     if (appError.reason === "RESEND_COOLDOWN" && appError.retryAfterSeconds) {
@@ -53,7 +54,7 @@ export function VerifyOtpPage() {
         await verifyEmailOtpCode(challenge.challengeId, value);
         await waitForAuthenticated();
       });
-      navigate(PATHS.dashboard, { replace: true });
+      navigate(toEmployeePath(PATHS.dashboard), { replace: true });
     } catch (err) {
       await handleError(err);
     } finally {
@@ -80,13 +81,13 @@ export function VerifyOtpPage() {
 
   const switchAccount = async () => {
     await logout({ kind: "info", message: "Signed out. You can sign in with a different account." });
-    navigate(PATHS.login, { replace: true });
+    navigate(PATHS.employeeLogin, { replace: true });
   };
 
   // Phone sign-ins never need an email code; the session just needs to be restarted.
   if (signInProvider === "phone") {
     return (
-      <AuthLayout>
+      <AuthLayout variant="employee">
         <AuthCard title="Sign-in incomplete" subtitle="Please sign in again to continue.">
           <Button fullWidth size="lg" onClick={() => void switchAccount()}>
             Back to sign in
@@ -99,7 +100,7 @@ export function VerifyOtpPage() {
   const needsNewCode = !challenge || expired || (error && RESTART_REASONS.has(error.reason));
 
   return (
-    <AuthLayout>
+    <AuthLayout variant="employee">
       <AuthCard
         title="Check your email"
         subtitle={

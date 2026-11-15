@@ -1,3 +1,4 @@
+import { appConfig } from "../appConfig/service";
 import { Prisma, type Referral, type ReferralType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { notify } from "../lib/notify";
@@ -122,6 +123,8 @@ async function event(db: Tx | typeof prisma, referralId: string, ev: string, dat
  * here (never later) and locked: unique (type, referredUser) means no second referrer can claim them.
  */
 export async function attributeOnRegistration(newUser: { id: string; role: string; fullName: string }, code: string | undefined): Promise<void> {
+  // Admin → App configuration → Features → Referral system.
+  if (!code || !(await appConfig()).features.referrals) return;
   if (!code || !isWellFormedCode(code)) return;
   const row = await prisma.referralCode.findUnique({ where: { code } });
   const referrer = row ? await prisma.user.findUnique({ where: { id: row.userId }, select: { id: true, role: true, accountStatus: true, extraRoles: { select: { role: true } } } }) : null;

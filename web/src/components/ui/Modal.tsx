@@ -2,7 +2,8 @@ import { X } from "lucide-react";
 import { useEffect, useId, useRef, type ReactNode } from "react";
 
 /** Accessible dialog built on the native <dialog> element (focus trap + Esc handled by the browser). */
-export function Modal({ open, onClose, title, description, children }: { open: boolean; onClose: () => void; title: string; description?: string; children: ReactNode }) {
+/** `dismissible={false}`: no close button and Esc does nothing — for steps the user must finish. */
+export function Modal({ open, onClose, title, description, children, dismissible = true }: { open: boolean; onClose: () => void; title: string; description?: string; children: ReactNode; dismissible?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
 
@@ -19,7 +20,7 @@ export function Modal({ open, onClose, title, description, children }: { open: b
       aria-labelledby={titleId}
       onCancel={(e) => {
         e.preventDefault();
-        onClose();
+        if (dismissible) onClose();
       }}
       className="m-auto w-[calc(100%-2rem)] max-w-md rounded-card border border-line bg-surface p-0 text-ink shadow-card backdrop:bg-ink/40 backdrop:backdrop-blur-[2px]"
     >
@@ -32,9 +33,9 @@ export function Modal({ open, onClose, title, description, children }: { open: b
               </h2>
               {description && <p className="mt-1 text-sm text-muted">{description}</p>}
             </div>
-            <button type="button" onClick={onClose} aria-label="Close" className="-mr-2 -mt-1 flex size-10 items-center justify-center rounded-lg text-muted hover:bg-subtle">
+            {dismissible && <button type="button" onClick={onClose} aria-label="Close" className="-mr-2 -mt-1 flex size-10 items-center justify-center rounded-lg text-muted hover:bg-subtle">
               <X className="size-5" />
-            </button>
+            </button>}
           </div>
           {children}
         </div>

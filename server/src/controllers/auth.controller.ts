@@ -15,11 +15,17 @@ import { me as currentUser, requireRecentAuth, signInProvider, syncRoleClaim } f
 import { ROLE_INFO, type RoleKey } from "../rbac/catalog";
 import { effectivePermissionsFor, rolesFor } from "../rbac/service";
 import { z } from "zod";
+import { assertActive, assertPhoneNotDeleted } from "../lib/accountBlock";
 import { notify } from "../lib/notify";
 import { sendEmail } from "../services/email";
 import { otpEmail, passwordResetEmail } from "../services/templates";
 import { toProfile, toSession } from "./serializers";
 import { attributeOnRegistration } from "../services/referral.service";
+import { appConfig } from "../appConfig/service";
+import { consentStatusFor } from "./consents.controller";
+import { deviceSchema, fcmTokenSchema, removeDevice, saveDevice } from "../lib/devices";
+import { termsAccepted } from "../lib/consents";
+import { completionView, MISSING_MESSAGE, profileCompletion, registrationDemographics, REQUIRED_PROFILE_FIELDS, toDateOnly } from "../lib/profileCompletion";
 
 const appOrigin = () => env.APP_ORIGIN.split(",")[0].trim();
 
@@ -34,12 +40,13 @@ export async function me(req: Request, res: Response): Promise<void> {
 
   if (!user) {
     if (signInProvider(req) === "phone") {
-      res.json({ registrationRequired: true, phoneNumber: token.phone_number ?? null });
+      await assertPhoneNotDeleted(token.phone_number);
+      res.json({ registrationRequired: true, phoneNumber: token.phone_number ?? null, isProfileCompleted: false, missingFields: [...REQUIRED_PROFILE_FIELDS], termsAccepted: termsAccepted(await consentStatusFor(token.uid)) });
       return;
     }
     fail("permission-denied", REASONS.NOT_AUTHORIZED, "This account is not authorized.");
   }
-  if (user.accountStatus !== "ACTIVE") fail("permission-denied", REASONS.ACCOUNT_DISABLED, "This account has been disabled.");
+  await assertActive(user);
 
   const authEmail = token.email ? normalizeEmail(token.email) : null;
   if (authEmail && user.pendingEmail && authEmail === user.pendingEmail && authEmail !== user.email) {
@@ -53,6 +60,9 @@ export async function me(req: Request, res: Response): Promise<void> {
   const roles = await rolesFor(user);
   res.json({
     registrationRequired: false,
+    // Demographic screen: isProfileCompleted is what the app last sent (Admin → App configuration → Authentication).
+    ...completionView(user),
+    termsAccepted: termsAccepted(await consentStatusFor(token.uid)),
     user: { ...toProfile(user), roles },
     roleInfo: { key: user.role, ...ROLE_INFO[user.role as RoleKey] },
     roles: roles.map((key) => ({ key, ...ROLE_INFO[key] })),
@@ -87,6 +97,10 @@ export async function requestEmailOtp(req: Request, res: Response): Promise<void
   const now = Date.now();
   const challengeId = newChallengeId();
   const code = generateOtp();
+  // Timings from Admin → App configuration → Authentication (bounded by its validation).
+  const authCfg = (await appConfig()).auth;
+  const ttlMs = authCfg.otpExpiryMinutes * 60_000;
+  const resendMs = authCfg.otpResendSeconds * 1000;
 
   const outcome = await prisma.$transaction(async (tx) => {
     const existing = await tx.otpChallenge.findUnique({ where: { userId: user.id } });
@@ -105,11 +119,11 @@ export async function requestEmailOtp(req: Request, res: Response): Promise<void
       otpHash: hashOtp(code, challengeId, user.id, env.OTP_PEPPER),
       authTime: token.auth_time,
       attempts: 0,
-      maxAttempts: OTP.MAX_VERIFY_ATTEMPTS,
+      maxAttempts: authCfg.otpMaxAttempts,
       consumed: false,
       consumedAt: null,
-      expiresAt: new Date(now + OTP.TTL_MS),
-      resendAvailableAt: new Date(now + OTP.RESEND_COOLDOWN_MS),
+      expiresAt: new Date(now + ttlMs),
+      resendAvailableAt: new Date(now + resendMs),
       createdAt: new Date(now),
     };
     // Upsert on the single per-user row: any previous challenge is invalidated.
@@ -129,7 +143,7 @@ export async function requestEmailOtp(req: Request, res: Response): Promise<void
 
   const email = user.email;
   try {
-    await sendEmail(email, otpEmail({ code, minutes: OTP.TTL_MS / 60_000 }));
+    await sendEmail(email, otpEmail({ code, minutes: ttlMs / 60_000 }));
   } catch (error) {
     console.error("[otp] Email delivery failed", error);
     await prisma.otpChallenge.delete({ where: { userId: user.id } }).catch(() => undefined);
@@ -141,8 +155,8 @@ export async function requestEmailOtp(req: Request, res: Response): Promise<void
   res.json({
     challengeId,
     maskedEmail: maskEmail(email),
-    expiresAt: now + OTP.TTL_MS,
-    resendAvailableAt: now + OTP.RESEND_COOLDOWN_MS,
+    expiresAt: now + ttlMs,
+    resendAvailableAt: now + resendMs,
   });
 }
 
@@ -178,7 +192,7 @@ export async function verifyEmailOtp(req: Request, res: Response): Promise<void>
     if (result.incrementAttempts) {
       // Atomic: only counts while attempts are still below the limit.
       await prisma.otpChallenge.updateMany({
-        where: { userId: user.id, challengeId, attempts: { lt: OTP.MAX_VERIFY_ATTEMPTS } },
+        where: { userId: user.id, challengeId, attempts: { lt: challenge?.maxAttempts ?? OTP.MAX_VERIFY_ATTEMPTS } },
         data: { attempts: { increment: 1 } },
       });
     }
@@ -191,7 +205,7 @@ export async function verifyEmailOtp(req: Request, res: Response): Promise<void>
   await prisma.$transaction(async (tx) => {
     // Atomic consume: two parallel requests with the same code cannot both succeed (no replay).
     const consumed = await tx.otpChallenge.updateMany({
-      where: { userId: user.id, challengeId, consumed: false, attempts: { lt: OTP.MAX_VERIFY_ATTEMPTS } },
+      where: { userId: user.id, challengeId, consumed: false, attempts: { lt: challenge?.maxAttempts ?? OTP.MAX_VERIFY_ATTEMPTS } },
       data: { consumed: true, consumedAt: new Date(now) },
     });
     if (consumed.count !== 1) fail("permission-denied", REASONS.OTP_ALREADY_USED, "Verification failed.");
@@ -234,6 +248,16 @@ function phoneSessionData(authTime: number, meta: { ip: string | null; userAgent
  * Existing account → the phone must match the registered number → verified session.
  * No account yet → { registrationRequired: true } (landlords and tenants can sign up).
  */
+/**
+ * Admin → App configuration can switch phone sign-in off for customers (e.g. during an incident).
+ * Staff never sign in by phone OTP (email + second factor), so they are unaffected.
+ */
+async function assertPhoneLoginOn(role: RoleKey | null): Promise<void> {
+  if (role && ROLE_INFO[role]?.isStaff) return;
+  const { auth: a } = await appConfig();
+  if (!a.phoneLogin || !a.phoneOtp) fail("permission-denied", REASONS.LOGIN_METHOD_DISABLED, "Phone sign-in is turned off right now. Please try again later.");
+}
+
 export async function completePhoneLogin(req: Request, res: Response): Promise<void> {
   const meta = requestMeta(req);
   const token = req.auth!;
@@ -241,14 +265,27 @@ export async function completePhoneLogin(req: Request, res: Response): Promise<v
   if (signInProvider(req) !== "phone") {
     fail("failed-precondition", REASONS.WRONG_SIGN_IN_METHOD, "Sign in with your phone number first.");
   }
-  requireRecentAuth(req, 15 * 60);
-
+  // Optional: the device's FCM token, saved after a successful sign-in (also for first-time users).
+  const device = req.body && Object.keys(req.body).length ? parseInput(deviceSchema, req.body) : null;
   const user = await prisma.user.findUnique({ where: { firebaseUid: token.uid } });
+  await assertPhoneLoginOn(user ? (user.role as RoleKey) : null);
   if (!user) {
-    res.json({ ok: true, registrationRequired: true });
+    // A deleted account's number signing in again → 403 ACCOUNT_DELETED (with reason + support).
+    await assertPhoneNotDeleted(token.phone_number);
+    if (device) await saveDevice(token.uid, device);
+    res.json({ ok: true, registrationRequired: true, isProfileCompleted: false, missingFields: [...REQUIRED_PROFILE_FIELDS], termsAccepted: termsAccepted(await consentStatusFor(token.uid)), fcmTokenSaved: !!device });
     return;
   }
-  if (user.accountStatus !== "ACTIVE") fail("permission-denied", REASONS.ACCOUNT_DISABLED, "This account has been disabled.");
+  await assertActive(user);
+  // Already signed in with this token (e.g. the app's "Try again" after an account is re-activated or
+  // restored): answer 200 without asking for a fresh OTP and without touching the session.
+  const existing = await prisma.authSession.findUnique({ where: { userId: user.id } });
+  if (isSessionValid(existing, token.auth_time, Date.now()) && user.phoneNumber && token.phone_number === user.phoneNumber) {
+    if (device) await saveDevice(token.uid, device);
+    res.json({ ok: true, registrationRequired: false, accountStatus: user.accountStatus, mustChangePassword: user.mustChangePassword, ...completionView(user), termsAccepted: termsAccepted(await consentStatusFor(token.uid)), fcmTokenSaved: !!device });
+    return;
+  }
+  requireRecentAuth(req, 15 * 60);
   if (!user.phoneNumber || token.phone_number !== user.phoneNumber) {
     await writeAuditLog({ action: "auth.login", outcome: "failure", userId: user.id, reason: REASONS.ACCOUNT_MISMATCH, metadata: { method: "phone_otp" }, ...meta });
     fail("permission-denied", REASONS.ACCOUNT_MISMATCH, "This phone number is not authorized.");
@@ -262,13 +299,16 @@ export async function completePhoneLogin(req: Request, res: Response): Promise<v
   ]);
   void syncRoleClaim(token.uid, user.role, token.role);
 
+  if (device) await saveDevice(token.uid, device);
   await writeAuditLog({ action: "auth.login", outcome: "success", userId: user.id, email: user.email, metadata: { method: "phone_otp" }, ...meta });
-  res.json({ ok: true, registrationRequired: false, mustChangePassword: user.mustChangePassword });
+  res.json({ ok: true, registrationRequired: false, accountStatus: user.accountStatus, mustChangePassword: user.mustChangePassword, ...completionView(user), termsAccepted: termsAccepted(await consentStatusFor(token.uid)), fcmTokenSaved: !!device });
 }
 
 const registerSchema = z.object({
   fullName: z.string().trim().min(2, "Enter your full name.").max(120),
   role: z.enum(["LANDLORD", "TENANT"]),
+  /** Optional here (the web sign-up doesn't ask); the app's demographic screen sends them. */
+  ...registrationDemographics,
   /** Referral code from a /ref link opened before sign-up. Attribution is decided and locked here, server-side. */
   referralCode: z.string().trim().toUpperCase().max(20).optional(),
   email: z
@@ -287,13 +327,26 @@ const registerSchema = z.object({
  * choosing a staff role.
  */
 export async function register(req: Request, res: Response): Promise<void> {
+  const input = parseInput(registerSchema, req.body);
+  const user = await createPhoneAccount(req, input);
+  res.status(201).json({ ok: true, ...completionView(user) });
+}
+
+export type NewAccountInput = z.infer<typeof registerSchema>;
+
+/**
+ * Creates the SafeRent account for a phone-verified Firebase user (used by POST /auth/register and by the
+ * demographic screen's PUT /profile/demographics for a first-time user). Never a staff role.
+ */
+export async function createPhoneAccount(req: Request, input: NewAccountInput) {
   const meta = requestMeta(req);
   const token = req.auth!;
   if (signInProvider(req) !== "phone" || !token.phone_number) {
     fail("failed-precondition", REASONS.WRONG_SIGN_IN_METHOD, "Verify your phone number first.");
   }
   requireRecentAuth(req, 15 * 60);
-  const input = parseInput(registerSchema, req.body);
+  await assertPhoneLoginOn(null);
+  await assertPhoneNotDeleted(token.phone_number);
   await consumeRateLimit(`register:${token.uid}`, RATE_LIMITS.REGISTRATION.limit, RATE_LIMITS.REGISTRATION.windowMs);
 
   const existing = await prisma.user.findFirst({
@@ -305,6 +358,10 @@ export async function register(req: Request, res: Response): Promise<void> {
     fail("already-exists", emailTaken ? REASONS.EMAIL_IN_USE : REASONS.ALREADY_REGISTERED, emailTaken ? "This email address is already in use." : "This account is already registered.");
   }
 
+  if (input.isProfileCompleted === true) {
+    const missing = profileCompletion({ fullName: input.fullName, gender: input.gender ?? null, dateOfBirth: input.dateOfBirth ? toDateOnly(input.dateOfBirth) : null, city: input.city ?? null, state: input.state ?? null }).missingFields;
+    if (missing.length) fail("invalid-argument", REASONS.INVALID_INPUT, `Fill in your ${missing.map((f) => MISSING_MESSAGE[f]).join(", ")} to complete your profile.`, { missingFields: missing });
+  }
   const role = input.role as RoleKey;
   const session = phoneSessionData(token.auth_time, meta);
   const user = await prisma.$transaction(async (tx) => {
@@ -313,14 +370,19 @@ export async function register(req: Request, res: Response): Promise<void> {
         firebaseUid: token.uid,
         fullName: input.fullName,
         email: input.email ?? null,
+        gender: input.gender ?? null,
+        dateOfBirth: input.dateOfBirth ? toDateOnly(input.dateOfBirth) : null,
+        city: input.city ?? null,
+        state: input.state ?? null,
+        profileCompleted: input.isProfileCompleted === true,
         phoneNumber: token.phone_number!,
         role,
         phoneVerified: true,
         lastLoginAt: new Date(),
       },
     });
-    if (role === "LANDLORD") await tx.landlordProfile.create({ data: { userId: created.id } });
-    else await tx.tenantProfile.create({ data: { userId: created.id } });
+    if (role === "LANDLORD") await tx.landlordProfile.create({ data: { userId: created.id, city: input.city ?? null, state: input.state ?? null } });
+    else await tx.tenantProfile.create({ data: { userId: created.id, currentCity: input.city ?? null, occupation: input.occupation || null } });
     await tx.authSession.create({ data: { userId: created.id, ...session } });
     return created;
   });
@@ -330,7 +392,7 @@ export async function register(req: Request, res: Response): Promise<void> {
   // A bad or ineligible referral code never blocks sign-up.
   await attributeOnRegistration({ id: user.id, role, fullName: user.fullName }, input.referralCode).catch((err) => console.error("[referrals] attribution failed", err));
   await notify(user.id, `Welcome to SafeRent, ${user.fullName.split(" ")[0]}!`, role === "LANDLORD" ? "Add your first property to start receiving tenant applications." : "Browse verified rental properties and apply in a few taps.", role === "LANDLORD" ? "/properties/new" : "/browse");
-  res.status(201).json({ ok: true });
+  return user;
 }
 
 /**
@@ -366,6 +428,9 @@ export async function rebindSession(req: Request, res: Response): Promise<void> 
 /** POST /api/auth/logout — revokes the verified session server-side. */
 export async function logout(req: Request, res: Response): Promise<void> {
   const token = req.auth!;
+  // Optional { fcmToken }: stop sending pushes to this device.
+  const fcm = typeof req.body?.fcmToken === "string" ? fcmTokenSchema.safeParse(req.body.fcmToken) : null;
+  if (fcm?.success) await removeDevice(token.uid, fcm.data);
   const user = await prisma.user.findUnique({ where: { firebaseUid: token.uid }, select: { id: true } });
   if (user) {
     await prisma.authSession.updateMany({ where: { userId: user.id }, data: { revoked: true, revokedAt: new Date() } });
@@ -401,7 +466,7 @@ export async function requestPasswordReset(req: Request, res: Response): Promise
   }
 
   try {
-    const link = await adminAuth.generatePasswordResetLink(email, { url: `${appOrigin()}/login` });
+    const link = await adminAuth.generatePasswordResetLink(email, { url: `${appOrigin()}/employee` });
     await sendEmail(email, passwordResetEmail({ link }));
     await writeAuditLog({ action: "auth.password_reset.request", outcome: "success", userId: user.id, email, ...meta });
   } catch (error) {
@@ -409,4 +474,11 @@ export async function requestPasswordReset(req: Request, res: Response): Promise
     await writeAuditLog({ action: "auth.password_reset.request", outcome: "failure", userId: user.id, email, reason: "DELIVERY_FAILED", ...meta });
   }
   res.json(generic);
+}
+
+/** PUT /api/v1/devices/fcm-token — Firebase rotated the token (onNewToken) or the app re-registers. */
+export async function updateFcmToken(req: Request, res: Response): Promise<void> {
+  const device = parseInput(deviceSchema, req.body);
+  await saveDevice(req.auth!.uid, device);
+  res.json({ ok: true, fcmTokenSaved: true });
 }

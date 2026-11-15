@@ -28,7 +28,7 @@ export async function addAssignment(req: Request, res: Response): Promise<void> 
     });
     await audit(tx, req, { propertyId: property.id, entityType: "ASSIGNMENT", entityId: row.id, action: "assignment.add", newValue: { userId, type } });
   });
-  await notify(userId, "New property assigned", `You were assigned to "${property.title ?? property.code}".`, `/properties/${property.id}`);
+  await notify(userId, "New property assigned", `You were assigned to "${property.title ?? property.code}".`, `/properties/${property.id}`, "PROPERTY_ASSIGNED");
   res.status(201).json({ ok: true });
 }
 

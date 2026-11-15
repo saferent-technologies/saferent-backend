@@ -710,7 +710,7 @@ function AddMoney({ onDone }: { onDone: (text: string, kind: "success" | "error"
     }
     setBusy(g.provider);
     try {
-      const start = await request<{ topupId: string; checkout: { key: string; orderId: string; amount: number; currency: string; name: string; description: string; prefill: Record<string, string | undefined> } }>("/wallet/topups", { method: "POST", body: { provider: g.provider, amount: value } });
+      const start = await request<{ topupId: string; checkout: { key: string; orderId: string; amount: number; currency: string; name: string; description: string; prefill: Record<string, string | undefined>; method?: Record<string, boolean> } }>("/wallet/topups", { method: "POST", body: { provider: g.provider, amount: value } });
       await loadRazorpay();
       const finish = async (path: string, body: unknown) => request<{ status: string; failureReason?: string | null }>(`/wallet/topups/${start.topupId}/${path}`, { method: "POST", body });
       const rz = new window.Razorpay!({
@@ -721,6 +721,8 @@ function AddMoney({ onDone }: { onDone: (text: string, kind: "success" | "error"
         name: start.checkout.name,
         description: start.checkout.description,
         prefill: start.checkout.prefill,
+        // Payment methods switched on in Admin → App configuration → Payments.
+        method: start.checkout.method,
         theme: { color: "#F97316" },
         // The server verifies the signature and asks Razorpay before crediting.
         handler: async (r: RazorpayResponse) => {

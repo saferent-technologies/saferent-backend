@@ -1,10 +1,21 @@
 import { finalizeDueExits } from "./controllers/leaseExit.controller";
 import { publishDueReviews } from "./controllers/reviews.controller";
+import { rebuildLocations } from "./properties/locations";
+import { sendRentNotifications } from "./services/rentNotifications";
+
+/** Search-suggestion places are rebuilt from the properties at most once an hour (safety net). */
+let lastLocationsRebuild = 0;
+async function rebuildLocationsHourly(): Promise<void> {
+  if (Date.now() - lastLocationsRebuild < 60 * 60 * 1000) return;
+  lastLocationsRebuild = Date.now();
+  await rebuildLocations();
+}
 
 /**
  * Small in-process scheduler for time-based work that must not wait for someone to open the app:
  *  - close leases whose agreed move-out date has come;
- *  - publish reviews whose double-blind window has closed.
+ *  - publish reviews whose double-blind window has closed;
+ *  - create rent dues and send "rent due today" / "rent overdue" notifications.
  * Every job is idempotent (conditional updates), so overlapping runs or several API instances are safe.
  * The same functions also run before the related reads, so nothing depends on the timer alone.
  */
@@ -14,6 +25,8 @@ async function runOnce(): Promise<void> {
   for (const [name, job] of [
     ["lease-exits", finalizeDueExits],
     ["review-publication", publishDueReviews],
+    ["locations", rebuildLocationsHourly],
+    ["rent-notifications", sendRentNotifications],
   ] as const) {
     try {
       await job();

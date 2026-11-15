@@ -7,19 +7,25 @@ export interface TabItem<T extends string> {
   icon?: ReactNode;
 }
 
-/** Segmented tab switcher with proper ARIA roles and arrow-key support. */
+/**
+ * Segmented tab switcher with proper ARIA roles and arrow-key support.
+ * layout "equal" (default): one row of equal-width tabs — for a few short labels.
+ * layout "wrap": tabs size to their full label and wrap onto more rows — for many tabs (never truncated).
+ */
 export function Tabs<T extends string>({
   items,
   value,
   onChange,
   idPrefix,
   className,
+  layout = "equal",
 }: {
   items: TabItem<T>[];
   value: T;
   onChange: (value: T) => void;
   idPrefix: string;
   className?: string;
+  layout?: "equal" | "wrap";
 }) {
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
@@ -30,7 +36,12 @@ export function Tabs<T extends string>({
   };
 
   return (
-    <div role="tablist" onKeyDown={onKeyDown} className={cn("grid gap-1 rounded-control bg-subtle p-1", className)} style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+    <div
+      role="tablist"
+      onKeyDown={onKeyDown}
+      className={cn(layout === "wrap" ? "flex flex-wrap gap-1 rounded-control bg-subtle p-1" : "grid gap-1 rounded-control bg-subtle p-1", className)}
+      style={layout === "wrap" ? undefined : { gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}
+    >
       {items.map((item) => {
         const active = item.value === value;
         return (
@@ -44,12 +55,13 @@ export function Tabs<T extends string>({
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(item.value)}
             className={cn(
-              "flex min-h-11 items-center justify-center gap-2 rounded-[0.6rem] px-2 text-sm font-semibold transition-all",
+              "flex min-h-11 items-center justify-center gap-2 rounded-[0.6rem] text-sm font-semibold transition-all",
+              layout === "wrap" ? "whitespace-nowrap px-4" : "px-2",
               active ? "bg-surface text-brand-dark shadow-sm" : "text-muted hover:text-ink",
             )}
           >
             {item.icon}
-            <span className="truncate">{item.label}</span>
+            <span className={layout === "wrap" ? undefined : "truncate"}>{item.label}</span>
           </button>
         );
       })}

@@ -20,6 +20,7 @@ const TEST_DB = RAW_TEST_DB && /test/i.test(new URL(RAW_TEST_DB).pathname) ? RAW
 
 const tokens = new Map<string, { uid: string; auth_time: number; firebase: { sign_in_provider: string }; phone_number?: string }>();
 vi.mock("../../src/lib/firebaseAdmin", () => ({
+  messaging: { sendEachForMulticast: async () => ({ responses: [], successCount: 0, failureCount: 0 }) },
   adminAuth: {
     verifyIdToken: async (token: string) => {
       const decoded = tokens.get(token);
@@ -269,12 +270,20 @@ describe.skipIf(!TEST_DB)("property APIs (MySQL integration)", () => {
   it("15. Rent and deposit validation + itemised charges", async () => {
     expect((await call("landlordA", "PUT", `/properties/${ids.aptA}/pricing`, { monthlyRent: 0 })).status).toBe(400);
     expect((await call("landlordA", "PUT", `/properties/${ids.aptA}/pricing`, { salePrice: 5000000 })).status).toBe(400);
+    // Apartments: rent and deposit belong to each flat; the building only has common charges and terms.
+    expect((await call("landlordA", "PUT", `/properties/${ids.aptA}/pricing`, { securityDeposit: 66000 })).status).toBe(400);
     const ok = await call("landlordA", "PUT", `/properties/${ids.aptA}/pricing`, {
-      securityDeposit: 66000, rentDueDay: 5, lockInPeriodMonths: 6, noticePeriodDays: 30, agreementChargesPaidBy: "SHARED",
+      rentDueDay: 5, lockInPeriodMonths: 6, noticePeriodDays: 30, agreementChargesPaidBy: "SHARED",
       charges: [{ kind: "MAINTENANCE", billing: "FIXED_MONTHLY", amount: 2500 }, { kind: "PARKING", billing: "NOT_DISCLOSED" }],
     });
     expect(ok.status).toBe(200);
     expect(ok.json.data.breakdown.notDisclosed.map((l: { kind: string }) => l.kind)).toContain("PARKING");
+    // Each flat's price = its own rent + deposit + the building's common charges and terms.
+    const detail = await call("landlordA", "GET", `/properties/${ids.aptA}`);
+    const flat101 = detail.json.data.property.units.find((u: { id: string }) => u.id === ids.flat101);
+    expect(flat101.pricing.monthlyRent).toBe("15000");
+    expect(flat101.pricing.rentDueDay).toBe(5);
+    expect(flat101.pricing.charges.map((c: { kind: string }) => c.kind)).toContain("MAINTENANCE");
   });
 
   it("concurrent updates: a stale version gets 409", async () => {
@@ -317,8 +326,9 @@ describe.skipIf(!TEST_DB)("property APIs (MySQL integration)", () => {
     const approved = await call("admin", "POST", `/properties/${ids.aptA}/review`, { decision: "APPROVE" });
     expect(approved.status).toBe(200);
     expect(approved.json.data.property.verificationStatus).toBe("VERIFIED");
-    const published = await call("landlordA", "POST", `/properties/${ids.aptA}/publish`);
-    expect(published.json.data.property.publicationStatus).toBe("PUBLISHED");
+    // Approval puts the listing live straight away — no separate publish step.
+    expect(approved.json.data.property.publicationStatus).toBe("PUBLISHED");
+    expect((await call("landlordA", "POST", `/properties/${ids.aptA}/publish`)).status).toBe(412);
 
     const browse = await call("tenant", "GET", "/browse?city=Hyderabad");
     expect(browse.json.data.map((x: { id: string }) => x.id)).toContain(ids.aptA);
@@ -339,6 +349,79 @@ describe.skipIf(!TEST_DB)("property APIs (MySQL integration)", () => {
     const unit = await prisma.propertyUnit.findUniqueOrThrow({ where: { id: ids.flat101 } });
     expect(unit.availabilityStatus).toBe("OCCUPIED");
     expect((await call("tenant2", "POST", `/browse/${ids.aptA}/apply`, { unitId: ids.flat101, proposedMoveIn: "2026-12-01" })).status).toBe(412);
+  });
+
+  it("change requests: edits to a live listing wait for SafeRent", async () => {
+    const liveBefore = await prisma.property.findUniqueOrThrow({ where: { id: ids.aptA } });
+    expect(liveBefore.publicationStatus).toBe("PUBLISHED");
+
+    // Edit → a DRAFT change; the live listing is untouched and tenants still see the old title.
+    const edit = await call("landlordA", "PATCH", `/properties/${ids.aptA}`, { title: "Sea-facing flats (renovated)" });
+    expect(edit.status).toBe(200);
+    expect(edit.json.data.property.title).toBe("Sea-facing flats (renovated)");
+    expect(edit.json.data.property.id).toBe(ids.aptA);
+    expect((await prisma.property.findUniqueOrThrow({ where: { id: ids.aptA } })).title).toBe(liveBefore.title);
+    expect((await call("tenant", "GET", `/browse/${ids.aptA}`)).json.data.property.title).toBe(liveBefore.title);
+    expect((await call("tenant", "GET", "/browse?city=Hyderabad")).json.data.every((x: { title: string }) => x.title !== "Sea-facing flats (renovated)")).toBe(true);
+    const detail = await call("landlordA", "GET", `/properties/${ids.aptA}`);
+    expect(detail.json.data.pendingRevision.status).toBe("DRAFT");
+    expect(detail.json.data.can.submitRevision).toBe(true);
+    expect(detail.json.data.property.title).toBe(liveBefore.title);
+    const draft = await call("landlordA", "GET", `/properties/${ids.aptA}?view=draft`);
+    expect(draft.json.data.property.title).toBe("Sea-facing flats (renovated)");
+    // Moving between wizard steps doesn't save anything.
+    expect((await call("landlordA", "PATCH", `/properties/${ids.aptA}`, { wizardStep: 5 })).status).toBe(200);
+
+    // The leased flat can't be removed in the change either.
+    const draftFlat = draft.json.data.property.units.find((u: { sourceId: string | null }) => u.sourceId === ids.flat101);
+    expect(draftFlat).toBeTruthy();
+    expect((await call("landlordA", "DELETE", `/properties/${ids.aptA}/units/${draftFlat.id}`)).status).toBe(412);
+
+    // Submit → under verification; no edits or discard meanwhile.
+    const submit = await call("landlordA", "POST", `/properties/${ids.aptA}/revision/submit`);
+    expect(submit.status).toBe(200);
+    expect(submit.json.data.pendingRevision.status).toBe("PENDING_VERIFICATION");
+    expect(submit.json.data.pendingRevision.changedSections).toContain("basic");
+    expect((await call("landlordA", "PATCH", `/properties/${ids.aptA}`, { title: "Another edit" })).status).toBe(412);
+    expect((await call("landlordA", "DELETE", `/properties/${ids.aptA}/revision`)).status).toBe(412);
+    const queue = await call("admin", "GET", "/admin/property-revisions");
+    const revisionId = queue.json.data.find((r: { property: { id: string } }) => r.property.id === ids.aptA).id;
+    expect((await call("landlordA", "GET", "/admin/property-revisions")).status).toBe(403);
+
+    // Reject (reason required) → owner can edit again → back to DRAFT.
+    expect((await call("admin", "POST", `/admin/property-revisions/${revisionId}/review`, { decision: "REJECT" })).status).toBe(400);
+    expect((await call("admin", "POST", `/admin/property-revisions/${revisionId}/review`, { decision: "REJECT", reason: "Title doesn't match the photos" })).status).toBe(200);
+    const rejected = await call("landlordA", "GET", `/properties/${ids.aptA}`);
+    expect(rejected.json.data.pendingRevision.status).toBe("REJECTED");
+    expect(rejected.json.data.pendingRevision.moderationNote).toBe("Title doesn't match the photos");
+    expect((await call("landlordA", "PATCH", `/properties/${ids.aptA}`, { title: "Sea-facing flats" })).status).toBe(200);
+    expect((await call("landlordA", "GET", `/properties/${ids.aptA}`)).json.data.pendingRevision.status).toBe("DRAFT");
+
+    // Resubmit (also through /submit) → approve → live updated, still published, lease untouched.
+    expect((await call("landlordA", "POST", `/properties/${ids.aptA}/submit`)).status).toBe(200);
+    const approve = await call("admin", "POST", `/admin/property-revisions/${revisionId}/review`, { decision: "APPROVE" });
+    expect(approve.status).toBe(200);
+    const liveAfter = await prisma.property.findUniqueOrThrow({ where: { id: ids.aptA } });
+    expect(liveAfter.title).toBe("Sea-facing flats");
+    expect(liveAfter.publicationStatus).toBe("PUBLISHED");
+    expect(liveAfter.version).toBeGreaterThan(liveBefore.version);
+    expect((await prisma.propertyUnit.findUniqueOrThrow({ where: { id: ids.flat101 } })).availabilityStatus).toBe("OCCUPIED");
+    expect(await prisma.lease.count({ where: { unitId: ids.flat101, status: "ACTIVE" } })).toBe(1);
+    expect(await prisma.property.count({ where: { revisionOfId: ids.aptA } })).toBe(0);
+    expect((await call("tenant", "GET", `/browse/${ids.aptA}`)).json.data.property.title).toBe("Sea-facing flats");
+    const history = await call("landlordA", "GET", `/properties/${ids.aptA}/status-history?pageSize=100`);
+    expect(history.json.data.filter((h: { field: string }) => h.field === "changeRequest").map((h: { toValue: string }) => h.toValue)).toEqual(
+      expect.arrayContaining(["PENDING_VERIFICATION", "REJECTED", "APPROVED"]),
+    );
+
+    // Discard → live unchanged, working copy gone.
+    expect((await call("landlordA", "PATCH", `/properties/${ids.aptA}`, { title: "Throwaway title" })).status).toBe(200);
+    expect((await call("landlordA", "DELETE", `/properties/${ids.aptA}/revision`)).status).toBe(200);
+    expect((await prisma.property.findUniqueOrThrow({ where: { id: ids.aptA } })).title).toBe("Sea-facing flats");
+    expect(await prisma.property.count({ where: { revisionOfId: ids.aptA } })).toBe(0);
+    // Working copies never show up in lists.
+    const mine = await call("landlordA", "GET", "/properties?includeArchived=true&pageSize=100");
+    expect(mine.json.data.every((x: { code: string }) => !x.code.endsWith("-D"))).toBe(true);
   });
 
   it("18. Status changes are permission-checked and recorded", async () => {

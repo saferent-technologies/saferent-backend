@@ -26,7 +26,7 @@ import { AppError, errorMessage } from "@/utils/errors";
 import { formatMoney, labelize } from "@/utils/format";
 import { currentPosition, INDIAN_STATES, normalizeState } from "@/utils/location";
 import { CompletenessMeter, CostBreakdownView, DisclosureSelect, DynamicFields, toApiValues, type Values } from "./components";
-import { imagePath, type Disclosure, type PropertyCan, type PropertyDetail, type PropertyTypeDef, type PropertyTypesResponse, type Unit } from "./types";
+import { imagePath, type Disclosure, type PropertyCan, type PropertyDetail, type PropertyTypeDef, type PropertyTypesResponse, type Unit, type PendingRevision, unitPriced } from "./types";
 
 type Msg = { kind: "success" | "error" | "warning"; text: string } | null;
 
@@ -157,6 +157,8 @@ const STEPS = [
 ];
 
 interface StepProps {
+  /** Open change request of a live listing (edits are saved there, not on the live data). */
+  revision?: PendingRevision | null;
   p: PropertyDetail;
   type: PropertyTypeDef;
   enums: Record<string, string[]>;
@@ -169,7 +171,8 @@ function EditWizard({ id }: { id: string }) {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const types = useTypes();
-  const { data, loading, error, reload } = useQuery(() => request<{ property: PropertyDetail; can: PropertyCan }>(`/properties/${id}`), [id]);
+  // view=draft: for a live listing with an open change request, the listing as changed so far.
+  const { data, loading, error, reload } = useQuery(() => request<{ property: PropertyDetail; can: PropertyCan; pendingRevision: PendingRevision | null }>(`/properties/${id}`, { query: { view: "draft" } }), [id]);
   const [msg, setMsg] = useState<Msg>(null);
   const step = Math.min(12, Math.max(3, Number(params.get("step") ?? data?.property.wizardStep ?? 3)));
   const type = useMemo(() => types.data?.categories.flatMap((c) => c.types).find((t) => t.key === data?.property.propertyType), [types.data, data]);
@@ -183,7 +186,10 @@ function EditWizard({ id }: { id: string }) {
   if (!type || !types.data) return <Alert kind="error">This property type is not available.</Alert>;
   const p = data.property;
   if (!data.can.manage) return <Alert kind="error">You can view this property but not edit it.</Alert>;
-  const locked = p.publicationStatus === "PENDING_VERIFICATION" || p.activeStatus === "ARCHIVED" || p.activeStatus === "SUSPENDED";
+  const revision = data.pendingRevision;
+  const live = p.publicationStatus === "APPROVED" || p.publicationStatus === "PUBLISHED";
+  const changesPending = revision?.status === "PENDING_VERIFICATION";
+  const locked = p.publicationStatus === "PENDING_VERIFICATION" || changesPending || p.activeStatus === "ARCHIVED" || p.activeStatus === "SUSPENDED";
 
   const go = (s: number) => {
     setMsg(null);
@@ -197,7 +203,7 @@ function EditWizard({ id }: { id: string }) {
       .catch(() => undefined)
       .then(() => reload());
   };
-  const props: StepProps = { p, type, enums: types.data.enums, reload: async () => { await reload(); }, next, setMsg };
+  const props: StepProps = { p, type, enums: types.data.enums, reload: async () => { await reload(); }, next, setMsg, revision };
 
   return (
     <>
@@ -215,7 +221,17 @@ function EditWizard({ id }: { id: string }) {
         }
         actions={<Button variant="secondary" onClick={() => navigate(`/properties/${p.id}`)}>Preview</Button>}
       />
-      {locked && <Alert kind="warning" className="mb-4">This property is {labelize(p.publicationStatus === "PENDING_VERIFICATION" ? "pending verification" : p.activeStatus)} and can't be edited right now.</Alert>}
+      {locked && (
+        <Alert kind="warning" className="mb-4">
+          {changesPending ? "Your changes are being verified. You can edit again after SafeRent reviews them — the listing stays live meanwhile." : `This property is ${labelize(p.publicationStatus === "PENDING_VERIFICATION" ? "pending verification" : p.activeStatus)} and can't be edited right now.`}
+        </Alert>
+      )}
+      {live && !locked && (
+        <Alert kind="info" className="mb-4">
+          Your listing stays live with its current details. Edits are saved as changes and go live after SafeRent verifies them — submit them on the last step.
+        </Alert>
+      )}
+      {revision?.status === "REJECTED" && revision.moderationNote && <Alert kind="warning" title="SafeRent asked for changes" className="mb-4">{revision.moderationNote}</Alert>}
       {p.publicationStatus === "REJECTED" && p.moderationNote && <Alert kind="warning" title="Changes requested by SafeRent" className="mb-4">{p.moderationNote}</Alert>}
       <div className="grid gap-6 lg:grid-cols-[15rem_1fr]">
         <nav aria-label="Steps" className="card h-max p-3">
@@ -498,9 +514,108 @@ function UnitForm({ p, type, unit, onSaved, setMsg }: { p: PropertyDetail; type:
         {!sale && <Input label="Security deposit (₹)" type="number" min={0} step="any" value={String(deposit ?? "")} onChange={(e) => setDeposit(e.target.value)} />}
       </div>
       {type.floorWise && unit && <DuplexFloors p={p} unit={unit} onSaved={onSaved} />}
+      {unitPriced(p) && unit && <ScopedAmenities p={p} target={{ unitId: unit.id }} current={unit.amenities} what={(type.unitLabel ?? "unit").toLowerCase()} onSaved={onSaved} />}
+      {unitPriced(p) && !unit && <p className="text-xs text-muted">Save the {(type.unitLabel ?? "unit").toLowerCase()} first, then add its amenities. Its room photos are added in step 10.</p>}
       <div className="flex justify-end">
         <Button loading={busy} leftIcon={<Save className="size-4" />} onClick={() => void save()}>Save</Button>
       </div>
+    </div>
+  );
+}
+
+/** Amenities inside one flat / portion / shop / villa or PG room (the building's common amenities are in step 8). */
+function ScopedAmenities({ p, target, current, what, onSaved }: { p: PropertyDetail; target: { unitId: string } | { roomId: string }; current: Unit["amenities"]; what: string; onSaved: () => Promise<void> }) {
+  const catalog = useQuery(() => request<{ items: Array<{ key: string; label: string; categories: string[] }> }>("/amenities"), []);
+  const own = current ?? [];
+  const [selected, setSelected] = useState<Record<string, Disclosure>>(() => Object.fromEntries(own.filter((a) => !a.key.startsWith("custom:")).map((a) => [a.key, a.status])));
+  const [custom, setCustom] = useState<string[]>(() => own.filter((a) => a.key.startsWith("custom:")).map((a) => a.label));
+  const [newCustom, setNewCustom] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const common = new Set(p.amenities.map((a) => a.key));
+  const items = (catalog.data?.items ?? []).filter((a) => a.categories.includes(p.category));
+  const save = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      await request(`/properties/${p.id}/amenities`, {
+        method: "PUT",
+        body: { ...target, items: Object.entries(selected).map(([key, status]) => ({ key, status })), custom: custom.map((label) => ({ label, status: "YES" })) },
+      });
+      setNote({ kind: "success", text: `Amenities of this ${what} saved.` });
+      await onSaved();
+    } catch (err) {
+      setNote({ kind: "error", text: explain(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="rounded-control border border-line p-4">
+      <h4 className="font-semibold">Amenities in this {what}</h4>
+      <p className="mb-3 text-xs text-muted">Only what's inside this {what} (AC, geyser, wardrobe …). Building amenities are added once in step 8{common.size ? ` and are shown with every ${what}` : ""}.</p>
+      {note && <Alert kind={note.kind} className="mb-3">{note.text}</Alert>}
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {items.map((a) => (
+          <div key={a.key} className="flex items-center justify-between gap-2 rounded-control border border-line px-3 py-2">
+            <span className="text-sm font-medium">{a.label}{common.has(a.key) && <span className="ml-1 text-xs text-muted">(building)</span>}</span>
+            <select aria-label={a.label} className="rounded border border-line bg-surface px-2 py-1 text-sm" value={selected[a.key] ?? ""} onChange={(e) => {
+              const next = { ...selected };
+              if (e.target.value) next[a.key] = e.target.value as Disclosure;
+              else delete next[a.key];
+              setSelected(next);
+            }}>
+              <option value="">—</option>
+              <option value="YES">Yes</option>
+              <option value="NO">No</option>
+              <option value="NOT_DISCLOSED">Not disclosed</option>
+            </select>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {custom.map((c) => (
+          <Badge key={c} tone="brand">{c} <button type="button" aria-label={`Remove ${c}`} onClick={() => setCustom(custom.filter((x) => x !== c))}>×</button></Badge>
+        ))}
+      </div>
+      <div className="mt-2 flex gap-2">
+        <Input aria-label={`Custom ${what} amenity`} placeholder="e.g. Study table" maxLength={60} value={newCustom} onChange={(e) => setNewCustom(e.target.value)} />
+        <Button variant="secondary" disabled={newCustom.trim().length < 2} onClick={() => { setCustom([...custom, newCustom.trim()]); setNewCustom(""); }}>Add</Button>
+      </div>
+      <div className="mt-3 flex justify-end">
+        <Button variant="secondary" loading={busy} leftIcon={<Save className="size-4" />} onClick={() => void save()}>Save {what} amenities</Button>
+      </div>
+    </div>
+  );
+}
+
+/** PG room: its own amenities and photos (shown to tenants with that room). */
+function RoomExtras({ p, room, reload, setMsg }: { p: PropertyDetail; room: PropertyDetail["rooms"][number]; reload: () => Promise<void>; setMsg: StepProps["setMsg"] }) {
+  const [open, setOpen] = useState(false);
+  const photos = p.images.filter((i) => i.roomId === room.id && !i.inspectionId);
+  return (
+    <div className="mt-3">
+      <button type="button" className="text-sm font-semibold text-brand-dark hover:text-brand" onClick={() => setOpen(!open)}>
+        {open ? "Hide" : "Room amenities & photos"} <span className="font-normal text-muted">({(room.amenities ?? []).length} amenities · {photos.length} photos)</span>
+      </button>
+      {open && (
+        <div className="mt-3 space-y-3">
+          <div>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <UploadButton path={`/properties/${p.id}/images`} extra={{ category: "BEDROOM", roomId: room.id }} label="Add room photos" onDone={async () => { await reload(); setMsg({ kind: "success", text: "Room photos uploaded." }); }} onError={(t) => setMsg({ kind: "error", text: t })} />
+            </div>
+            <ul className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+              {photos.map((img) => (
+                <li key={img.id} className="relative overflow-hidden rounded-control border border-line">
+                  <AuthImage path={imagePath(img.id)} alt="" className="aspect-[4/3] w-full" />
+                  <span className="absolute left-1 top-1"><StatusBadge status={img.status} /></span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <ScopedAmenities p={p} target={{ roomId: room.id }} current={room.amenities} what="room" onSaved={reload} />
+        </div>
+      )}
     </div>
   );
 }
@@ -580,7 +695,7 @@ function RoomsStep({ p, enums, reload, next, setMsg }: StepProps) {
     }
   };
   return (
-    <StepCard title="Rooms and beds" description="PG building → rooms → beds. Available beds are always counted from the actual bed records." footer={<Button leftIcon={<ArrowRight className="size-4" />} onClick={next}>Continue</Button>}>
+    <StepCard title="Rooms and beds" description="PG building → rooms → beds. Each room has its own rent (per bed), deposit, amenities and photos; common facilities and charges are added once for the building." footer={<Button leftIcon={<ArrowRight className="size-4" />} onClick={next}>Continue</Button>}>
       <div className="space-y-3">
         {p.rooms.map((r) => (
           <div key={r.id} className="rounded-control border border-line p-4">
@@ -588,6 +703,7 @@ function RoomsStep({ p, enums, reload, next, setMsg }: StepProps) {
               <p className="font-semibold">Room {r.roomNumber} <span className="text-xs font-normal text-muted">{r.code} · {labelize(r.sharingType)}{r.rentPerBed ? ` · ${formatMoney(r.rentPerBed)}/bed` : ""}</span></p>
               <span className="text-sm text-muted">{r.availableBeds ?? 0} available · {r.occupiedBeds ?? 0} occupied</span>
             </div>
+            <RoomExtras p={p} room={r} reload={reload} setMsg={setMsg} />
             <ul className="mt-3 flex flex-wrap gap-2">
               {r.beds.map((b) => (
                 <li key={b.id} className="flex items-center gap-2 rounded-control bg-subtle px-3 py-2 text-sm">
@@ -761,8 +877,14 @@ function AmenitiesStep({ p, reload, next, setMsg }: StepProps) {
         body: { items: Object.entries(selected).map(([key, status]) => ({ key, status })), custom: custom.map((label) => ({ label, status: "YES" })) },
       }),
     );
+  const apartment = unitPriced(p) || p.rooms.length > 0 || p.structure === "ROOMS_BEDS";
+  const subUnit = p.structure === "ROOMS_BEDS" ? "room" : (p.type?.unitLabel ?? "unit").toLowerCase();
   return (
-    <StepCard title="Amenities and facilities" description="Tick what the property has. Mark No for things tenants commonly ask about." footer={<SaveButtons save={save} next={next} busy={busy} />}>
+    <StepCard
+      title={apartment ? "Common amenities" : "Amenities and facilities"}
+      description={apartment ? `Facilities of the whole building (lift, security, parking, Wi-Fi, gym …). Amenities inside a ${subUnit} are added on each ${subUnit} in step 5.` : "Tick what the property has. Mark No for things tenants commonly ask about."}
+      footer={<SaveButtons save={save} next={next} busy={busy} />}
+    >
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((a) => (
           <div key={a.key} className="flex items-center justify-between gap-2 rounded-control border border-line px-3 py-2">
@@ -809,9 +931,12 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
   const pr = p.pricing;
   const sale = p.listingType === "SALE";
   // Flats / rooms carry their own rent and deposit (step 5), so the property-level ones aren't asked again.
-  const perUnitRent = type.structure === "MULTI_UNIT" || type.structure === "ROOMS_BEDS";
+  const perUnitRent = type.structure === "MULTI_UNIT" || type.structure === "ROOMS_BEDS" || unitPriced(p);
   // …and for rentals of those, the lease terms grid (advance, due day, lock-in, notice, agreement) isn't asked either.
   const showTerms = sale || !perUnitRent;
+  // Apartments: rent, deposit and sale price live on each flat; the building only has common charges and terms.
+  const flatPriced = unitPriced(p) || type.structure === "ROOMS_BEDS";
+  const subUnit = type.structure === "ROOMS_BEDS" ? "room or bed" : (type.unitLabel ?? "unit").toLowerCase();
   const [v, setV] = useState<Record<string, string>>(() => ({
     monthlyRent: pr?.monthlyRent ?? "",
     salePrice: pr?.salePrice ?? "",
@@ -841,7 +966,7 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
       request(`/properties/${p.id}/pricing`, {
         method: "PUT",
         body: {
-          ...(sale ? { salePrice: money(v.salePrice) } : showTerms ? { monthlyRent: money(v.monthlyRent), securityDeposit: money(v.securityDeposit), advanceRentMonths: num(v.advanceRentMonths), rentDueDay: num(v.rentDueDay), lockInPeriodMonths: num(v.lockInPeriodMonths), noticePeriodDays: num(v.noticePeriodDays) } : {}),
+          ...(sale ? (flatPriced ? {} : { salePrice: money(v.salePrice) }) : showTerms ? { monthlyRent: money(v.monthlyRent), securityDeposit: money(v.securityDeposit), advanceRentMonths: num(v.advanceRentMonths), rentDueDay: num(v.rentDueDay), lockInPeriodMonths: num(v.lockInPeriodMonths), noticePeriodDays: num(v.noticePeriodDays) } : {}),
           ...(showTerms ? { agreementCharges: money(v.agreementCharges), agreementChargesPaidBy: v.agreementChargesPaidBy } : {}),
           lateFeePolicy: v.lateFeePolicy || null,
           rentIncreasePolicy: v.rentIncreasePolicy || null,
@@ -861,13 +986,19 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
   return (
     <StepCard
       title="Rent and financial details"
-      description={perUnitRent && !sale ? "Charges common to every unit. Rent and deposit are set for each unit in step 5." : "Every charge is listed separately — never combined into one unclear amount."}
+      description={
+        flatPriced
+          ? `Charges and terms common to every ${subUnit} (maintenance, water, food …). ${sale ? "The price" : "Rent and deposit"} are set on each ${subUnit} in step 5 — tenants see its own price plus these common charges.`
+          : perUnitRent && !sale
+            ? "Charges common to every unit. Rent and deposit are set for each unit in step 5."
+            : "Every charge is listed separately — never combined into one unclear amount."
+      }
       footer={<SaveButtons save={save} next={next} busy={busy} />}
     >
       {showTerms && (
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {sale ? (
-          <Input label="Sale price (₹)" type="number" min={0} value={v.salePrice} onChange={set("salePrice")} />
+          !flatPriced && <Input label="Sale price (₹)" type="number" min={0} value={v.salePrice} onChange={set("salePrice")} />
         ) : (
           <>
             {!perUnitRent && (
@@ -1006,8 +1137,8 @@ function MediaStep({ p, enums, reload, next, setMsg }: StepProps) {
           <h3 className="mb-1 font-semibold">Room photos</h3>
           <p className="mb-3 text-sm text-muted">Add one clear photo of each room. The list follows the bedrooms, bathrooms and other rooms you entered.</p>
           <RoomPhotos p={p} units={roomUnits} reload={reload} setMsg={setMsg} askDelete={askDelete} />
-          <h3 className="mb-1 mt-8 font-semibold">Other photos</h3>
-          <p className="mb-3 text-sm text-muted">Front view, entrance, building, parking and common areas.</p>
+          <h3 className="mb-1 mt-8 font-semibold">{unitPriced(p) ? "Building photos" : "Other photos"}</h3>
+          <p className="mb-3 text-sm text-muted">{unitPriced(p) ? `Front view, entrance, building exterior, parking and common areas — shown with every ${(p.type?.unitLabel ?? "unit").toLowerCase()}.` : "Front view, entrance, building, parking and common areas."}</p>
         </>
       )}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
@@ -1070,13 +1201,17 @@ function InspectionStep({ p, next, setMsg, reload }: StepProps) {
 }
 
 /* Step 12 */
-function ReviewStep({ p, reload, setMsg }: StepProps) {
+function ReviewStep({ p, reload, setMsg, revision }: StepProps) {
   const navigate = useNavigate();
-  const { data, reload: reloadCheck } = useQuery(() => request<{ completeness: PropertyDetail["completeness"]; submissionProblems: string[] }>(`/properties/${p.id}/completeness`), [p.id, p.version]);
+  const { data, reload: reloadCheck } = useQuery(() => request<{ completeness: PropertyDetail["completeness"]; submissionProblems: string[] }>(`/properties/${p.id}/completeness`, { query: { view: "draft" } }), [p.id, p.version]);
   const { busy, run } = useSaver({ reload, setMsg });
-  const canSubmit = ["DRAFT", "REJECTED"].includes(p.publicationStatus);
+  const isChange = !!revision && (revision.status === "DRAFT" || revision.status === "REJECTED");
+  const canSubmit = ["DRAFT", "REJECTED"].includes(p.publicationStatus) || isChange;
   const submit = async () => {
-    const ok = await run(() => request(`/properties/${p.id}/submit`, { method: "POST" }), "Submitted for verification. We'll notify you after review.");
+    const ok = await run(
+      () => request(isChange ? `/properties/${p.id}/revision/submit` : `/properties/${p.id}/submit`, { method: "POST" }),
+      isChange ? "Changes sent for verification. Your listing stays live meanwhile." : "Submitted for verification. We'll notify you after review.",
+    );
     if (ok) navigate(`/properties/${p.id}`);
     else await reloadCheck();
   };
@@ -1096,7 +1231,7 @@ function ReviewStep({ p, reload, setMsg }: StepProps) {
             )}
             <div className="mt-4 flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => navigate(`/properties/${p.id}`)}>Preview</Button>
-              {canSubmit && <Button loading={busy} disabled={data.submissionProblems.length > 0} leftIcon={<Send className="size-4" />} onClick={() => void submit()}>Submit for verification</Button>}
+              {canSubmit && <Button loading={busy} disabled={data.submissionProblems.length > 0} leftIcon={<Send className="size-4" />} onClick={() => void submit()}>{isChange ? "Submit changes for verification" : "Submit for verification"}</Button>}
             </div>
             {!canSubmit && <p className="mt-3 text-sm text-muted">Status: {labelize(p.publicationStatus)}.</p>}
           </div>

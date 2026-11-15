@@ -25,7 +25,7 @@ export interface UserProfile {
   role: Role;
   /** All roles held (primary first). */
   roles?: Role[];
-  accountStatus: "ACTIVE" | "SUSPENDED" | "DEACTIVATED";
+  accountStatus: "ACTIVE" | "SUSPENDED" | "DEACTIVATED" | "DELETED";
   isFounder: boolean;
   emailVerified: boolean;
   phoneVerified: boolean;
@@ -70,6 +70,16 @@ export interface AuditLogEntry {
   reason: string | null;
   ip: string | null;
   createdAt: string;
+}
+
+/** Staff-only details of a deleted account (users list / detail). */
+export interface UserDeletion {
+  deletedAt: string | null;
+  deletedBy: { id: string; fullName: string } | null;
+  reason: string | null;
+  formerName: string | null;
+  formerPhone: string | null;
+  formerEmail: string | null;
 }
 
 export interface Paged<T> {

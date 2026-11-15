@@ -33,14 +33,14 @@ export function ForgotPasswordPage() {
   });
 
   const backLink = (
-    <Link to={PATHS.login} className="inline-flex items-center gap-1.5 text-sm font-semibold text-brand-dark hover:text-brand hover:underline">
+    <Link to={PATHS.employeeLogin} className="inline-flex items-center gap-1.5 text-sm font-semibold text-brand-dark hover:text-brand hover:underline">
       <ArrowLeft className="size-4" /> Return to login
     </Link>
   );
 
   if (sentTo) {
     return (
-      <AuthLayout>
+      <AuthLayout variant="employee">
         <AuthCard title="Check your inbox" subtitle="If an authorized SafeRent admin account exists for this address, a reset link is on its way.">
           <div className="mb-6 flex justify-center">
             <span className="flex size-14 items-center justify-center rounded-2xl bg-success/10 text-success">
@@ -57,7 +57,7 @@ export function ForgotPasswordPage() {
   }
 
   return (
-    <AuthLayout>
+    <AuthLayout variant="employee">
       <AuthCard title="Forgot your password?" subtitle="Enter your work email and we'll send you a secure reset link.">
         <form onSubmit={onSubmit} noValidate className="space-y-4">
           {error && <Alert kind="error">{error}</Alert>}

@@ -38,6 +38,10 @@ import { computeCompleteness, submissionProblems } from "../completeness";
 import { fieldsSchema, flatValues, mergeAttributes, splitValues } from "../fields";
 import { nextCode } from "../ids";
 import { presentProperty, propertySummary } from "../presenters";
+import { deleteDraft, draftView, editTarget, needsRevision, openRevision, OPEN_REVISION, revisionSummary } from "../revisions";
+import { revisionPermissions, submitRevision } from "./revision.controller";
+import { syncLocationsFor } from "../locations";
+import { nearbyProperties } from "../nearby";
 import { CHARGE_BILLING, CHARGE_FREQUENCY, CHARGE_KINDS, createPropertySchema, listPropertiesQuery, reviewSchema, statusChangeSchema, transferOwnershipSchema, updatePropertySchema } from "../schemas";
 import {
   audit,
@@ -58,7 +62,7 @@ import {
   updateWithVersion,
   withProperty,
 } from "../service";
-import { canChangeActiveStatus, canEditContent, canPublish, canReview, canSubmit, canUnpublish, publicationAfterEdit } from "../workflow";
+import { canChangeActiveStatus, canPublish, canReview, canSubmit, canUnpublish, publicationAfterEdit } from "../workflow";
 import { evaluateForUser } from "../../services/referral.service";
 
 export const WIZARD_STEPS = [
@@ -170,6 +174,7 @@ export async function listProperties(req: Request, res: Response): Promise<void>
   const f = parseInput(listPropertiesQuery, req.query);
   const where = and<Prisma.PropertyWhereInput>(
     scope,
+    { revisionOfId: null },
     f.activeStatus ? { activeStatus: f.activeStatus } : f.includeArchived === "true" ? undefined : { activeStatus: { not: "ARCHIVED" } },
     f.publicationStatus && { publicationStatus: f.publicationStatus },
     f.verificationStatus && { verificationStatus: f.verificationStatus },
@@ -191,7 +196,21 @@ export async function listProperties(req: Request, res: Response): Promise<void>
     }),
     prisma.property.count({ where }),
   ]);
-  res.json(paged(items.map(propertySummary), total, p));
+  // Change requests: hasDraftChanges = an open change (draft / under verification / rejected).
+  const revisions = items.length
+    ? await prisma.propertyRevision.findMany({ where: { propertyId: { in: items.map((i) => i.id) } }, orderBy: { createdAt: "desc" }, select: { propertyId: true, status: true, draftPropertyId: true } })
+    : [];
+  res.json(
+    paged(
+      items.map((x) => {
+        const latest = revisions.find((r) => r.propertyId === x.id);
+        const open = latest && latest.draftPropertyId && (OPEN_REVISION as readonly string[]).includes(latest.status);
+        return { ...propertySummary(x), hasDraftChanges: !!open, changesStatus: latest ? latest.status : null };
+      }),
+      total,
+      p,
+    ),
+  );
 }
 
 async function permissionsFor(req: Request, propertyId: string, ownerId: string) {
@@ -204,7 +223,7 @@ async function permissionsFor(req: Request, propertyId: string, ownerId: string)
   return {
     manage,
     review: isModerator(req) && ownerId !== user.id,
-    verifyDocuments: verifyDocs && ownerId !== user.id,
+    verifyDocuments: verifyDocs && (ownerId !== user.id || hasRole(req, "SUPER_ADMIN")),
     assign: can(req, "assignments.manage"),
     inspect: inspect || manage,
     suspend: isModerator(req),
@@ -216,25 +235,50 @@ async function permissionsFor(req: Request, propertyId: string, ownerId: string)
 /** GET /api/v1/properties/:propertyId — full record (accepts the UUID or SR-PROP code). */
 export async function getProperty(req: Request, res: Response): Promise<void> {
   const property = await scopedProperty(req, "properties.view");
+  const rev = await openRevision(prisma, property.id);
+  const can = { ...(await permissionsFor(req, property.id, property.ownerId)), ...revisionPermissions(req, property, rev) };
+  const latest = rev ?? (await prisma.propertyRevision.findFirst({ where: { propertyId: property.id }, orderBy: { createdAt: "desc" } }));
+  const pendingRevision = rev ? revisionSummary(rev) : null;
+  const lastRevision = !rev && latest ? revisionSummary(latest) : null;
+  // ?view=draft → the listing as the wizard should show it (live data with the change applied).
+  if (req.query.view === "draft" && rev?.draftPropertyId) {
+    res.json({ property: await draftView(property, rev.draftPropertyId), can, pendingRevision, lastRevision });
+    return;
+  }
   const agg = await loadAggregate(prisma, property.id);
   const completeness = computeCompleteness(completenessInput(agg), await completenessWeights());
-  res.json({ property: presentProperty(agg, completeness), can: await permissionsFor(req, property.id, property.ownerId) });
+  res.json({ property: presentProperty(agg, completeness), can, pendingRevision, lastRevision });
 }
 
 /** GET /api/v1/properties/:propertyId/completeness */
 export async function getCompleteness(req: Request, res: Response): Promise<void> {
   const property = await scopedProperty(req, "properties.view");
-  const agg = await loadAggregate(prisma, property.id);
+  const rev = req.query.view === "draft" ? await openRevision(prisma, property.id) : null;
+  const agg = await loadAggregate(prisma, rev?.draftPropertyId ?? property.id);
   const input = completenessInput(agg);
   res.json({ completeness: computeCompleteness(input, await completenessWeights()), submissionProblems: submissionProblems(input) });
 }
 
 /** PATCH /api/v1/properties/:propertyId — basic info, location and building details. */
 export async function updateProperty(req: Request, res: Response): Promise<void> {
-  const property = await scopedProperty(req, "properties.manage");
   const input = parseInput(updatePropertySchema, req.body);
-  const decision = canEditContent(property, isModerator(req));
-  if (!decision.ok) fail("failed-precondition", REASONS.INVALID_STATE, decision.reason);
+  // Only the wizard position moved: nothing to save on a live listing (and no change request is started).
+  if (Object.keys(input).every((k) => k === "version" || k === "wizardStep")) {
+    const current = await scopedProperty(req, "properties.manage");
+    if (needsRevision(current)) {
+      res.locals.message = "Nothing to save";
+      const rev = await openRevision(prisma, current.id);
+      res.json({ property: rev?.draftPropertyId ? await draftView(current, rev.draftPropertyId) : presentProperty(await loadAggregate(prisma, current.id)) });
+      return;
+    }
+  }
+  // APPROVED / PUBLISHED: the change request's working copy; the live listing stays as it is.
+  const property = await editTarget(req);
+  const respond = async (message: string) => {
+    res.locals.message = property.revisionOfId ? "Saved to your changes. Submit them for verification — your listing stays live meanwhile." : message;
+    const live = property.revisionOfId ? await prisma.property.findUniqueOrThrow({ where: { id: property.revisionOfId } }) : null;
+    res.json({ property: live ? await draftView(live, property.id) : presentProperty(await loadAggregate(prisma, property.id)) });
+  };
   checkVersion(property, input.version);
   const type = typeOf(property);
 
@@ -262,8 +306,7 @@ export async function updateProperty(req: Request, res: Response): Promise<void>
   // otherwise the open form would hold a stale version and its next save would conflict.
   if (!Object.keys(delta.new).length && nextPublication === property.publicationStatus) {
     if (data.wizardStep) await prisma.property.update({ where: { id: property.id }, data: { wizardStep: data.wizardStep } });
-    res.locals.message = "Property updated successfully";
-    res.json({ property: presentProperty(await loadAggregate(prisma, property.id)) });
+    await respond("Property updated successfully");
     return;
   }
 
@@ -279,8 +322,9 @@ export async function updateProperty(req: Request, res: Response): Promise<void>
       await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "publicationStatus", from: property.publicationStatus, to: nextPublication, reason: "Listing details changed — re-verification required." });
     }
   });
-  res.locals.message = nextPublication !== property.publicationStatus ? "Saved. The changes will be visible after SafeRent verifies them." : "Property updated successfully";
-  res.json({ property: presentProperty(await loadAggregate(prisma, property.id)) });
+  // The old address's places lose this property when the address changed (the new ones are synced by withProperty).
+  void syncLocationsFor(property);
+  await respond(nextPublication !== property.publicationStatus ? "Saved. The changes will be visible after SafeRent verifies them." : "Property updated successfully");
 }
 
 async function hasActiveLeases(propertyId: string): Promise<boolean> {
@@ -351,12 +395,22 @@ export async function archiveProperty(req: Request, res: Response): Promise<void
       return;
     }
   }
+  // An open change request goes with it (the live data is what's archived).
+  const rev = await openRevision(prisma, property.id);
+  if (rev?.draftPropertyId) {
+    await prisma.$transaction(async (tx) => {
+      await deleteDraft(tx, rev.draftPropertyId!);
+      await tx.propertyRevision.update({ where: { id: rev.id }, data: { status: "DISCARDED", draftPropertyId: null, decidedAt: new Date() } });
+    });
+  }
   await changeActive(req, res, "ARCHIVED", "Archived by user.");
 }
 
 /** POST /api/v1/properties/:propertyId/submit — send for SafeRent verification. */
 export async function submitProperty(req: Request, res: Response): Promise<void> {
   const property = await scopedProperty(req, "properties.manage");
+  // Live listings: "submit" sends the change request.
+  if (needsRevision(property) && (await openRevision(prisma, property.id))) return submitRevision(req, res);
   const decision = canSubmit(property);
   if (!decision.ok) fail("failed-precondition", REASONS.INVALID_STATE, decision.reason);
   const agg = await loadAggregate(prisma, property.id);
@@ -388,32 +442,49 @@ export async function reviewProperty(req: Request, res: Response): Promise<void>
   const property = found(await prisma.property.findFirst({ where: propertyKey(req) }), "Property");
   const user = me(req);
   if (property.ownerId === user.id || property.createdById === user.id) fail("permission-denied", REASONS.PERMISSION_DENIED, "You cannot verify a property you own or created.");
-  const { decision, reason } = parseInput(reviewSchema, req.body);
+  const { decision, reason, withoutOwnershipDocument } = parseInput(reviewSchema, req.body);
   const allowed = canReview(property);
   if (!allowed.ok) fail("failed-precondition", REASONS.INVALID_STATE, allowed.reason);
   const approve = decision === "APPROVE";
-  if (approve) await assertOwnerVerified(property, true);
+  // Manual override: approve without a verified ownership document (the owner must still be verified).
+  if (withoutOwnershipDocument && !can(req, "listings.approve_manual")) fail("permission-denied", REASONS.PERMISSION_DENIED, "You can't approve a listing without a verified ownership document.");
+  if (approve) await assertOwnerVerified(property, !withoutOwnershipDocument);
+  // Approval puts the listing live straight away (no separate publish step for the owner).
+  // An inactive property is only approved; it goes live when the owner activates and publishes it.
+  const goLive = approve && property.activeStatus === "ACTIVE";
+  const approvedStatus = goLive ? "PUBLISHED" : "APPROVED";
   await withProperty(property.id, async (tx) => {
     await updateWithVersion(tx, property.id, property.version, {
-      publicationStatus: approve ? "APPROVED" : "REJECTED",
+      publicationStatus: approve ? approvedStatus : "REJECTED",
+      ...(goLive ? { publishedAt: new Date() } : {}),
       verificationStatus: approve ? "VERIFIED" : "REJECTED",
       moderationNote: approve ? null : reason,
       reviewedById: user.id,
       reviewedAt: new Date(),
     });
     if (approve) await tx.propertyImage.updateMany({ where: { propertyId: property.id, status: "PENDING" }, data: { status: "APPROVED", reviewedById: user.id } });
-    await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "publicationStatus", from: property.publicationStatus, to: approve ? "APPROVED" : "REJECTED", reason });
+    await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "publicationStatus", from: property.publicationStatus, to: approve ? approvedStatus : "REJECTED", reason });
     await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "verificationStatus", from: property.verificationStatus, to: approve ? "VERIFIED" : "REJECTED", reason });
-    await audit(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, action: approve ? "verification.approve" : "verification.reject", newValue: { reason: reason ?? null } });
+    await audit(tx, req, {
+      propertyId: property.id,
+      entityType: "PROPERTY",
+      entityId: property.id,
+      action: approve ? (withoutOwnershipDocument ? "verification.approve_manual" : "verification.approve") : "verification.reject",
+      newValue: { reason: reason ?? null, withoutOwnershipDocument: !!withoutOwnershipDocument },
+    });
   });
   await notify(
     property.ownerId,
-    approve ? "Your property was approved 🎉" : "Your property needs changes",
-    approve ? `"${property.title ?? property.code}" is verified. Publish it to make it visible to tenants.` : `"${property.title ?? property.code}": ${reason}`,
+    approve ? (goLive ? "Your property is live 🎉" : "Your property was approved 🎉") : "Your property needs changes",
+    approve
+      ? goLive
+        ? `"${property.title ?? property.code}" is verified and now visible to tenants.`
+        : `"${property.title ?? property.code}" is verified. Activate and publish it to make it visible to tenants.`
+      : `"${property.title ?? property.code}": ${reason}`,
     `/properties/${property.id}`,
   );
   if (approve) await evaluateForUser(property.ownerId);
-  res.locals.message = approve ? "Property approved" : "Property rejected";
+  res.locals.message = approve ? (goLive ? "Property approved and live" : "Property approved") : "Property rejected";
   res.json({ property: propertySummary(await prisma.property.findUniqueOrThrow({ where: { id: property.id } })) });
 }
 
@@ -459,11 +530,13 @@ export async function propertySummaryStats(req: Request, res: Response): Promise
   const user = me(req);
   const scope = propertyWhere(user, "properties.view");
   if (!scope) fail("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to view properties.");
-  const notArchived = and<Prisma.PropertyWhereInput>(scope, { activeStatus: { not: "ARCHIVED" } });
-  const [byPublication, totals, unread] = await Promise.all([
+  const notArchived = and<Prisma.PropertyWhereInput>(scope, { activeStatus: { not: "ARCHIVED" }, revisionOfId: null });
+  const [byPublication, totals, unread, changesUnderVerification, changesNeedingWork] = await Promise.all([
     prisma.property.groupBy({ by: ["publicationStatus"], where: notArchived, _count: { _all: true } }),
     prisma.property.aggregate({ where: notArchived, _sum: { availableCount: true, occupiedCount: true }, _count: { _all: true } }),
     prisma.notification.count({ where: { userId: user.id, readAt: null } }),
+    prisma.propertyRevision.count({ where: { status: "PENDING_VERIFICATION", draftPropertyId: { not: null }, propertyId: { in: (await prisma.property.findMany({ where: notArchived, select: { id: true } })).map((x) => x.id) } } }),
+    prisma.propertyRevision.count({ where: { status: { in: ["DRAFT", "REJECTED"] }, draftPropertyId: { not: null }, propertyId: { in: (await prisma.property.findMany({ where: notArchived, select: { id: true } })).map((x) => x.id) } } }),
   ]);
   const counts = Object.fromEntries(PUBLICATION_STATUSES.map((s) => [s, byPublication.find((b) => b.publicationStatus === s)?._count._all ?? 0]));
 
@@ -486,6 +559,7 @@ export async function propertySummaryStats(req: Request, res: Response): Promise
   }
   res.json({
     properties: { total: totals._count._all, ...counts },
+    changes: { underVerification: changesUnderVerification, draftOrRejected: changesNeedingWork },
     units: { available: totals._sum.availableCount ?? 0, occupied: totals._sum.occupiedCount ?? 0 },
     rent,
     unreadNotifications: unread,
@@ -512,8 +586,10 @@ export async function reviewQueue(req: Request, res: Response): Promise<void> {
       ? prisma.propertyImage.findMany({ where: { status: "PENDING", property: { publicationStatus: { in: ["APPROVED", "PUBLISHED"] } } }, include: { property: { select: { id: true, code: true, title: true } } }, orderBy: { createdAt: "asc" }, take: 60 })
       : [],
   ]);
+  // Possible duplicates: other properties pinned within 40 m (badge in the queue).
+  const nearby = await Promise.all(properties.map((p) => nearbyProperties(p.id).then((n) => n.items.length).catch(() => 0)));
   res.json({
-    properties: properties.map(propertySummary),
+    properties: properties.map((p, i) => ({ ...propertySummary(p), possibleDuplicates: nearby[i] })),
     documents: documents.map((d) => ({ id: d.id, code: d.code, docType: d.docType, originalName: d.originalName, createdAt: d.createdAt, property: d.property })),
     images: images.map((i) => ({ id: i.id, category: i.category, createdAt: i.createdAt, property: i.property })),
   });
@@ -599,4 +675,14 @@ export async function setPropertyTypeEnabled(req: Request, res: Response): Promi
   }
   res.locals.message = `${row.label} ${enabled ? "enabled" : "disabled"} for new listings`;
   res.json({ key: row.key, label: row.label, enabled });
+}
+
+/**
+ * GET /api/v1/properties/:propertyId/possible-duplicates — other properties pinned within 40 m (listings.approve).
+ * { located, radiusMeters, items: [{ id, code, title, address, distanceMeters, sameOwner, owner, publicationStatus, … }] }
+ * `located: false` when this property has no map pin yet.
+ */
+export async function possibleDuplicates(req: Request, res: Response): Promise<void> {
+  const property = found(await prisma.property.findFirst({ where: propertyKey(req), select: { id: true } }), "Property");
+  res.json(await nearbyProperties(property.id));
 }

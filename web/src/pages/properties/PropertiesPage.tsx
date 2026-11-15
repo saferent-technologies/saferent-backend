@@ -123,6 +123,11 @@ export function PropertiesPage() {
                   <StatusBadge status={p.publicationStatus} />
                   {p.activeStatus !== "ACTIVE" && <StatusBadge status={p.activeStatus} />}
                   {p.verificationStatus === "VERIFIED" && <Badge tone="success">Verified</Badge>}
+                  {p.hasDraftChanges && (
+                    <Badge tone={p.changesStatus === "PENDING_VERIFICATION" ? "brand" : p.changesStatus === "REJECTED" ? "danger" : "warning"}>
+                      {p.changesStatus === "PENDING_VERIFICATION" ? "Changes in review" : p.changesStatus === "REJECTED" ? "Changes rejected" : "Unsent changes"}
+                    </Badge>
+                  )}
                 </span>
               ),
             },

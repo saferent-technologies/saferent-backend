@@ -46,7 +46,8 @@ export function tenantCanSee(d: DocScope, leases: TenantLease[]): boolean {
 
 /** Document categories offered in the upload form; ownership types also go to SafeRent verification. */
 export const DOCUMENT_CATEGORIES = ["RENTAL_AGREEMENT", "ELECTRICITY_BILL", "PROPERTY_TAX_RECEIPT", "OTHER", "OWNERSHIP_PROOF", "SALE_DEED", "BUILDING_PERMISSION", "LANDLORD_IDENTITY"] as const;
-export const VERIFICATION_TYPES = ["OWNERSHIP_PROOF", "SALE_DEED", "PROPERTY_TAX_RECEIPT"] as const;
+/** Ownership proof checked by SafeRent before a listing is approved (sale deed, tax receipt or power bill). */
+export const VERIFICATION_TYPES = ["OWNERSHIP_PROOF", "SALE_DEED", "PROPERTY_TAX_RECEIPT", "ELECTRICITY_BILL"] as const;
 
 export function needsVerification(docType: string): boolean {
   return (VERIFICATION_TYPES as readonly string[]).includes(docType);

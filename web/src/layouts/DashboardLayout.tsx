@@ -4,7 +4,9 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { Logo } from "@/components/ui/Logo";
 import { useAuth } from "@/hooks/useAuth";
 import { useQuery } from "@/hooks/useQuery";
+import { ReviewRequiredGate } from "@/pages/reviews/ReviewsPages";
 import { visibleNavigation } from "@/routes/navigation";
+import { usePortal } from "@/routes/portal";
 import { request } from "@/services/api";
 import { AuthImage } from "@/components/ui/AuthImage";
 import { cn } from "@/utils/cn";
@@ -13,6 +15,7 @@ import { initials } from "@/utils/format";
 
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   const { can, activeRole } = useAuth();
+  const portal = usePortal();
   const groups = visibleNavigation(can, activeRole?.key);
   return (
     <nav aria-label="Main" className="space-y-5">
@@ -23,7 +26,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
             {group.items.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
-                to={to}
+                to={portal.path(to)}
                 onClick={onNavigate}
                 className={({ isActive }) =>
                   cn(
@@ -48,11 +51,13 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
+  const { dashboardPath, employee } = usePortal();
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-16 items-center px-5">
-        <Link to={PATHS.dashboard} onClick={onNavigate} aria-label="SafeRent dashboard">
+        <Link to={dashboardPath} onClick={onNavigate} aria-label="SafeRent dashboard" className="flex items-center gap-2">
           <Logo className="h-9" />
+          {employee && <span className="rounded-full bg-ink px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">Employee</span>}
         </Link>
       </div>
       <div className="flex-1 overflow-y-auto px-3 py-4">
@@ -122,12 +127,13 @@ function WalletChip() {
 
 function NotificationBell() {
   const { can } = useAuth();
+  const { path } = usePortal();
   const location = useLocation();
   const { data } = useQuery(() => request<{ unread: number }>("/notifications", { query: { pageSize: 1, unread: true } }), [location.pathname], can("notifications.view"));
   if (!can("notifications.view")) return null;
   const unread = data?.unread ?? 0;
   return (
-    <Link to="/notifications" aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`} className="relative flex size-11 items-center justify-center rounded-control text-ink-2 hover:bg-subtle">
+    <Link to={path("/notifications")} aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`} className="relative flex size-11 items-center justify-center rounded-control text-ink-2 hover:bg-subtle">
       <Bell className="size-5" />
       {unread > 0 && <span className="absolute right-1.5 top-1.5 flex min-w-5 items-center justify-center rounded-full bg-brand px-1 text-[11px] font-bold leading-5 text-white">{unread > 99 ? "99+" : unread}</span>}
     </Link>
@@ -137,6 +143,7 @@ function NotificationBell() {
 function ProfileMenu() {
   const { profile, logout, activeRole } = useAuth();
   const navigate = useNavigate();
+  const portal = usePortal();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -157,7 +164,7 @@ function ProfileMenu() {
   const signOutNow = async () => {
     setOpen(false);
     await logout();
-    navigate(PATHS.login, { replace: true });
+    navigate(portal.loginPath, { replace: true });
   };
 
   return (
@@ -183,10 +190,10 @@ function ProfileMenu() {
             <p className="truncate text-sm font-semibold text-ink">{profile?.fullName}</p>
             <p className="truncate text-xs text-muted">{profile?.email ?? profile?.phoneNumber}</p>
           </div>
-          <MenuLink to={PATHS.profile} icon={<UserRound className="size-4" />} onClick={() => setOpen(false)}>
+          <MenuLink to={portal.path(PATHS.profile)} icon={<UserRound className="size-4" />} onClick={() => setOpen(false)}>
             Profile
           </MenuLink>
-          <MenuLink to={PATHS.settings} icon={<Settings className="size-4" />} onClick={() => setOpen(false)}>
+          <MenuLink to={portal.path(PATHS.settings)} icon={<Settings className="size-4" />} onClick={() => setOpen(false)}>
             Security
           </MenuLink>
           <button type="button" role="menuitem" onClick={() => void signOutNow()} className="flex min-h-11 w-full items-center gap-3 px-4 text-sm font-medium text-danger hover:bg-danger/5">
@@ -210,6 +217,7 @@ function MenuLink({ to, icon, children, onClick }: { to: string; icon: ReactNode
 export function DashboardLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
+  const { dashboardPath } = usePortal();
 
   useEffect(() => setMobileOpen(false), [location.pathname]);
   useEffect(() => {
@@ -244,7 +252,7 @@ export function DashboardLayout() {
           <button type="button" onClick={() => setMobileOpen(true)} aria-label="Open navigation" className="flex size-11 items-center justify-center rounded-control text-ink-2 hover:bg-subtle lg:hidden">
             <Menu className="size-5" />
           </button>
-          <Link to={PATHS.dashboard} className="lg:hidden" aria-label="SafeRent dashboard">
+          <Link to={dashboardPath} className="lg:hidden" aria-label="SafeRent dashboard">
             <Logo className="h-8" />
           </Link>
           <div className="ml-auto flex items-center gap-1">
@@ -257,6 +265,7 @@ export function DashboardLayout() {
         <main className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
           <Outlet />
         </main>
+        <ReviewRequiredGate />
       </div>
     </div>
   );

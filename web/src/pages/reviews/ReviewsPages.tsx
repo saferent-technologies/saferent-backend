@@ -1,5 +1,6 @@
 import { Flag, MessageSquareReply, Star } from "lucide-react";
 import { useState } from "react";
+import { useLocation } from "react-router";
 import { Pagination } from "@/components/data/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { Alert } from "@/components/ui/Alert";
@@ -11,6 +12,7 @@ import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tabs } from "@/components/ui/Tabs";
+import { useAuth } from "@/hooks/useAuth";
 import { useQuery } from "@/hooks/useQuery";
 import { request } from "@/services/api";
 import type { Paged } from "@/types/auth";
@@ -286,7 +288,11 @@ export function ReviewFields({ form, value, onChange }: { form: { categories: Ar
 }
 
 /** Review status + form for one lease. Opened from My rental / Leases and from the pending list. */
-export function LeaseReviewModal({ leaseId, title, onClose, onSubmitted }: { leaseId: string; title: string; onClose: () => void; onSubmitted?: () => void }) {
+/**
+ * `required`: shown by the app after a lease ends — it can't be closed until the review is submitted
+ * (the next rental step is blocked by the server until then).
+ */
+export function LeaseReviewModal({ leaseId, title, onClose, onSubmitted, required = false }: { leaseId: string; title: string; onClose: () => void; onSubmitted?: () => void; required?: boolean }) {
   const { data, loading, error, reload } = useQuery(() => request<LeaseReviewStatus>(`/leases/${leaseId}/review`), [leaseId]);
   const [ratings, setRatings] = useState<Record<string, number | null>>({});
   const [text, setText] = useState("");
@@ -311,10 +317,15 @@ export function LeaseReviewModal({ leaseId, title, onClose, onSubmitted }: { lea
   };
 
   return (
-    <Modal open onClose={onClose} title={title} description={data?.role === "TENANT" ? "How was your rental experience with this landlord?" : data?.role === "LANDLORD" ? "How was your rental experience with this tenant?" : undefined}>
+    <Modal open onClose={onClose} dismissible={!required} title={title} description={data?.role === "TENANT" ? "How was your rental experience with this landlord?" : data?.role === "LANDLORD" ? "How was your rental experience with this tenant?" : undefined}>
       <div className="max-h-[72vh] space-y-3 overflow-y-auto pr-1">
         {loading && !data && <div className="flex justify-center py-8"><Spinner className="size-6 text-brand" /></div>}
         {error && <Alert kind="error">{error}</Alert>}
+        {error && required && (
+          <div className="flex justify-end">
+            <Button variant="secondary" onClick={() => void reload()}>Try again</Button>
+          </div>
+        )}
         {msg && <Alert kind={msg.kind}>{msg.text}</Alert>}
         {data && (
           <>
@@ -325,10 +336,15 @@ export function LeaseReviewModal({ leaseId, title, onClose, onSubmitted }: { lea
               </p>
             )}
             {!data.myReview && !data.eligible && <Alert kind="info">{data.message}</Alert>}
+            {required && (data.myReview || !data.eligible) && (
+              <div className="flex justify-end pt-1">
+                <Button onClick={() => onSubmitted?.()}>Continue</Button>
+              </div>
+            )}
             {data.eligible && data.form && (
               <>
                 <Alert kind="info">
-                  Optional. Your review stays private until the other side reviews or the window closes on {formatTimestamp(data.closesAt)}. Reviews can't be edited after you submit.
+                  {required ? "Your lease has ended — please review it to continue using SafeRent. " : "Needed before your next rental. "}Your review stays private until the other side reviews or the window closes on {formatTimestamp(data.closesAt)}. Reviews can't be edited after you submit.
                   {data.otherPartySubmitted ? " The other side has already reviewed." : ""}
                 </Alert>
                 <div className="divide-y divide-line">
@@ -346,7 +362,7 @@ export function LeaseReviewModal({ leaseId, title, onClose, onSubmitted }: { lea
                   </div>
                 </div>
                 <div className="flex justify-end gap-2 pt-1">
-                  <Button variant="secondary" onClick={onClose}>Not now</Button>
+                  {!required && <Button variant="secondary" onClick={onClose}>Not now</Button>}
                   <Button loading={busy} disabled={!ratings.overall} leftIcon={<Star className="size-4" />} onClick={() => void submit()}>Submit review</Button>
                 </div>
               </>
@@ -356,6 +372,30 @@ export function LeaseReviewModal({ leaseId, title, onClose, onSubmitted }: { lea
         )}
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Mounted in the app layout for landlords and tenants: as soon as a lease has ended, a review popup
+ * appears and can't be closed until the review is submitted (one lease at a time). The server blocks
+ * the next application / invitation / lease anyway, so this just asks at the right moment.
+ */
+export function ReviewRequiredGate() {
+  const { roles, activeRole } = useAuth();
+  const location = useLocation();
+  const customer = !!activeRole && !activeRole.isStaff && roles.some((r) => r.key === "TENANT" || r.key === "LANDLORD");
+  const pending = useQuery(() => request<{ items: PendingReview[] }>("/reviews/pending"), [location.pathname], customer);
+  const next = customer ? pending.data?.items[0] : undefined;
+  if (!next) return null;
+  return (
+    <LeaseReviewModal
+      key={next.leaseId}
+      required
+      leaseId={next.leaseId}
+      title={`Your lease at ${next.property.name} has ended`}
+      onClose={() => undefined}
+      onSubmitted={() => void pending.reload()}
+    />
   );
 }
 
@@ -373,7 +413,7 @@ export function MyReviewsPage() {
 
   return (
     <>
-      <PageHeader title="Reviews" description="Two-way reviews from verified rentals. Reviews are optional and revealed together." />
+      <PageHeader title="Reviews" description="Two-way reviews from verified rentals. Every finished lease is reviewed by both sides, revealed together." />
       {pending.data && pending.data.items.length > 0 && (
         <section className="card mb-6 p-5">
           <h2 className="mb-3 font-semibold">Waiting for your review</h2>

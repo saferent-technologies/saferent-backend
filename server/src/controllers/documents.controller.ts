@@ -8,6 +8,8 @@ import { DOCUMENT_CATEGORIES, documentName, documentState, leaseCovers, needsVer
 import { fail } from "../lib/errors";
 import { enumQuery, found, idParam, paged, pagination } from "../lib/http";
 import { notify } from "../lib/notify";
+import { documentUploadAllowed } from "../appConfig/schema";
+import { appConfig } from "../appConfig/service";
 import { placeLabels, placeOf } from "../lib/places";
 import { prisma } from "../lib/prisma";
 import { consumeRateLimit } from "../lib/rateLimit";
@@ -27,7 +29,6 @@ import { audit, childKey, inScope, scopedProperty, withProperty } from "../prope
  *  and can request documents. All checks are server-side; ids in URLs are never trusted on their own.
  */
 
-const MAX_DOC_BYTES = 5 * 1024 * 1024;
 const toDate = z.coerce.date();
 const optDate = z.preprocess((v) => (v === "" || v === null || v === undefined ? undefined : v), toDate.optional());
 const bool = z.preprocess((v) => v === true || v === "true" || v === "1" || v === "on", z.boolean());
@@ -42,11 +43,11 @@ const uploadSchema = z
     description: z.string().trim().max(1000).optional().or(z.literal("").transform(() => undefined)),
     documentDate: optDate,
     expiryDate: optDate,
-    shareWithTenant: bool.default(false),
+    /** Not sent → the default visibility from Admin → App configuration → Documents. */
+    shareWithTenant: bool.optional(),
     requestId: z.string().uuid().optional().or(z.literal("").transform(() => undefined)),
   })
   .strict()
-  .refine((v) => v.docType !== "OTHER" || (v.customName ?? "").length >= 2, { message: "Enter the document name.", path: ["customName"] })
   .refine((v) => [v.unitId, v.roomId, v.bedId].filter(Boolean).length <= 1, { message: "Choose one flat, room or bed — or the whole property.", path: ["unitId"] })
   .refine((v) => !v.documentDate || !v.expiryDate || v.expiryDate >= v.documentDate, { message: "Expiry date must be after the document date.", path: ["expiryDate"] });
 
@@ -85,6 +86,7 @@ async function activeLeases(where: Prisma.LeaseWhereInput): Promise<Array<Tenant
 /** Tells each authorised tenant once (sharedNotifiedAt guards repeats when sharing is toggled). */
 async function notifyTenants(doc: PropertyDocument, propertyName: string, updated = false): Promise<number> {
   if (!doc.sharedWithTenant || !doc.isCurrent || doc.archivedAt) return 0;
+  if (!(await appConfig()).documents.notifyTenantOnUpload) return 0;
   const claim = updated ? { count: 1 } : await prisma.propertyDocument.updateMany({ where: { id: doc.id, sharedNotifiedAt: null }, data: { sharedNotifiedAt: new Date() } });
   if (!claim.count) return 0;
   const leases = (await activeLeases({ propertyId: doc.propertyId })).filter((l) => leaseCovers(doc, l));
@@ -97,6 +99,7 @@ async function notifyTenants(doc: PropertyDocument, propertyName: string, update
       updated ? "Property document updated" : custom ? "New Document Available" : "New Property Document Uploaded",
       updated ? `Your landlord uploaded a new version of ${name} for ${propertyName}.` : custom ? `Your landlord has uploaded ${name} for your property.` : `Your landlord has uploaded a new ${name} for your property. Tap to view the document.`,
       `/my-documents?doc=${doc.id}`,
+      doc.docType === "RENTAL_AGREEMENT" ? "AGREEMENT_UPLOADED" : "DOCUMENT_UPLOADED",
     );
   }
   return tenants.length;
@@ -133,14 +136,21 @@ export const uploadDocument = cleanupOnError(async (req, res) => {
   const property = await landlordProperty(req);
   await consumeRateLimit(`upload:${me(req).id}`, RATE_LIMITS.UPLOAD.limit, RATE_LIMITS.UPLOAD.windowMs);
   if (!file) fail("invalid-argument", REASONS.INVALID_INPUT, "Choose a file to upload.");
-  if (file.size > MAX_DOC_BYTES) fail("invalid-argument", REASONS.INVALID_INPUT, "Files can be up to 5 MB.");
   const input = parseInput(uploadSchema, req.body ?? {});
   await checkTarget(property.id, input);
   const request = input.requestId ? await prisma.documentRequest.findFirst({ where: { id: input.requestId, propertyId: property.id, status: { in: ["PENDING", "IN_PROGRESS"] } } }) : null;
   if (input.requestId && !request) fail("invalid-argument", REASONS.INVALID_INPUT, "That document request is no longer open.");
   // A requested document is for the requesting tenant: it goes to their flat / bed and is shared.
   const target = request ? { unitId: request.unitId ?? undefined, bedId: request.bedId ?? undefined, roomId: undefined } : input;
-  const share = request ? true : input.shareWithTenant;
+  // Admin → App configuration: which kinds may be uploaded, naming, per-property limit, default visibility.
+  const cfg = await appConfig();
+  if (!documentUploadAllowed(cfg, input.docType)) fail("permission-denied", REASONS.FEATURE_DISABLED, "Uploading this kind of document is turned off right now.", { feature: "documents" });
+  if (input.docType === "OTHER" && cfg.documents.customNameRequired && (input.customName ?? request?.documentName ?? "").length < 2) {
+    fail("invalid-argument", REASONS.INVALID_INPUT, "Enter the document name.", { issues: [{ path: "customName", message: "Enter the document name." }] });
+  }
+  const current = await prisma.propertyDocument.count({ where: { propertyId: property.id, isCurrent: true, archivedAt: null } });
+  if (current >= cfg.properties.maxDocuments) fail("failed-precondition", REASONS.INVALID_STATE, `A property can have at most ${cfg.properties.maxDocuments} documents. Archive old ones first.`);
+  const share = request ? true : (input.shareWithTenant ?? cfg.documents.defaultVisibility === "SHARED_WITH_TENANT");
 
   const doc = await withProperty(property.id, async (tx) => {
     const code = await nextCode(tx, ID_PREFIX.DOCUMENT);
@@ -252,7 +262,6 @@ export const replaceDocument = cleanupOnError(async (req, res) => {
   const doc = await managedDoc(req);
   await consumeRateLimit(`upload:${me(req).id}`, RATE_LIMITS.UPLOAD.limit, RATE_LIMITS.UPLOAD.windowMs);
   if (!file) fail("invalid-argument", REASONS.INVALID_INPUT, "Choose a file to upload.");
-  if (file.size > MAX_DOC_BYTES) fail("invalid-argument", REASONS.INVALID_INPUT, "Files can be up to 5 MB.");
   if (!doc.isCurrent || doc.archivedAt) fail("failed-precondition", REASONS.INVALID_STATE, "Replace the current version.");
   const next = await withProperty(doc.propertyId, async (tx) => {
     const claimed = await tx.propertyDocument.updateMany({ where: { id: doc.id, isCurrent: true }, data: { isCurrent: false } });

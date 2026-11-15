@@ -1,7 +1,7 @@
+import { appLink } from "../lib/appLinks";
 import type { Prisma, TenantInvitation } from "@prisma/client";
 import type { Request, Response } from "express";
 import { z } from "zod";
-import { allowedOrigins } from "../config/env";
 import { RATE_LIMITS, REASONS } from "../config/constants";
 import { logActivity } from "../lib/activity";
 import { fail } from "../lib/errors";
@@ -23,6 +23,7 @@ import { ensureRentSchedule } from "./rent.controller";
 import { defaultTerms } from "./rentals.controller";
 import { ensureRoleProfile } from "./users.controller";
 import { evaluateForUser, recordInvitationReferral } from "../services/referral.service";
+import { assertNoReviewOwed, reviewsOwedBy } from "./reviews.controller";
 
 /*
  * Tenant invitation links.
@@ -56,10 +57,13 @@ const createSchema = z
   .strict()
   .refine((v) => !v.endDate || v.endDate > v.startDate, { message: "End date must be after the start date.", path: ["endDate"] });
 
+const rejectSchema = z.object({ reason: z.string().trim().max(300).optional() }).strict();
+
 const linkSchema = z.object({ expiresInDays: z.coerce.number().int().min(1).max(30).default(7) }).strict();
 
+/** https://app.saferenttechnologies.com/invite/{token} — opens the app (App Link) or the website. */
 function inviteUrl(token: string): string {
-  return `${(allowedOrigins[0] ?? "http://localhost:5173").replace(/\/$/, "")}/invite/${token}`;
+  return appLink(`/invite/${token}`);
 }
 
 const days = (n: number) => new Date(Date.now() + n * 24 * 60 * 60 * 1000);
@@ -160,6 +164,7 @@ export async function createInvitation(req: Request, res: Response): Promise<voi
   const property = await scopedProperty(req, "leases.manage");
   await consumeRateLimit(`invite-create:${user.id}`, RATE_LIMITS.INVITE_CREATE.limit, RATE_LIMITS.INVITE_CREATE.windowMs);
   if (property.activeStatus === "ARCHIVED" || property.activeStatus === "SUSPENDED") fail("failed-precondition", REASONS.INVALID_STATE, `This property is ${property.activeStatus.toLowerCase()}.`);
+  await assertNoReviewOwed(property.ownerId, "LANDLORD", "invite a new tenant", property.ownerId === user.id ? "you" : "landlord");
   const input = parseInput(createSchema, req.body);
   const target = await resolveTarget(property, input.unitId, input.bedId);
   const pending = await prisma.tenantInvitation.findFirst({ where: { propertyId: property.id, unitId: target.unitId, bedId: target.bedId, status: "PENDING", expiresAt: { gt: new Date() } } });
@@ -291,6 +296,22 @@ async function byToken(req: Request) {
   return settleExpiry(inv);
 }
 
+/**
+ * Accept / reject on an invitation that's no longer open: 409 when it was already answered,
+ * 410 when it expired or the landlord revoked it. Other refusals: 403 (another phone number / staff
+ * account / own invitation). Every error carries a message the app can show as is.
+ */
+function refuse(inv: TenantInvitation, reason: keyof typeof DECISION_MESSAGES): never {
+  if (reason === "NOT_PENDING" || reason === "EXPIRED") {
+    if (inv.status === "ACCEPTED") fail("already-exists", REASONS.CONFLICT, "This invitation has already been accepted.");
+    if (inv.status === "REJECTED") fail("already-exists", REASONS.CONFLICT, "This invitation has already been declined.");
+    if (inv.status === "REVOKED") fail("deadline-exceeded", REASONS.INVITATION_CLOSED, "This invitation was cancelled by the landlord. Ask them for a new link.");
+    fail("deadline-exceeded", REASONS.INVITATION_CLOSED, DECISION_MESSAGES.EXPIRED);
+  }
+  if (reason === "WRONG_RECIPIENT") fail("permission-denied", REASONS.PERMISSION_DENIED, `${DECISION_MESSAGES.WRONG_RECIPIENT} Sign in with ${inv.recipientPhone ? maskPhone(inv.recipientPhone) : "the invited account"}.`);
+  fail("permission-denied", REASONS.PERMISSION_DENIED, DECISION_MESSAGES[reason]);
+}
+
 function decisionFor(req: Request, inv: TenantInvitation) {
   const user = me(req);
   return canRespond(inv, { id: user.id, phoneNumber: user.phoneNumber, email: user.email, isStaff: ROLE_INFO[user.role].isStaff });
@@ -306,8 +327,21 @@ export async function viewInvitation(req: Request, res: Response): Promise<void>
   }
   const label = await targetLabel(inv);
   const p = inv.property;
+  const [images, unit, bed, landlordKyc] = await Promise.all([
+    prisma.propertyImage.findMany({ where: { propertyId: p.id, status: "APPROVED", inspectionId: null }, orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }], select: { id: true, unitId: true }, take: 12 }),
+    inv.unitId ? prisma.propertyUnit.findUnique({ where: { id: inv.unitId }, select: { id: true, unitNumber: true, name: true, bhkType: true, floorNumber: true } }) : null,
+    inv.bedId ? prisma.propertyBed.findUnique({ where: { id: inv.bedId }, select: { id: true, bedNumber: true, room: { select: { id: true, roomNumber: true } } } }) : null,
+    prisma.landlordProfile.findUnique({ where: { userId: inv.landlordId }, select: { kycStatus: true } }),
+  ]);
+  // The invited flat's photos first, then the building's.
+  const ordered = [...images.filter((i) => inv.unitId && i.unitId === inv.unitId), ...images.filter((i) => !i.unitId), ...images.filter((i) => i.unitId && i.unitId !== inv.unitId)];
   res.json({
+    property: { id: p.id, code: p.code, title: p.title ?? p.code, locality: p.locality, city: p.city, coverImageId: ordered[0]?.id ?? null, images: ordered.map((i) => ({ id: i.id })) },
+    unit: unit ? { id: unit.id, unitNumber: unit.unitNumber, name: unit.name, bhkType: unit.bhkType, floorNumber: unit.floorNumber } : null,
+    bed: bed ? { id: bed.id, bedNumber: bed.bedNumber, room: { id: bed.room.id, roomNumber: bed.room.roomNumber } } : null,
+    landlord: { fullName: p.owner?.fullName ?? null, verified: landlordKyc?.kycStatus === "APPROVED" },
     invitation: {
+      id: inv.id,
       code: inv.code,
       status: inv.status,
       expiresAt: inv.expiresAt,
@@ -329,6 +363,8 @@ export async function viewInvitation(req: Request, res: Response): Promise<void>
       additionalTerms: inv.additionalTerms,
       leaseId: inv.status === "ACCEPTED" && inv.respondedById === me(req).id ? inv.leaseId : null,
     },
+    // The invited tenant still owes a review of their previous rental: the app asks for it before accepting.
+    reviewRequired: decision.ok ? ((await reviewsOwedBy(me(req).id, "TENANT"))[0] ?? null) : null,
   });
 }
 
@@ -350,7 +386,8 @@ export async function acceptInvitation(req: Request, res: Response): Promise<voi
   const user = me(req);
   const inv = await byToken(req);
   const decision = decisionFor(req, inv);
-  if (!decision.ok) fail(decision.reason === "WRONG_RECIPIENT" || decision.reason === "STAFF_ACCOUNT" ? "permission-denied" : "failed-precondition", decision.reason === "WRONG_RECIPIENT" ? REASONS.PERMISSION_DENIED : REASONS.INVALID_STATE, DECISION_MESSAGES[decision.reason]);
+  if (!decision.ok) refuse(inv, decision.reason);
+  await assertNoReviewOwed(user.id, "TENANT", "accept a new rental");
   const propertyName = inv.property.title ?? inv.property.code;
   const label = await targetLabel(inv);
   const needsTenantRole = user.role !== "TENANT" && !user.roles.includes("TENANT");
@@ -358,7 +395,7 @@ export async function acceptInvitation(req: Request, res: Response): Promise<voi
   const lease = await withProperty(inv.propertyId, async (tx) => {
     // Single use: only one request can move PENDING → ACCEPTED.
     const claimed = await tx.tenantInvitation.updateMany({ where: { id: inv.id, status: "PENDING", expiresAt: { gt: new Date() } }, data: { status: "ACCEPTED", respondedById: user.id, respondedAt: new Date() } });
-    if (claimed.count === 0) fail("failed-precondition", REASONS.INVALID_STATE, "This invitation is no longer open.");
+    if (claimed.count === 0) fail("already-exists", REASONS.CONFLICT, "This invitation has already been answered.");
 
     if (inv.unitId) {
       if (await tx.lease.count({ where: { unitId: inv.unitId, status: "ACTIVE" } })) fail("already-exists", REASONS.CONFLICT, "This unit has already been rented.");
@@ -418,7 +455,7 @@ export async function acceptInvitation(req: Request, res: Response): Promise<voi
   await notify(user.id, "Welcome to your new home", `Your lease for ${place} is active from ${inv.startDate.toDateString()}.`, `/leases/${lease.created.id}`);
   for (const o of lease.others) await notify(o.tenantId, "Application update", `"${propertyName}" has been rented to another tenant.`, "/applications");
   res.locals.message = "Invitation accepted. Your lease is active.";
-  res.json({ leaseId: lease.created.id, leaseCode: lease.created.code, rolesAdded: needsTenantRole ? ["TENANT"] : [] });
+  res.json({ lease: { id: lease.created.id, code: lease.created.code }, leaseId: lease.created.id, leaseCode: lease.created.code, rolesAdded: needsTenantRole ? ["TENANT"] : [] });
 }
 
 /** POST /api/v1/invitations/token/:token/reject — the invited tenant declines. */
@@ -426,14 +463,20 @@ export async function rejectInvitation(req: Request, res: Response): Promise<voi
   const user = me(req);
   const inv = await byToken(req);
   const decision = decisionFor(req, inv);
-  if (!decision.ok && decision.reason !== "STAFF_ACCOUNT") fail(decision.reason === "WRONG_RECIPIENT" ? "permission-denied" : "failed-precondition", decision.reason === "WRONG_RECIPIENT" ? REASONS.PERMISSION_DENIED : REASONS.INVALID_STATE, DECISION_MESSAGES[decision.reason]);
+  if (!decision.ok && decision.reason !== "STAFF_ACCOUNT") refuse(inv, decision.reason);
+  const { reason } = parseInput(rejectSchema, req.body ?? {});
   const r = await prisma.$transaction(async (tx) => {
     const done = await tx.tenantInvitation.updateMany({ where: { id: inv.id, status: "PENDING" }, data: { status: "REJECTED", respondedById: user.id, respondedAt: new Date() } });
-    if (done.count) await audit(tx, req, { propertyId: inv.propertyId, entityType: "INVITATION", entityId: inv.id, action: "invitation.reject" });
+    if (done.count) await audit(tx, req, { propertyId: inv.propertyId, entityType: "INVITATION", entityId: inv.id, action: "invitation.reject", newValue: { reason: reason ?? null } });
     return done.count;
   });
-  if (!r) fail("failed-precondition", REASONS.INVALID_STATE, "This invitation is no longer open.");
-  await notify(inv.landlordId, "Invitation declined", `${inv.recipientName} declined invitation ${inv.code} for "${inv.property.title ?? inv.property.code}".`, `/properties/${inv.propertyId}`);
+  if (!r) fail("already-exists", REASONS.CONFLICT, "This invitation has already been answered.");
+  await notify(
+    inv.landlordId,
+    "Invitation declined",
+    `${inv.recipientName} declined invitation ${inv.code} for "${inv.property.title ?? inv.property.code}".${reason ? ` Reason: ${reason}` : ""}`,
+    `/properties/${inv.propertyId}?tab=invitations`,
+  );
   res.locals.message = "Invitation declined";
   res.json({ ok: true });
 }

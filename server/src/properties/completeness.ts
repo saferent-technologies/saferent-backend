@@ -5,7 +5,7 @@
  * landlord-provided information is never treated as verified, and NOT_DISCLOSED values count as missing.
  * NOT_APPLICABLE counts as disclosed (the landlord answered the question).
  */
-import { DEFAULT_COMPLETENESS_WEIGHTS, OWNERSHIP_DOCUMENTS, type CompletenessWeights, type PropertyTypeDef } from "./catalog";
+import { DEFAULT_COMPLETENESS_WEIGHTS, OWNERSHIP_DOCUMENTS, pricedPerUnit, type CompletenessWeights, type PropertyTypeDef } from "./catalog";
 import { isEmpty, missingRequired } from "./fields";
 
 export interface CompletenessInput {
@@ -103,8 +103,14 @@ function fraction(checks: Array<[boolean, string]>): { ratio: number; missing: s
 
 function priceDisclosed(input: CompletenessInput): boolean {
   if (input.listingType === "SALE") return input.pricing.some((p) => !isEmpty(p.values.salePrice));
-  if (input.type.structure === "ROOMS_BEDS") return input.rooms.some((r) => !isEmpty(r.rentPerBed)) || input.bedsWithRent > 0 || input.pricing.some((p) => !isEmpty(p.values.monthlyRent));
+  // PG / Hostel: every room needs a rent (per bed), or every bed its own rent — the building has none.
+  if (input.type.structure === "ROOMS_BEDS") {
+    const beds = input.rooms.reduce((n, r) => n + r.bedCount, 0);
+    return input.rooms.length > 0 && (input.rooms.every((r) => !isEmpty(r.rentPerBed)) || (beds > 0 && input.bedsWithRent >= beds));
+  }
   const property = input.pricing.find((p) => !p.unitId);
+  // Building → units (apartment flats, portions, shops, community villas): every unit needs its own rent.
+  if (pricedPerUnit(input.type.key, input.building)) return input.units.length > 0 && input.units.every((u) => input.pricing.some((p) => p.unitId === u.id && !isEmpty(p.values.monthlyRent)));
   if (property && !isEmpty(property.values.monthlyRent)) return true;
   return input.units.length > 0 && input.units.every((u) => input.pricing.some((p) => p.unitId === u.id && !isEmpty(p.values.monthlyRent)));
 }

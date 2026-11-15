@@ -60,7 +60,7 @@ export async function requestEmailChange(req: Request, res: Response): Promise<v
 
   try {
     const link = await adminAuth.generateVerifyAndChangeEmailLink(currentEmail, newEmail, {
-      url: `${env.APP_ORIGIN.split(",")[0].trim()}/login`,
+      url: `${env.APP_ORIGIN.split(",")[0].trim()}/employee`,
     });
     await sendEmail(newEmail, emailChangeVerificationEmail({ link, newEmail }));
     await sendEmail(currentEmail, emailChangeNoticeEmail({ newEmailMasked: maskEmail(newEmail) }));

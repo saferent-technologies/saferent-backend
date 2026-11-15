@@ -1,6 +1,6 @@
-import { ArrowLeft, Ban, CheckCircle2, LogOut, Save, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Ban, CheckCircle2, LogOut, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { PageHeader } from "@/components/PageHeader";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
@@ -11,22 +11,31 @@ import { Spinner } from "@/components/ui/Spinner";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Tabs } from "@/components/ui/Tabs";
 import { useAuth } from "@/hooks/useAuth";
+import { usePortal } from "@/routes/portal";
 import { UserOverviewTab } from "./UserOverview";
 import { useQuery } from "@/hooks/useQuery";
 import { Avatar } from "@/layouts/DashboardLayout";
 import { request } from "@/services/api";
-import type { AuditLogEntry, Permissions, Scope, UserProfile } from "@/types/auth";
+import type { AuditLogEntry, Permissions, Scope, UserDeletion, UserProfile } from "@/types/auth";
 import { ALL_ROLES, ROLE_LABELS } from "@/utils/constants";
 import { errorMessage } from "@/utils/errors";
 import { formatTimestamp, labelize } from "@/utils/format";
 
 interface UserDetail {
-  user: UserProfile;
+  user: UserProfile & { deletion?: UserDeletion | null };
   permissions: Permissions;
   overrides: Array<{ permissionKey: string; granted: boolean; scope: Scope }>;
   session: { method: string; verifiedAt: string; expiresAt: string; revoked: boolean } | null;
-  landlordKyc: { kycStatus: string; kycNote: string | null; kycReviewedAt: string | null } | null;
-  can: { manage: boolean; assignRole: boolean; setPermissions: boolean; addRoles: string[]; removeRoles: string[] };
+  landlordKyc: {
+    kycStatus: string;
+    kycNote: string | null;
+    kycReviewedAt: string | null;
+    reviewedBy?: string | null;
+    manual?: boolean;
+    digilockerDone?: boolean;
+    selfieDone?: boolean;
+  } | null;
+  can: { manage: boolean; deactivate: boolean; delete: boolean; restore?: boolean; assignRole: boolean; setPermissions: boolean; addRoles: string[]; removeRoles: string[] };
 }
 
 interface Catalog {
@@ -44,18 +53,20 @@ export function UserDetailPage() {
   const { can } = useAuth();
   const [message, setMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const { confirm, dialog } = useConfirm();
+  const navigate = useNavigate();
+  const portal = usePortal();
 
   if (loading && !data) return <div className="flex justify-center py-16"><Spinner className="size-7 text-brand" /></div>;
   if (error || !data) return <Alert kind="error">{error ?? "User not found."}</Alert>;
   const u = data.user;
 
-  const act = (title: string, body: string, path: string, payload?: unknown, tone: "primary" | "danger" = "primary", reason = false) =>
+  const act = (title: string, body: string, path: string, payload?: unknown, tone: "primary" | "danger" = "primary", reason: boolean | string = false) =>
     confirm({
       title,
       message: body,
       tone,
       confirmLabel: title,
-      reason: reason ? { label: "Reason (recorded in the activity log)", required: true, minLength: 5 } : undefined,
+      reason: reason ? { label: typeof reason === "string" ? reason : "Reason (recorded in the activity log)", required: true, minLength: 5 } : undefined,
       onConfirm: async (r) => {
         await request(path, { method: "POST", body: reason ? { ...(payload as object), reason: r } : payload });
         setMessage({ kind: "success", text: `${title} — done.` });
@@ -78,39 +89,69 @@ export function UserDetailPage() {
           </span>
         }
         actions={
-          data.can.manage && (
+          (data.can.manage || data.can.deactivate || data.can.delete || data.can.restore) && (
             <>
-              {u.accountStatus === "ACTIVE" ? (
-                <Button variant="secondary" leftIcon={<Ban className="size-4" />} onClick={() => act("Deactivate account", `${u.fullName} will be signed out and won't be able to sign in.`, `/users/${u.id}/status`, { status: "DEACTIVATED" }, "danger", true)}>
+              {!data.can.deactivate ? null : u.accountStatus === "ACTIVE" ? (
+                <Button variant="secondary" leftIcon={<Ban className="size-4" />} onClick={() => act("Deactivate account", `${u.fullName} won't be able to use SafeRent — the app will show "Account deactivated" with your reason. Activating again restores access instantly.`, `/users/${u.id}/status`, { status: "DEACTIVATED" }, "danger", "Reason (shown to the user when they sign in, and recorded)")}>
                   Deactivate
                 </Button>
               ) : (
-                <Button variant="secondary" leftIcon={<CheckCircle2 className="size-4" />} onClick={() => act("Activate account", `${u.fullName} will be able to sign in again.`, `/users/${u.id}/status`, { status: "ACTIVE" })}>
+                <Button variant="secondary" leftIcon={<CheckCircle2 className="size-4" />} onClick={() => act("Activate account", `${u.fullName} will be able to sign in again.`, `/users/${u.id}/status`, { status: "ACTIVE" }, "primary", true)}>
                   Activate
                 </Button>
               )}
-              <Button variant="secondary" leftIcon={<LogOut className="size-4" />} onClick={() => act("Revoke sessions", `${u.fullName} will be signed out on every device.`, `/users/${u.id}/revoke-sessions`, undefined, "danger")}>
-                Revoke sessions
-              </Button>
+              {data.can.manage && (
+                <Button variant="secondary" leftIcon={<LogOut className="size-4" />} onClick={() => act("Force sign-out", `Security action: ${u.fullName} will be signed out on every device and must verify their phone again. Use this for a compromised account — deactivate / delete don't sign anyone out.`, `/users/${u.id}/revoke-sessions`, undefined, "danger")}>
+                  Force sign-out
+                </Button>
+              )}
+              {data.can.restore && (
+                <Button
+                  leftIcon={<RotateCcw className="size-4" />}
+                  onClick={() => act("Restore account", `${u.fullName} will be active again with all their data and can sign in.`, `/users/${u.id}/restore`, {}, "primary", true)}
+                >
+                  Restore
+                </Button>
+              )}
+              {data.can.delete && (
+                <Button
+                  variant="danger"
+                  leftIcon={<Trash2 className="size-4" />}
+                  onClick={() =>
+                    confirm({
+                      title: "Delete account",
+                      message: `${u.fullName} won't be able to use SafeRent — the app will show "Account deleted" with your reason. All their data (profile, properties, leases, payments, reviews, activity) is kept, and Restore brings the account back instantly.`,
+                      tone: "danger",
+                      confirmLabel: "Delete account",
+                      reason: { label: "Reason (shown to the user in the app and recorded)", required: true, minLength: 5 },
+                      onConfirm: async (r) => {
+                        await request(`/users/${u.id}`, { method: "DELETE", body: { reason: r } });
+                        navigate(portal.path("/users"), { replace: true });
+                      },
+                    })
+                  }
+                >
+                  Delete
+                </Button>
+              )}
             </>
           )
         }
       />
       {message && <Alert kind={message.kind} className="mb-4">{message.text}</Alert>}
-      {data.landlordKyc && (
-        <section className="card mb-4 flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="font-semibold">Landlord identity verification <StatusBadge status={data.landlordKyc.kycStatus} /></p>
-            <p className="text-sm text-muted">{data.landlordKyc.kycNote ?? "Check the landlord's government ID offline, then record the decision here. Verification unlocks referral rewards."}</p>
-          </div>
-          {can("users.manage") && data.landlordKyc.kycStatus !== "APPROVED" && (
-            <div className="flex gap-2">
-              <Button variant="secondary" onClick={() => confirm({ title: "Reject identity", message: "The landlord is told the reason.", tone: "danger", confirmLabel: "Reject", reason: { label: "Reason", required: true, minLength: 5 }, onConfirm: async (r) => { await request(`/users/${u.id}/kyc`, { method: "POST", body: { decision: "REJECTED", note: r } }); setMessage({ kind: "success", text: "Identity rejected." }); await reload(); } })}>Reject</Button>
-              <Button onClick={() => confirm({ title: "Verify identity", message: `Confirm you have checked ${u.fullName}'s identity documents.`, confirmLabel: "Verify", onConfirm: async () => { await request(`/users/${u.id}/kyc`, { method: "POST", body: { decision: "APPROVED" } }); setMessage({ kind: "success", text: "Identity verified." }); await reload(); } })}>Verify identity</Button>
-            </div>
-          )}
-        </section>
+      {u.deletion && (
+        <div className="mb-4 rounded-2xl border border-danger/30 bg-danger/5 p-4 text-sm">
+          <p className="font-semibold text-danger">This account was deleted</p>
+          <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+            <div><dt className="text-xs text-muted">Former name</dt><dd className="font-medium">{u.deletion.formerName ?? "—"}</dd></div>
+            <div><dt className="text-xs text-muted">Former contact</dt><dd className="font-medium">{[u.deletion.formerPhone, u.deletion.formerEmail].filter(Boolean).join(" · ") || "—"}</dd></div>
+            <div><dt className="text-xs text-muted">Deleted on</dt><dd className="font-medium">{formatTimestamp(u.deletion.deletedAt)}</dd></div>
+            <div><dt className="text-xs text-muted">Deleted by</dt><dd className="font-medium">{u.deletion.deletedBy?.fullName ?? "—"}</dd></div>
+            <div className="sm:col-span-2"><dt className="text-xs text-muted">Reason</dt><dd className="whitespace-pre-wrap font-medium">{u.deletion.reason ?? "—"}</dd></div>
+          </dl>
+        </div>
       )}
+      {data.landlordKyc && <LandlordKycCard kyc={data.landlordKyc} user={u} confirm={confirm} onDone={async (text) => { setMessage({ kind: "success", text }); await reload(); }} canDecide={can("users.manage")} canManual={can("kyc.verify_manual")} />}
       {u.isFounder && <Alert kind="info" className="mb-4">The founder account cannot be demoted, deactivated or have its permissions changed.</Alert>}
 
       <Tabs<Tab>
@@ -345,5 +386,115 @@ function ActivityTab({ userId }: { userId: string }) {
         </ul>
       </section>
     </div>
+  );
+}
+
+/** Owner (landlord) identity verification: status, checklist and the staff decisions. */
+function LandlordKycCard({
+  kyc,
+  user,
+  confirm,
+  onDone,
+  canDecide,
+  canManual,
+}: {
+  kyc: NonNullable<UserDetail["landlordKyc"]>;
+  user: UserProfile;
+  confirm: ReturnType<typeof useConfirm>["confirm"];
+  onDone: (text: string) => Promise<void>;
+  canDecide: boolean;
+  canManual: boolean;
+}) {
+  const approved = kyc.kycStatus === "APPROVED";
+  const ready = !!kyc.digilockerDone && !!kyc.selfieDone;
+  const step = (done: boolean | undefined, label: string) => (
+    <span className={`inline-flex items-center gap-1 text-xs font-medium ${done ? "text-success" : "text-muted"}`}>
+      {done ? <CheckCircle2 className="size-3.5" /> : <span className="inline-block size-3.5 rounded-full border border-line" />} {label}
+    </span>
+  );
+  return (
+    <section className="card mb-4 flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
+        <p className="flex flex-wrap items-center gap-2 font-semibold">
+          Landlord identity verification <StatusBadge status={kyc.kycStatus} />
+          {approved && kyc.manual && <Badge tone="warning">Verified manually</Badge>}
+        </p>
+        {!approved && (
+          <p className="mt-1 flex flex-wrap gap-3">
+            {step(kyc.digilockerDone, "DigiLocker")}
+            {step(kyc.selfieDone, "Selfie")}
+          </p>
+        )}
+        <p className="mt-1 text-sm text-muted">
+          {kyc.kycNote ?? (approved ? "Verified." : "The landlord verifies with DigiLocker and a selfie in the app. If that isn't possible, you can verify them manually after checking their ID.")}
+        </p>
+        {kyc.kycReviewedAt && (
+          <p className="mt-0.5 text-xs text-muted">
+            {approved ? "Verified" : "Reviewed"} {kyc.reviewedBy ? `by ${kyc.reviewedBy} ` : ""}on {formatTimestamp(kyc.kycReviewedAt)}
+          </p>
+        )}
+      </div>
+      {!approved && (canDecide || canManual) && user.accountStatus === "ACTIVE" && (
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {canDecide && (
+            <Button
+              variant="secondary"
+              onClick={() =>
+                confirm({
+                  title: "Reject identity",
+                  message: "The landlord is told the reason and can submit again.",
+                  tone: "danger",
+                  confirmLabel: "Reject",
+                  reason: { label: "Reason (shown to the landlord)", required: true, minLength: 5 },
+                  onConfirm: async (r) => {
+                    await request(`/users/${user.id}/kyc`, { method: "POST", body: { decision: "REJECTED", note: r } });
+                    await onDone("Identity rejected.");
+                  },
+                })
+              }
+            >
+              Reject
+            </Button>
+          )}
+          {canDecide && ready && (
+            <Button
+              onClick={() =>
+                confirm({
+                  title: "Verify identity",
+                  message: `Confirm the DigiLocker details and the selfie match ${user.fullName}.`,
+                  confirmLabel: "Verify",
+                  onConfirm: async () => {
+                    await request(`/users/${user.id}/kyc`, { method: "POST", body: { decision: "APPROVED" } });
+                    await onDone("Identity verified.");
+                  },
+                })
+              }
+            >
+              Verify identity
+            </Button>
+          )}
+          {canManual && (
+            <Button
+              variant={ready ? "secondary" : "primary"}
+              leftIcon={<ShieldCheck className="size-4" />}
+              onClick={() =>
+                confirm({
+                  title: "Verify manually",
+                  message: `${user.fullName} will be marked as a verified owner without DigiLocker / selfie. Only do this after checking their government ID and ownership yourself. Your name and reason are recorded.`,
+                  confirmLabel: "Verify manually",
+                  reason: { label: "Reason (e.g. ID checked in person at office)", required: true, minLength: 5 },
+                  onConfirm: async (r) => {
+                    await request(`/users/${user.id}/kyc/manual-verify`, { method: "POST", body: { reason: r } });
+                    await onDone("Landlord verified manually.");
+                  },
+                })
+              }
+            >
+              Verify manually
+            </Button>
+          )}
+        </div>
+      )}
+    </section>
   );
 }

@@ -59,7 +59,7 @@ export const DOCUMENT_TYPES = [
 ] as const;
 
 /** Documents that prove ownership (used by the verification workflow and the completeness score). */
-export const OWNERSHIP_DOCUMENTS = ["OWNERSHIP_PROOF", "SALE_DEED", "PROPERTY_TAX_RECEIPT"] as const;
+export const OWNERSHIP_DOCUMENTS = ["OWNERSHIP_PROOF", "SALE_DEED", "PROPERTY_TAX_RECEIPT", "ELECTRICITY_BILL"] as const;
 
 export const VILLA_CONFIGURATIONS = ["B+G", "B+G+1", "G", "G+1", "G+2", "G+3", "G+4", "CUSTOM"] as const;
 export const DUPLEX_CONFIGURATIONS = ["G+1", "G+2", "CUSTOM"] as const;
@@ -232,6 +232,37 @@ export const PROPERTY_TYPES: readonly PropertyTypeDef[] = [
     ],
   },
   {
+    key: "INDEPENDENT_BUILDING",
+    category: "RESIDENTIAL",
+    label: "Independent building (floors / portions)",
+    structure: "MULTI_UNIT",
+    unitKind: "FLAT",
+    unitLabel: "Portion",
+    listingTypes: ["RENT", "LEASE"],
+    buildingFields: [
+      f.text("name", "Building name", { required: true, maxLength: 150 }),
+      f.int("totalFloors", "Total floors", { required: true, max: 50 }),
+      f.int("totalUnits", "Total portions", { required: true, max: 200 }),
+      f.yesNo("liftAvailable", "Lift available"),
+      f.yesNo("parkingAvailable", "Parking available"),
+      f.yesNo("securityAvailable", "Security available"),
+    ],
+    unitFields: [
+      f.text("unitNumber", "Portion / floor", { required: true, maxLength: 30, help: "e.g. Ground floor, 1st floor front" }),
+      f.int("floorNumber", "Floor number", { required: true, min: -5, max: 50 }),
+      f.select("bhkType", "BHK type", BHK_TYPES, { required: true }),
+      f.int("bedrooms", "Bedrooms", { required: true, max: 20 }),
+      f.int("bathrooms", "Bathrooms", { required: true, max: 20 }),
+      f.int("balconies", "Balconies", { max: 20 }),
+      f.int("kitchenCount", "Kitchens", { max: 10 }),
+      f.int("livingRoomCount", "Living rooms", { max: 10 }),
+      f.area("builtUpArea", "Built-up area (sq.ft)"),
+      furnishing,
+      f.text("parkingDetails", "Parking details"),
+      ...availability,
+    ],
+  },
+  {
     key: "VILLA",
     category: "RESIDENTIAL",
     label: "Villa",
@@ -362,6 +393,7 @@ export const PROPERTY_TYPES: readonly PropertyTypeDef[] = [
   { key: "SHOWROOM", category: "COMMERCIAL", label: "Showroom", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Showroom", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "frontageFt", label: "Frontage (ft)", type: "decimal", min: 0, max: 1000 }, f.yesNo("mainRoadFacing", "Main road facing")]) },
   { key: "WAREHOUSE", category: "COMMERCIAL", label: "Warehouse", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Warehouse unit", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "clearHeightFt", label: "Clear height (ft)", type: "decimal", min: 0, max: 200 }, f.int("loadingDocks", "Loading docks", { max: 200 }), f.yesNo("truckAccess", "Truck access")]) },
   { key: "INDUSTRIAL_PROPERTY", category: "COMMERCIAL", label: "Industrial property", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Industrial unit", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "powerLoadKw", label: "Sanctioned power load (kW)", type: "decimal", min: 0, max: 100000 }, f.yesNo("truckAccess", "Truck access")]) },
+  { key: "COMMERCIAL_COMPLEX", category: "COMMERCIAL", label: "Commercial complex (shops)", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Shop", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "frontageFt", label: "Frontage (ft)", type: "decimal", min: 0, max: 1000 }, f.yesNo("mainRoadFacing", "Main road facing")]) },
   { key: "COWORKING_SPACE", category: "COMMERCIAL", label: "Coworking space", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Desk / cabin", listingTypes: ["RENT"], buildingFields: commercialBuilding, unitFields: commercialUnit([f.int("seats", "Seats", { required: true, min: 1, max: 10000 })]) },
   { key: "RESIDENTIAL_PLOT", category: "LAND", label: "Residential plot", structure: "SINGLE_UNIT", unitKind: "PLOT", unitLabel: "Plot", listingTypes: ["LEASE", "SALE"], buildingFields: landBuilding, unitFields: landUnit },
   { key: "COMMERCIAL_PLOT", category: "LAND", label: "Commercial plot", structure: "SINGLE_UNIT", unitKind: "PLOT", unitLabel: "Plot", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: landBuilding, unitFields: landUnit },
@@ -386,6 +418,22 @@ function pgBuildingFields(nameLabel: string): FieldDef[] {
 }
 
 const TYPE_MAP = new Map(PROPERTY_TYPES.map((t) => [t.key, t]));
+
+/**
+ * Building → separately rented units. The property holds only building details, common amenities,
+ * building photos and common charges / terms; rent, deposit (or sale price), availability, amenities and
+ * photos belong to each unit:
+ *   Apartment → flats · Independent building → floors / portions · Commercial complex → shops ·
+ *   Villa community (villaListing = COMMUNITY) → villas.
+ * PG / Hostel (rooms → beds) follow the same idea with rent on each room / bed (see pricedPerRoom).
+ */
+export const UNIT_PRICED_TYPES: readonly string[] = ["APARTMENT", "INDEPENDENT_BUILDING", "COMMERCIAL_COMPLEX"];
+export function pricedPerUnit(typeKey: string, attributes?: Record<string, unknown> | null): boolean {
+  if (UNIT_PRICED_TYPES.includes(typeKey)) return true;
+  return typeKey === "VILLA" && attributes?.villaListing === "COMMUNITY";
+}
+/** PG / Hostel: rent on each room (per bed) or bed, never on the building. */
+export const pricedPerRoom = (typeKey: string): boolean => propertyTypeDef(typeKey)?.structure === "ROOMS_BEDS";
 
 export function propertyTypeDef(key: string): PropertyTypeDef | undefined {
   return TYPE_MAP.get(key);

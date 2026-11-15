@@ -1,3 +1,4 @@
+import { appConfig } from "../appConfig/service";
 import type { PaymentProvider, Prisma } from "@prisma/client";
 import type { Request, Response } from "express";
 import { z } from "zod";
@@ -40,7 +41,7 @@ const PROVIDER_KEYS = Object.keys(PROVIDERS) as PaymentProvider[];
 
 const rzp = (): RazorpayCreds => ({ keyId: env.RAZORPAY_KEY_ID!, keySecret: env.RAZORPAY_KEY_SECRET! });
 
-async function gatewayRows() {
+export async function gatewayRows() {
   const rows = await prisma.paymentGateway.findMany();
   return PROVIDER_KEYS.map((provider) => {
     const row = rows.find((r) => r.provider === provider);
@@ -118,8 +119,15 @@ export async function createTopup(req: Request, res: Response): Promise<void> {
       name: "SafeRent",
       description: `Add ₹${input.amount.toFixed(2)} to wallet (${topup.code})`,
       prefill: { name: user.fullName, contact: user.phoneNumber ?? undefined, email: user.email ?? undefined },
+      // Payment methods shown in checkout (Admin → App configuration → Payments).
+      method: await checkoutMethods(),
     },
   });
+}
+
+async function checkoutMethods() {
+  const p = (await appConfig()).payments;
+  return { upi: p.upi, card: p.card, netbanking: p.netbanking, wallet: false, emi: false, paylater: false };
 }
 
 /** Marks a top-up paid and credits the wallet — exactly once. */

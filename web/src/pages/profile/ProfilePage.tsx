@@ -1,3 +1,4 @@
+import { usePortal } from "@/routes/portal";
 import { BadgeCheck, Camera, CircleAlert, LogOut, Save, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
@@ -75,6 +76,7 @@ interface ProfileResponse {
 export function ProfilePage() {
   const { profile, session, logout, refresh } = useAuth();
   const navigate = useNavigate();
+  const { loginPath } = usePortal();
   const { data, loading, reload } = useQuery(() => request<ProfileResponse>("/profile"), []);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -120,7 +122,7 @@ export function ProfilePage() {
         actions={
           <>
             <Button variant="secondary" leftIcon={<Settings className="size-4" />} onClick={() => navigate(PATHS.settings)}>Security</Button>
-            <Button variant="secondary" leftIcon={<LogOut className="size-4" />} onClick={async () => { await logout(); navigate(PATHS.login, { replace: true }); }}>Sign out</Button>
+            <Button variant="secondary" leftIcon={<LogOut className="size-4" />} onClick={async () => { await logout(); navigate(loginPath, { replace: true }); }}>Sign out</Button>
           </>
         }
       />

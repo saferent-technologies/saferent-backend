@@ -11,14 +11,13 @@ import { ID_PREFIX } from "../catalog";
 import { nextCode, nextCodes } from "../ids";
 import { bedCapacity } from "../bedCapacity";
 import { bedAssignSchema, bedSchema, bedUpdateSchema, roomSchema, roomUpdateSchema } from "../schemas";
-import { audit, checkVersion, childKey, diff, isModerator, recordStatus, scopedProperty, typeOf, withProperty } from "../service";
-import { canEditContent } from "../workflow";
+import { audit, checkVersion, childKey, diff, recordStatus, scopedProperty, typeOf, withProperty } from "../service";
+import { editTarget } from "../revisions";
 
 
 async function editableRoomsProperty(req: Request) {
-  const property = await scopedProperty(req, "properties.manage");
-  const decision = canEditContent(property, isModerator(req));
-  if (!decision.ok) fail("failed-precondition", REASONS.INVALID_STATE, decision.reason);
+  // APPROVED / PUBLISHED listings: the working copy of their change request (the live data never changes here).
+  const property = await editTarget(req);
   if (typeOf(property).structure !== "ROOMS_BEDS") fail("failed-precondition", REASONS.INVALID_STATE, "Rooms and beds are only used for PG and hostel properties.");
   return property;
 }

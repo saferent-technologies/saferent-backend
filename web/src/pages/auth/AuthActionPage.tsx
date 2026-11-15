@@ -70,7 +70,7 @@ export function AuthActionPage() {
   }, [mode, oobCode]);
 
   return (
-    <AuthLayout>
+    <AuthLayout variant="employee">
       {state.kind === "checking" && (
         <AuthCard title="Checking your link" subtitle="One moment…">
           <div className="flex justify-center py-6">
@@ -92,7 +92,7 @@ export function AuthActionPage() {
                 Request a new reset link
               </Button>
             )}
-            <Button fullWidth size="lg" variant="secondary" onClick={() => navigate(PATHS.login)}>
+            <Button fullWidth size="lg" variant="secondary" onClick={() => navigate(PATHS.employeeLogin)}>
               Return to login
             </Button>
           </div>
@@ -116,7 +116,7 @@ function DoneCard({ title, message }: { title: string; message: string }) {
         </span>
       </div>
       <Alert kind="success">{message}</Alert>
-      <Button fullWidth size="lg" className="mt-6" onClick={() => navigate(PATHS.login)}>
+      <Button fullWidth size="lg" className="mt-6" onClick={() => navigate(PATHS.employeeLogin)}>
         Return to login
       </Button>
     </AuthCard>

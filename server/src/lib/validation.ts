@@ -41,6 +41,15 @@ export const emailChangeInputSchema = z.object({ newEmail: companyEmailSchema })
 export const rebindSessionInputSchema = z.object({ previousIdToken: z.string().min(20).max(8192) });
 
 /** Parses callable input or throws invalid-argument without echoing internals. */
+/**
+ * Mobile clients often send optional fields as null instead of leaving them out. For bodies wrapped with
+ * this, a top-level null means "not sent" (so .optional() fields accept it).
+ */
+export function withoutNulls(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== null));
+}
+
 export function parseInput<T>(schema: z.ZodType<T>, data: unknown): T {
   const result = schema.safeParse(data);
   if (!result.success) {

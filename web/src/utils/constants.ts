@@ -11,9 +11,15 @@ export const OTP_RESEND_SECONDS = 60;
 
 /** App routes. */
 export const PATHS = {
+  /** Public website (no login). */
+  home: "/",
+  homes: "/homes",
+  /** Landlords & tenants: phone OTP. */
   login: "/login",
-  forgotPassword: "/forgot-password",
-  verifyOtp: "/verify-otp",
+  /** SafeRent employees: email + password + email OTP. */
+  employeeLogin: "/employee",
+  forgotPassword: "/employee/forgot-password",
+  verifyOtp: "/employee/verify-otp",
   authAction: "/auth/action",
   dashboard: "/dashboard",
   settings: "/settings",

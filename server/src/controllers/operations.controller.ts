@@ -41,7 +41,7 @@ export async function createMaintenance(req: Request, res: Response): Promise<vo
     leaseId = lease?.id ?? null;
   }
   const request = await prisma.maintenanceRequest.create({ data: { ...input, leaseId, raisedById: user.id, landlordId: property.ownerId } });
-  if (property.ownerId !== user.id) await notify(property.ownerId, "New maintenance request", `${input.title} at "${property.title}".`, "/maintenance");
+  if (property.ownerId !== user.id) await notify(property.ownerId, "New maintenance request", `${input.title} at "${property.title}".`, "/maintenance", "MAINTENANCE");
   res.status(201).json({ request });
 }
 
@@ -99,8 +99,8 @@ export async function assignProvider(req: Request, res: Response): Promise<void>
   const provider = await prisma.user.findFirst({ where: { id: providerId, role: "SERVICE_PROVIDER", accountStatus: "ACTIVE" } });
   if (!provider) fail("invalid-argument", REASONS.INVALID_INPUT, "Choose an active service provider.");
   await prisma.maintenanceRequest.update({ where: { id: r.id }, data: { assignedProviderId: providerId, status: "ASSIGNED" } });
-  await notify(providerId, "New job assigned", `${r.title} — ${r.property.locality ?? r.property.city}.`, "/maintenance");
-  await notify(r.raisedById, "Service provider assigned", `${provider.fullName} will handle "${r.title}".`, "/maintenance");
+  await notify(providerId, "New job assigned", `${r.title} — ${r.property.locality ?? r.property.city}.`, "/maintenance", "MAINTENANCE");
+  await notify(r.raisedById, "Service provider assigned", `${provider.fullName} will handle "${r.title}".`, "/maintenance", "MAINTENANCE");
   res.json({ ok: true });
 }
 
@@ -116,7 +116,7 @@ export async function respondToJob(req: Request, res: Response): Promise<void> {
     where: { id: r.id },
     data: accept ? { status: "ACCEPTED", providerNote: note ?? null } : { status: "DECLINED", assignedProviderId: null, providerNote: note ?? null },
   });
-  await notify(r.landlordId, accept ? "Job accepted" : "Job declined", `"${r.title}" was ${accept ? "accepted" : "declined"} by the service provider.`, "/maintenance");
+  await notify(r.landlordId, accept ? "Job accepted" : "Job declined", `"${r.title}" was ${accept ? "accepted" : "declined"} by the service provider.`, "/maintenance", "MAINTENANCE");
   res.json({ ok: true });
 }
 
@@ -143,7 +143,7 @@ export async function updateJob(req: Request, res: Response): Promise<void> {
     },
   });
   for (const id of new Set([r.landlordId, r.raisedById])) {
-    await notify(id, input.status === "COMPLETED" ? "Job completed" : "Work started", `"${r.title}"${input.serviceCharge ? ` — charge ₹${input.serviceCharge}` : ""}.`, "/maintenance");
+    await notify(id, input.status === "COMPLETED" ? "Job completed" : "Work started", `"${r.title}"${input.serviceCharge ? ` — charge ₹${input.serviceCharge}` : ""}.`, "/maintenance", "MAINTENANCE");
   }
   res.json({ ok: true });
 }

@@ -18,6 +18,7 @@ export function ListToolbar({
   values,
   onFilter,
   actions,
+  searchSlot,
 }: {
   search?: string;
   onSearch?: (q: string) => void;
@@ -26,6 +27,8 @@ export function ListToolbar({
   values?: Record<string, string>;
   onFilter?: (name: string, value: string) => void;
   actions?: ReactNode;
+  /** Replaces the plain search input (e.g. a search box with suggestions). */
+  searchSlot?: ReactNode;
 }) {
   const [text, setText] = useState(search ?? "");
   useEffect(() => setText(search ?? ""), [search]);
@@ -38,7 +41,8 @@ export function ListToolbar({
 
   return (
     <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center">
-      {onSearch && (
+      {searchSlot}
+      {!searchSlot && onSearch && (
         <div className="relative min-w-0 flex-1">
           <Search aria-hidden className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
           <input

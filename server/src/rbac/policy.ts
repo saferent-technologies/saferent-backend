@@ -108,6 +108,27 @@ export function canManageUser(actor: Actor, target: TargetUser): Decision {
   return ALLOW;
 }
 
+/** Shared rank rules for actions on another account. */
+function onLowerAccount(actor: Actor, target: TargetUser, permission: PermissionKey, verb: string): Decision {
+  if (!hasPermission(actor.permissions, permission)) return deny(`Missing ${permission} permission.`);
+  if (target.isFounder) return deny("The founder account is protected.");
+  if (actor.id === target.id) return deny(`You cannot ${verb} your own account.`);
+  if (actor.isFounder) return ALLOW;
+  if (userRank(target) >= userRank(actor)) return deny(`You can only ${verb} accounts with a lower role than yours.`);
+  return ALLOW;
+}
+
+/** Can the actor deactivate / re-activate the target account? (users.deactivate) */
+export function canDeactivateUser(actor: Actor, target: TargetUser): Decision {
+  return onLowerAccount(actor, target, "users.deactivate", "deactivate");
+}
+
+/** Can the actor delete the target account? (users.delete) — a Super Admin can only be deleted by the founder. */
+export function canDeleteUser(actor: Actor, target: TargetUser): Decision {
+  if ((target.role === "SUPER_ADMIN" || target.roles?.includes("SUPER_ADMIN")) && !actor.isFounder) return deny("Only the founder can delete a Super Admin.");
+  return onLowerAccount(actor, target, "users.delete", "delete");
+}
+
 /** Can the actor create an account with this role? */
 export function canCreateUserWithRole(actor: Actor, role: RoleKey): Decision {
   if (!hasPermission(actor.permissions, "users.manage")) return deny("Missing users.manage permission.");

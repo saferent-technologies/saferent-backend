@@ -21,6 +21,7 @@ import { applySchema } from "../properties/schemas";
 import { audit, propertyKey, recordStatus, typeOf, withProperty } from "../properties/service";
 import { evaluateForUser } from "../services/referral.service";
 import { finalizeDueExits } from "./leaseExit.controller";
+import { assertNoReviewOwed } from "./reviews.controller";
 
 /* ─────────────── Applications ─────────────── */
 
@@ -35,6 +36,7 @@ export async function applyForProperty(req: Request, res: Response): Promise<voi
     "Listing",
   );
   if (property.ownerId === tenant.id) fail("invalid-argument", REASONS.INVALID_INPUT, "You cannot apply for your own property.");
+  await assertNoReviewOwed(tenant.id, "TENANT", "apply for another home");
   const input = parseInput(applySchema, req.body);
   const type = typeOf(property);
   let unitId: string | null = null;
@@ -68,7 +70,8 @@ export async function listApplications(req: Request, res: Response): Promise<voi
   if (!scope) fail("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to do that.");
   const p = pagination(req);
   const status = enumQuery(req, "status", ["PENDING", "APPROVED", "REJECTED", "WITHDRAWN"] as const);
-  const where = and<Prisma.RentalApplicationWhereInput>(scope, status && { status }, p.q ? { property: { OR: [{ title: { contains: p.q } }, { code: { contains: p.q } }] } } : undefined);
+  const propertyId = typeof req.query.propertyId === "string" && req.query.propertyId ? req.query.propertyId : undefined;
+  const where = and<Prisma.RentalApplicationWhereInput>(scope, status && { status }, propertyId ? { propertyId } : undefined, p.q ? { property: { OR: [{ title: { contains: p.q } }, { code: { contains: p.q } }] } } : undefined);
   const [items, total] = await Promise.all([
     prisma.rentalApplication.findMany({
       where,
@@ -147,6 +150,10 @@ export async function decideApplication(req: Request, res: Response): Promise<vo
     res.json({ ok: true });
     return;
   }
+
+  // Approving links a tenant to a new home: both sides must have reviewed their previous rental.
+  await assertNoReviewOwed(application.property.ownerId, "LANDLORD", "take a new tenant", application.property.ownerId === user.id ? "you" : "landlord");
+  await assertNoReviewOwed(application.tenantId, "TENANT", "start a new lease", "tenant");
 
   const start = input.startDate ?? application.proposedMoveIn;
   const end = new Date(start);
@@ -248,7 +255,8 @@ export async function listLeases(req: Request, res: Response): Promise<void> {
   if (!scope) fail("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to do that.");
   const p = pagination(req);
   const status = enumQuery(req, "status", ["ACTIVE", "ENDED", "TERMINATED"] as const);
-  const where = and<Prisma.LeaseWhereInput>(scope, status && { status }, p.q ? { property: { title: { contains: p.q } } } : undefined);
+  const propertyId = typeof req.query.propertyId === "string" && req.query.propertyId ? req.query.propertyId : undefined;
+  const where = and<Prisma.LeaseWhereInput>(scope, status && { status }, propertyId ? { propertyId } : undefined, p.q ? { property: { title: { contains: p.q } } } : undefined);
   const [items, total] = await Promise.all([
     prisma.lease.findMany({ where, include: leaseInclude, orderBy: { startDate: "desc" }, skip: p.skip, take: p.take }),
     prisma.lease.count({ where }),
@@ -299,7 +307,7 @@ export async function terminateLease(req: Request, res: Response): Promise<void>
   // Optional feedback — never required for move-out, a new lease or a new invitation.
   if (lease.startDate.getTime() <= Date.now()) {
     for (const id of [lease.tenantId, lease.landlordId]) {
-      await notify(id, "How was your rental experience?", `You can now review your rental at "${lease.property.title ?? lease.property.code}". It's optional; both reviews are revealed together.`, "/reviews");
+      await notify(id, "How was your rental experience?", `Please review your rental at "${lease.property.title ?? lease.property.code}". It's needed before your next rental; both reviews are revealed together.`, "/reviews");
     }
   }
   res.json({ ok: true });
@@ -334,7 +342,7 @@ export async function leaseAgreement(req: Request, res: Response): Promise<void>
       <tr><th>Landlord</th><td>${escapeHtml(lease.landlord.fullName)}</td></tr>
       <tr><th>Tenant</th><td>${escapeHtml(lease.tenant.fullName)}</td></tr>
       <tr><th>Term</th><td>${d(lease.startDate)} to ${d(lease.endDate)}</td></tr>
-      <tr><th>Monthly rent</th><td>${inr(lease.monthlyRent)} (due on day ${lease.rentDueDay})</td></tr>
+      <tr><th>Monthly rent</th><td>${inr(lease.monthlyRent)} (due on the ${ordinal(lease.startDate.getUTCDate())} of every month, from the month after the start date)</td></tr>
       <tr><th>Security deposit</th><td>${inr(lease.securityDeposit)}</td></tr>
     </table>
     <h2>Terms</h2>
@@ -353,3 +361,8 @@ pre{white-space:pre-wrap;font-family:inherit;font-size:14px;line-height:1.6}.mut
 <body><div class="brand">SafeRent</div>${body}<p><button onclick="window.print()">Print / Save as PDF</button></p></body></html>`;
 }
 
+/** 1 → "1st", 22 → "22nd", 13 → "13th". */
+function ordinal(n: number): string {
+  const teen = n % 100 >= 11 && n % 100 <= 13;
+  return `${n}${teen ? "th" : ({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[n % 10] ?? "th"}`;
+}

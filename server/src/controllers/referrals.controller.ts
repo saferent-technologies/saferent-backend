@@ -6,7 +6,7 @@ import { afterKycDecision, removeKycPhotos } from "./kyc.controller";
 import { allowedOrigins } from "../config/env";
 import { RATE_LIMITS, REASONS } from "../config/constants";
 import { logActivity } from "../lib/activity";
-import { requestMeta } from "../lib/audit";
+import { requestMeta, writeAuditLog } from "../lib/audit";
 import { fail } from "../lib/errors";
 import { enumQuery, found, idParam, paged, pagination } from "../lib/http";
 import { notify } from "../lib/notify";
@@ -189,7 +189,7 @@ export async function decideKyc(req: Request, res: Response): Promise<void> {
   const photos = await prisma.$transaction(async (tx) => {
     // Owner verification: needs DigiLocker + selfie to approve; clears the submission; drops the DigiLocker photo.
     const files = await afterKycDecision(tx, id, decision);
-    await tx.landlordProfile.update({ where: { userId: id }, data: { kycStatus: decision, kycNote: note ?? null, kycReviewedById: actor.id, kycReviewedAt: new Date() } });
+    await tx.landlordProfile.update({ where: { userId: id }, data: { kycStatus: decision, kycNote: note ?? null, kycReviewedById: actor.id, kycReviewedAt: new Date(), kycManual: false } });
     await logActivity(req, decision === "APPROVED" ? "landlord.kyc_approve" : "landlord.kyc_reject", "user", id, { from: profile.kycStatus, to: decision, note }, tx);
     return files;
   });
@@ -469,4 +469,41 @@ export async function adminWalletAdjustments(req: Request, res: Response): Promi
   const people = await prisma.user.findMany({ where: { id: { in: items.flatMap((i) => [i.userId, i.createdById ?? ""]).filter(Boolean) } }, select: { id: true, fullName: true } });
   const name = (id: string | null) => people.find((x) => x.id === id)?.fullName ?? null;
   res.json(paged(items.map((t) => ({ id: t.id, type: t.type, bucket: t.bucket, amount: t.amount.toFixed(2), balanceAfter: t.balanceAfter.toFixed(2), note: t.note, createdAt: t.createdAt, user: name(t.userId), userId: t.userId, by: name(t.createdById) })), total, p));
+}
+
+const manualKycSchema = z.object({ reason: z.string().trim().min(5, "Give a reason (at least 5 characters).").max(500) }).strict();
+
+/**
+ * POST /api/v1/users/:id/kyc/manual-verify — verify a landlord's identity WITHOUT DigiLocker / selfie
+ * (kyc.verify_manual; Super Admin by default, grantable to other roles). Body: { reason }.
+ * For owners checked offline (documents seen in person, DigiLocker unavailable …). Marked as manual,
+ * with the reason and the staff member recorded; never for your own account.
+ */
+export async function manualVerifyKyc(req: Request, res: Response): Promise<void> {
+  const actor = me(req);
+  const id = idParam(req);
+  if (id === actor.id) fail("permission-denied", REASONS.PERMISSION_DENIED, "You can't verify your own identity.");
+  const target = found(await prisma.user.findUnique({ where: { id }, select: { id: true, accountStatus: true, isFounder: true } }), "User");
+  if (target.accountStatus !== "ACTIVE") fail("failed-precondition", REASONS.INVALID_STATE, "Only active accounts can be verified.");
+  const profile = found(await prisma.landlordProfile.findUnique({ where: { userId: id } }), "Landlord profile");
+  if (profile.kycStatus === "APPROVED") fail("failed-precondition", REASONS.INVALID_STATE, "This landlord is already verified.");
+  const { reason } = parseInput(manualKycSchema, req.body ?? {});
+
+  const photos = await prisma.$transaction(async (tx) => {
+    await tx.landlordProfile.update({
+      where: { userId: id },
+      data: { kycStatus: "APPROVED", kycManual: true, kycNote: `Verified manually: ${reason}`, kycReviewedById: actor.id, kycReviewedAt: new Date(), kycSubmittedAt: null },
+    });
+    // Same clean-up as a normal decision: the DigiLocker photo (if any) is not kept.
+    const files = await tx.identityVerification.findMany({ where: { userId: id, photoPath: { not: null } }, select: { photoPath: true } });
+    await tx.identityVerification.updateMany({ where: { userId: id, photoPath: { not: null } }, data: { photoPath: null } });
+    await logActivity(req, "landlord.kyc_manual_approve", "user", id, { from: profile.kycStatus, to: "APPROVED", reason }, tx);
+    return files.map((f) => f.photoPath!);
+  });
+  await removeKycPhotos(photos);
+  await writeAuditLog({ action: "kyc.manual_verify", outcome: "success", userId: id, metadata: { by: actor.id, reason }, ...requestMeta(req) });
+  await notify(id, "Owner verified ✅", "SafeRent has verified your identity. Your properties can now be approved.", "/verify");
+  await evaluateForUser(id);
+  res.locals.message = "Landlord verified manually";
+  res.json({ kycStatus: "APPROVED", manual: true });
 }

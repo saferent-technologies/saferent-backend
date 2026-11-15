@@ -14,6 +14,15 @@ const schema = z.object({
   // Allowed browser origin(s) for CORS, comma separated
   APP_ORIGIN: z.string().default("http://localhost:5173"),
 
+  // Android App Links. Shared links (tenant invitations …) use APP_LINK_ORIGIN, e.g.
+  // https://app.saferenttechnologies.com (production) / https://dev.saferenttechnologies.com (dev).
+  // Defaults to the first APP_ORIGIN.
+  APP_LINK_ORIGIN: z.string().trim().optional(),
+  // /.well-known/assetlinks.json: the app's package and its SHA-256 signing fingerprints
+  // (comma separated, uppercase hex with colons — debug, upload key, Play App Signing).
+  ANDROID_APP_PACKAGE: z.string().trim().default("com.saferenttechnologies.android"),
+  ANDROID_SHA256_FINGERPRINTS: z.string().trim().default(""),
+
   // Firebase project + Admin SDK credentials (service account JSON file path)
   FIREBASE_PROJECT_ID: z.string().min(1),
   GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1, "Set GOOGLE_APPLICATION_CREDENTIALS to your service account JSON path"),

@@ -1,3 +1,4 @@
+import { usePortal } from "@/routes/portal";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { KeyRound, LogOut, Mail, Phone, Smartphone } from "lucide-react";
 import { useState } from "react";
@@ -17,7 +18,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useRecaptcha } from "@/hooks/useRecaptcha";
 import { api } from "@/services/api";
 import { confirmPhoneChange, sendPhoneChangeCode } from "@/services/authService";
-import { ALLOWED_EMAIL_DOMAIN, OTP_LENGTH, PATHS } from "@/utils/constants";
+import { ALLOWED_EMAIL_DOMAIN, OTP_LENGTH } from "@/utils/constants";
 import { errorMessage } from "@/utils/errors";
 import { maskPhone } from "@/utils/mask";
 import { phoneNumberInputProps } from "@/utils/phoneInput";
@@ -82,6 +83,7 @@ export function SettingsPage() {
 function SignOutLink() {
   const { logout } = useAuth();
   const navigate = useNavigate();
+  const { loginPath } = usePortal();
   return (
     <Button
       variant="link"
@@ -89,7 +91,7 @@ function SignOutLink() {
       leftIcon={<LogOut className="size-4" />}
       onClick={async () => {
         await logout();
-        navigate(PATHS.login, { replace: true });
+        navigate(loginPath, { replace: true });
       }}
     >
       Sign out
@@ -111,6 +113,7 @@ function SectionTitle({ title, description }: { title: string; description: stri
 function ChangePasswordSection() {
   const { logout } = useAuth();
   const navigate = useNavigate();
+  const { loginPath } = usePortal();
   const { requireReauth, dialog } = useReauthGate();
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -128,7 +131,7 @@ function ChangePasswordSection() {
       try {
         await api.changePassword({ newPassword: password });
         await logout({ kind: "success", message: "Password changed. Sign in with your new password." });
-        navigate(PATHS.login, { replace: true });
+        navigate(loginPath, { replace: true });
       } catch (err) {
         setError(errorMessage(err));
       } finally {

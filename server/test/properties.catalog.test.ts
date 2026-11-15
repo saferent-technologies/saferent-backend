@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AMENITIES, CATEGORIES, PROPERTY_TYPES, maxUnits, propertyTypeDef, unitPrefix } from "../src/properties/catalog";
+import { AMENITIES, CATEGORIES, PROPERTY_TYPES, maxUnits, pricedPerRoom, pricedPerUnit, propertyTypeDef, unitPrefix } from "../src/properties/catalog";
 import { fieldsSchema, mergeAttributes, missingRequired, moneySchema, splitValues } from "../src/properties/fields";
 
 describe("property type catalog", () => {
@@ -30,6 +30,19 @@ describe("property type catalog", () => {
       expect(new Set(t.unitFields.map((f) => f.key)).size).toBe(t.unitFields.length);
       expect(fieldKeys.length).toBeGreaterThan(0);
     }
+  });
+
+  it("buildings with separately rented units / rooms price each unit, never the building", () => {
+    for (const key of ["APARTMENT", "INDEPENDENT_BUILDING", "COMMERCIAL_COMPLEX"]) expect(pricedPerUnit(key)).toBe(true);
+    expect(pricedPerUnit("VILLA", { villaListing: "COMMUNITY" })).toBe(true);
+    expect(pricedPerUnit("VILLA", { villaListing: "STANDALONE" })).toBe(false);
+    expect(pricedPerUnit("INDIVIDUAL_HOUSE")).toBe(false);
+    expect(pricedPerUnit("SHOP")).toBe(false);
+    expect(pricedPerRoom("PG")).toBe(true);
+    expect(pricedPerRoom("HOSTEL")).toBe(true);
+    expect(pricedPerRoom("APARTMENT")).toBe(false);
+    expect(propertyTypeDef("INDEPENDENT_BUILDING")?.unitLabel).toBe("Portion");
+    expect(propertyTypeDef("COMMERCIAL_COMPLEX")?.unitLabel).toBe("Shop");
   });
 
   it("enforces the unit limits per structure", () => {

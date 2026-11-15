@@ -31,6 +31,8 @@ enum AccountStatus {
   ACTIVE
   SUSPENDED
   DEACTIVATED
+  /// Deleted by staff (soft delete): sign-in refused, all data kept.
+  DELETED
 }
 
 /// ALL = every record, ASSIGNED = records assigned to the user, OWN = records the user owns / is party to
@@ -522,6 +524,13 @@ enum SubscriptionStatus {
 // ───────────────────────────── Identity & RBAC ─────────────────────────────
 
 /// Every SafeRent account. firebase_uid links the row to the Firebase Authentication user (no duplicates).
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  PREFER_NOT_TO_SAY
+}
+
 model User {
   id                 String        @id @default(uuid()) @db.Char(36)
   firebaseUid        String        @unique @map("firebase_uid") @db.VarChar(128)
@@ -530,6 +539,24 @@ model User {
   pendingEmail       String?       @map("pending_email") @db.VarChar(254)
   phoneNumber        String?       @unique @map("phone_number") @db.VarChar(20)
   profileImage       String?       @map("profile_image") @db.VarChar(255)
+  /// Demographics (asked after sign-in; see lib/profileCompletion.ts).
+  gender             Gender?
+  dateOfBirth        DateTime?     @map("date_of_birth") @db.Date
+  city               String?       @db.VarChar(80)
+  state              String?       @db.VarChar(80)
+  /// Set by the app from the demographic screen (true = done, false = skipped / not yet). Returned as isProfileCompleted.
+  profileCompleted   Boolean       @default(false) @map("profile_completed")
+  /// Account deletion (status DELETED): when, by whom (user id) and why.
+  deletedAt          DateTime?     @map("deleted_at")
+  deletedById        String?       @map("deleted_by_id") @db.Char(36)
+  deletionReason     String?       @map("deletion_reason") @db.VarChar(300)
+  /// Who the account was at the moment it was deleted: { fullName, role, phone, email } (staff only).
+  deletedSnapshot    Json?         @map("deleted_snapshot")
+  /// HMAC of the deleted account's phone number, so signing in with it again shows "account deleted".
+  deletedPhoneHash   String?       @map("deleted_phone_hash") @db.Char(64)
+  /// Why / when the account was last suspended or deactivated (shown to the user on sign-in).
+  statusReason       String?       @map("status_reason") @db.VarChar(300)
+  statusChangedAt    DateTime?     @map("status_changed_at")
   role               Role
   accountStatus      AccountStatus @default(ACTIVE) @map("account_status")
   isFounder          Boolean       @default(false) @map("is_founder")
@@ -564,6 +591,7 @@ model User {
   notifications       Notification[]
 
   @@index([role, accountStatus])
+  @@index([deletedPhoneHash])
   @@map("users")
 }
 
@@ -739,6 +767,8 @@ model LandlordProfile {
   kycNote      String?  @map("kyc_note") @db.VarChar(500)
   kycReviewedById String? @map("kyc_reviewed_by_id") @db.Char(36)
   kycReviewedAt DateTime? @map("kyc_reviewed_at")
+  /// true = approved by staff without DigiLocker + selfie (manual verification; reason in kycNote).
+  kycManual    Boolean  @default(false) @map("kyc_manual")
   /// Owner's PAN. Never returned whole except on receipts the owner consented to (see PanShareRequest).
   pan          String?  @db.VarChar(10)
   /// Owner opted in to show the PAN on receipts for ALL their tenants (HRA). Default off.
@@ -863,6 +893,8 @@ model Property {
   publicationStatus  PublicationStatus  @default(DRAFT) @map("publication_status")
   verificationStatus VerificationStatus @default(UNVERIFIED) @map("verification_status")
   moderationNote     String?            @map("moderation_note") @db.VarChar(500)
+  /// Hidden working copy of a live listing being edited (change request): id of the live property.
+  revisionOfId       String?            @map("revision_of_id") @db.Char(36)
   reviewedById       String?            @map("reviewed_by_id") @db.Char(36)
   reviewedAt         DateTime?          @map("reviewed_at")
   submittedAt        DateTime?          @map("submitted_at")
@@ -905,6 +937,7 @@ model Property {
   @@index([publicationStatus, activeStatus, city])
   @@index([propertyTypeKey])
   @@index([rentFrom])
+  @@index([revisionOfId])
   @@map("properties")
 }
 
@@ -912,6 +945,8 @@ model Property {
 model PropertyUnit {
   id                 String             @id @default(uuid()) @db.Char(36)
   code               String             @unique @db.VarChar(20)
+  /// In a change-request working copy: the live row this one was copied from (null = added in the change).
+  sourceId     String?  @map("source_id") @db.Char(36)
   propertyId         String             @map("property_id") @db.Char(36)
   kind               UnitKind
   name               String?            @db.VarChar(120)
@@ -972,6 +1007,8 @@ model DuplexFloor {
 model PropertyRoom {
   id                 String             @id @default(uuid()) @db.Char(36)
   code               String             @unique @db.VarChar(20)
+  /// In a change-request working copy: the live row this one was copied from (null = added in the change).
+  sourceId     String?  @map("source_id") @db.Char(36)
   propertyId         String             @map("property_id") @db.Char(36)
   roomNumber         String             @map("room_number") @db.VarChar(30)
   floorNumber        Int?               @map("floor_number")
@@ -998,6 +1035,8 @@ model PropertyRoom {
 model PropertyBed {
   id                 String             @id @default(uuid()) @db.Char(36)
   code               String             @unique @db.VarChar(20)
+  /// In a change-request working copy: the live row this one was copied from (null = added in the change).
+  sourceId     String?  @map("source_id") @db.Char(36)
   roomId             String             @map("room_id") @db.Char(36)
   propertyId         String             @map("property_id") @db.Char(36)
   bedNumber          String             @map("bed_number") @db.VarChar(20)
@@ -1167,6 +1206,8 @@ model PricingCharge {
 model PropertyImage {
   id           String        @id @default(uuid()) @db.Char(36)
   propertyId   String        @map("property_id") @db.Char(36)
+  /// In a change-request working copy: the live row this one was copied from (null = added in the change).
+  sourceId     String?  @map("source_id") @db.Char(36)
   unitId       String?       @map("unit_id") @db.Char(36)
   roomId       String?       @map("room_id") @db.Char(36)
   inspectionId String?       @map("inspection_id") @db.Char(36)
@@ -1779,6 +1820,12 @@ model RentPayment {
   method        String?    @db.VarChar(30)
   receiptNumber String?    @unique @map("receipt_number") @db.VarChar(40)
   recordedById  String?    @map("recorded_by_id") @db.Char(36)
+  /// Last landlord "remind tenant" (max one per due per day).
+  lastReminderAt DateTime? @map("last_reminder_at")
+  reminderCount Int        @default(0) @map("reminder_count")
+  /// Automatic notifications, sent once: on the due date, and when it turns overdue.
+  dueNotifiedAt     DateTime? @map("due_notified_at")
+  overdueNotifiedAt DateTime? @map("overdue_notified_at")
   createdAt     DateTime   @default(now()) @map("created_at")
 
   lease        Lease         @relation(fields: [leaseId], references: [id], onDelete: Cascade)
@@ -1787,6 +1834,8 @@ model RentPayment {
   @@unique([leaseId, period])
   @@index([tenantId, status])
   @@index([landlordId, status])
+  @@index([landlordId, period])
+  @@index([status, dueDate])
   @@map("rent_payments")
 }
 
@@ -2087,4 +2136,156 @@ model IdentityVerification {
 
   @@index([userId, createdAt])
   @@map("identity_verifications")
+}
+
+/// Android / client app configuration, one row per saved version (append-only history).
+/// The active config is the row with the highest version. A rollback writes a NEW version
+/// that copies an older one, so history is never rewritten. Shape + defaults: src/appConfig/schema.ts.
+model AppConfigVersion {
+  id                    String   @id @default(uuid()) @db.Char(36)
+  version               Int      @unique
+  data                  Json
+  /// UPDATE | ROLLBACK | DEFAULTS
+  action                String   @db.VarChar(20)
+  note                  String?  @db.VarChar(300)
+  rolledBackFromVersion Int?     @map("rolled_back_from_version")
+  /// Leaf paths changed against the previous version, e.g. ["maintenance.enabled"].
+  changedPaths          Json?    @map("changed_paths")
+  createdById           String?  @map("created_by_id") @db.Char(36)
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@index([createdAt])
+  @@map("app_config_versions")
+}
+
+/// Consent records: append-only proof of when each user accepted the Terms / Privacy Policy or changed
+/// WhatsApp opt-in. Rows are never updated or deleted (database triggers refuse it); a withdrawal is a new
+/// row with granted = false. Keyed by the Firebase uid so consent given before registration is kept too.
+model UserConsent {
+  id               BigInt         @id @default(autoincrement())
+  userUid          String         @map("user_uid") @db.VarChar(128)
+  consentType      ConsentType    @map("consent_type")
+  version          String         @db.VarChar(32)
+  granted          Boolean        @default(true)
+  /// Server time — the source of truth.
+  acceptedAt       DateTime       @map("accepted_at") @db.DateTime(3)
+  /// Time the phone reported (informational only).
+  clientAcceptedAt DateTime?      @map("client_accepted_at") @db.DateTime(3)
+  role             ConsentRole?
+  source           ConsentSource
+  appVersion       String?        @map("app_version") @db.VarChar(32)
+  ipAddress        String?        @map("ip_address") @db.VarChar(45)
+  userAgent        String?        @map("user_agent") @db.VarChar(255)
+  createdAt        DateTime       @default(now()) @map("created_at") @db.DateTime(3)
+
+  @@index([userUid, consentType, acceptedAt])
+  @@map("user_consents")
+}
+
+enum ConsentType {
+  TERMS
+  PRIVACY
+  WHATSAPP
+}
+
+enum ConsentRole {
+  TENANT
+  LANDLORD
+}
+
+enum ConsentSource {
+  ANDROID
+  IOS
+  WEB
+}
+
+/// Push (FCM) tokens per device. Saved after OTP sign-in (POST /auth/phone/complete) and when Firebase
+/// rotates the token (PUT /devices/fcm-token); removed on logout. A token belongs to one device, so the
+/// latest sign-in on that device owns it. Keyed by the Firebase uid (works before registration too).
+model UserDevice {
+  id         BigInt         @id @default(autoincrement())
+  userUid    String         @map("user_uid") @db.VarChar(128)
+  fcmToken   String         @unique @map("fcm_token") @db.VarChar(255)
+  platform   DevicePlatform @default(ANDROID)
+  appVersion String?        @map("app_version") @db.VarChar(32)
+  lastSeenAt DateTime       @default(now()) @map("last_seen_at") @db.DateTime(3)
+  createdAt  DateTime       @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt  DateTime       @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@index([userUid])
+  @@map("user_devices")
+}
+
+enum DevicePlatform {
+  ANDROID
+  IOS
+  WEB
+}
+
+enum LocationKind {
+  STATE
+  CITY
+  LOCALITY
+}
+
+/// Places taken from property addresses (state / city / locality), kept separately for search
+/// suggestions ("h" → Hyderabad, Hanumakonda …). Refreshed after every property change and hourly.
+model Location {
+  id            BigInt       @id @default(autoincrement())
+  kind          LocationKind
+  /// Display name of this place (the locality, the city or the state).
+  name          String       @db.VarChar(120)
+  /// Parent city (for a locality) and state (for a city or locality).
+  city          String?      @db.VarChar(80)
+  state         String?      @db.VarChar(80)
+  /// kind|state|city|name in lower case — one row per place.
+  key           String       @unique @db.VarChar(320)
+  /// Average position of the properties in this place (for a map pin / "near me").
+  latitude      Decimal?     @db.Decimal(9, 6)
+  longitude     Decimal?     @db.Decimal(9, 6)
+  /// Published, active listings with something available (what a tenant search finds).
+  listingCount  Int          @default(0) @map("listing_count")
+  /// Every submitted, non-archived property here (admin use).
+  propertyCount Int          @default(0) @map("property_count")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  @@index([name])
+  @@index([kind, listingCount])
+  @@map("locations")
+}
+
+enum PropertyRevisionStatus {
+  DRAFT
+  PENDING_VERIFICATION
+  APPROVED
+  REJECTED
+  DISCARDED
+}
+
+/// Change request for an APPROVED / PUBLISHED property: edits go to a hidden working copy
+/// (draftPropertyId) and reach the live listing only when SafeRent approves them.
+/// At most one open revision (DRAFT / PENDING_VERIFICATION / REJECTED with its copy) per property.
+model PropertyRevision {
+  id              String                 @id @default(uuid()) @db.Char(36)
+  propertyId      String                 @map("property_id") @db.Char(36)
+  landlordId      String                 @map("landlord_id") @db.Char(36)
+  status          PropertyRevisionStatus @default(DRAFT)
+  /// The working copy (a hidden property row); null once approved / discarded.
+  draftPropertyId String?                @unique @map("draft_property_id") @db.Char(36)
+  /// Snapshot of the edited property at submit / decision time (for the diff and the audit trail).
+  data            Json?
+  changedSections Json?                  @map("changed_sections")
+  moderationNote  String?                @map("moderation_note") @db.VarChar(500)
+  createdById     String                 @map("created_by_id") @db.Char(36)
+  decidedById     String?                @map("decided_by_id") @db.Char(36)
+  createdAt       DateTime               @default(now()) @map("created_at")
+  submittedAt     DateTime?              @map("submitted_at")
+  decidedAt       DateTime?              @map("decided_at")
+  version         Int                    @default(1)
+  updatedAt       DateTime               @updatedAt @map("updated_at")
+
+  @@index([propertyId, status])
+  @@index([status, submittedAt])
+  @@map("property_revisions")
 }

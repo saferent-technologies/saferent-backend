@@ -1,6 +1,7 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type { Request, Response } from "express";
 import { z } from "zod";
+import { phoneHash } from "../lib/accountBlock";
 import { REASONS } from "../config/constants";
 import { env } from "../config/env";
 import { logActivity } from "../lib/activity";
@@ -18,6 +19,8 @@ import {
   canAddRole,
   canAssignRole,
   canCreateUserWithRole,
+  canDeactivateUser,
+  canDeleteUser,
   canManageUser,
   canRemoveRole,
   canSetUserPermissions,
@@ -43,6 +46,59 @@ async function loadTarget(req: Request) {
   return { ...rest, roles: [user.role as RoleKey, ...extraRoles.map((r) => r.role as RoleKey).filter((r) => r !== user.role)] };
 }
 
+/** Names of the staff who deleted accounts, by user id. */
+async function namesById(ids: Array<string | null>): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter((id): id is string => !!id))];
+  if (!unique.length) return new Map();
+  const rows = await prisma.user.findMany({ where: { id: { in: unique } }, select: { id: true, fullName: true } });
+  return new Map(rows.map((r) => [r.id, r.fullName]));
+}
+
+type DeletedSnapshot = { fullName?: string; role?: string; phone?: string | null; email?: string | null };
+
+/** Deletion details for staff: when, by whom, why, and who the account was. Null unless deleted. */
+function deletionOf(
+  u: { accountStatus: string; deletedAt: Date | null; deletedById: string | null; deletionReason: string | null; deletedSnapshot: Prisma.JsonValue | null },
+  names: Map<string, string>,
+) {
+  if (u.accountStatus !== "DELETED") return null;
+  const snap = (u.deletedSnapshot ?? {}) as DeletedSnapshot;
+  return {
+    deletedAt: u.deletedAt?.toISOString() ?? null,
+    deletedBy: u.deletedById ? { id: u.deletedById, fullName: names.get(u.deletedById) ?? "Unknown" } : null,
+    reason: u.deletionReason,
+    formerName: snap.fullName ?? null,
+    formerPhone: snap.phone ?? null,
+    formerEmail: snap.email ?? null,
+
+  };
+}
+
+/** Accounts deleted by the first version of delete had their details erased — they can't be restored. */
+function isLegacyErased(u: { firebaseUid: string }): boolean {
+  return u.firebaseUid.startsWith("deleted:");
+}
+
+/** Owner verification status for the user page: status, note, who / when, manual or not, and what's done. */
+async function landlordKycView(
+  userId: string,
+  l: { kycStatus: string; kycNote: string | null; kycReviewedAt: Date | null; kycReviewedById: string | null; kycManual: boolean; selfiePath: string | null },
+) {
+  const [digilocker, reviewer] = await Promise.all([
+    prisma.identityVerification.count({ where: { userId, status: "COMPLETED" } }),
+    l.kycReviewedById ? prisma.user.findUnique({ where: { id: l.kycReviewedById }, select: { fullName: true } }) : null,
+  ]);
+  return {
+    kycStatus: l.kycStatus,
+    kycNote: l.kycNote,
+    kycReviewedAt: l.kycReviewedAt,
+    reviewedBy: reviewer?.fullName ?? null,
+    manual: l.kycManual,
+    digilockerDone: digilocker > 0,
+    selfieDone: !!l.selfiePath,
+  };
+}
+
 function targetOf(t: { id: string; role: string; roles: RoleKey[]; isFounder: boolean }) {
   return { id: t.id, role: t.role as RoleKey, roles: t.roles, isFounder: t.isFounder };
 }
@@ -64,19 +120,44 @@ export async function ensureRoleProfile(tx: Prisma.TransactionClient, userId: st
 export async function listUsers(req: Request, res: Response): Promise<void> {
   const p = pagination(req);
   const role = enumQuery(req, "role", ROLES);
-  const status = enumQuery(req, "status", ["ACTIVE", "SUSPENDED", "DEACTIVATED"] as const);
-  const where: Prisma.UserWhereInput = {
-    AND: [
-      role ? hasRoleWhere(role) : {},
-      status ? { accountStatus: status } : {},
-      p.q ? { OR: [{ fullName: { contains: p.q } }, { email: { contains: p.q } }, { phoneNumber: { contains: p.q } }] } : {},
-    ],
-  };
-  const [items, total] = await Promise.all([
-    prisma.user.findMany({ where, orderBy: { createdAt: "desc" }, skip: p.skip, take: p.take, include: { extraRoles: { select: { role: true } } } }),
+  const status = enumQuery(req, "status", ["ACTIVE", "SUSPENDED", "DEACTIVATED", "DELETED"] as const);
+  const base: Prisma.UserWhereInput[] = [
+    role ? hasRoleWhere(role) : {},
+    p.q
+      ? {
+          OR: [
+            { fullName: { contains: p.q } },
+            { email: { contains: p.q } },
+            { phoneNumber: { contains: p.q } },
+            // Deleted accounts are found by their former name.
+            { deletedSnapshot: { path: "$.fullName", string_contains: p.q } },
+          ],
+        }
+      : {},
+  ];
+  // Deleted accounts only show on their own tab (?status=DELETED); "All" means every account that isn't deleted.
+  const where: Prisma.UserWhereInput = { AND: [...base, status ? { accountStatus: status } : { accountStatus: { not: "DELETED" } }] };
+  const [items, total, byStatus] = await Promise.all([
+    prisma.user.findMany({
+      where,
+      orderBy: status === "DELETED" ? { deletedAt: "desc" } : { createdAt: "desc" },
+      skip: p.skip,
+      take: p.take,
+      include: { extraRoles: { select: { role: true } } },
+    }),
     prisma.user.count({ where }),
+    prisma.user.groupBy({ by: ["accountStatus"], where: { AND: base }, _count: { _all: true } }),
   ]);
-  res.json(paged(items.map(({ extraRoles, ...u }) => ({ ...toProfile(u), roles: [u.role, ...extraRoles.map((r) => r.role)] })), total, p));
+  const counts = { ALL: 0, ACTIVE: 0, SUSPENDED: 0, DEACTIVATED: 0, DELETED: 0 };
+  for (const row of byStatus) {
+    counts[row.accountStatus] = row._count._all;
+    if (row.accountStatus !== "DELETED") counts.ALL += row._count._all;
+  }
+  const deleters = await namesById(items.map((u) => u.deletedById));
+  res.json({
+    ...paged(items.map(({ extraRoles, ...u }) => ({ ...toProfile(u), roles: [u.role, ...extraRoles.map((r) => r.role)], deletion: deletionOf(u, deleters) })), total, p),
+    counts,
+  });
 }
 
 /** GET /api/users/:id — profile, effective permissions and individual overrides. */
@@ -86,24 +167,27 @@ export async function getUser(req: Request, res: Response): Promise<void> {
     effectivePermissionsFor(target, target.roles),
     prisma.userPermission.findMany({ where: { userId: target.id } }),
     prisma.authSession.findUnique({ where: { userId: target.id } }),
-    prisma.landlordProfile.findUnique({ where: { userId: target.id }, select: { kycStatus: true, kycNote: true, kycReviewedAt: true } }),
+    prisma.landlordProfile.findUnique({ where: { userId: target.id }, select: { kycStatus: true, kycNote: true, kycReviewedAt: true, kycReviewedById: true, kycManual: true, selfiePath: true } }),
   ]);
   const actor = actorOf(req);
   const t = targetOf(target);
   // Finance / support staff without users.view get the profile only — no permissions or session details.
   if (!can(req, "users.view")) {
-    res.json({ user: { ...toProfile(target), roles: target.roles }, permissions: null, overrides: [], session: null, landlordKyc: null, can: { manage: false, assignRole: false, setPermissions: false, addRoles: [], removeRoles: [] } });
+    res.json({ user: { ...toProfile(target), roles: target.roles }, permissions: null, overrides: [], session: null, landlordKyc: null, can: { manage: false, deactivate: false, delete: false, restore: false, assignRole: false, setPermissions: false, addRoles: [], removeRoles: [] } });
     return;
   }
   res.json({
-    user: { ...toProfile(target), roles: target.roles },
+    user: { ...toProfile(target), roles: target.roles, deletion: deletionOf(target, await namesById([target.deletedById])) },
     permissions,
     overrides: overrides.map((o) => ({ permissionKey: o.permissionKey, granted: o.granted, scope: o.scope })),
     // Landlord identity verification (unlocks referral rewards).
-    landlordKyc: target.roles.includes("LANDLORD") && landlord ? landlord : null,
+    landlordKyc: target.roles.includes("LANDLORD") && landlord ? await landlordKycView(target.id, landlord) : null,
     session: session ? { method: session.method, verifiedAt: session.verifiedAt.toISOString(), expiresAt: session.expiresAt.toISOString(), revoked: session.revoked } : null,
     can: {
-      manage: canManageUser(actor, t).allowed,
+      manage: canManageUser(actor, t).allowed && target.accountStatus !== "DELETED",
+      deactivate: canDeactivateUser(actor, t).allowed && target.accountStatus !== "DELETED",
+      delete: canDeleteUser(actor, t).allowed && target.accountStatus !== "DELETED",
+      restore: canDeleteUser(actor, t).allowed && target.accountStatus === "DELETED" && !isLegacyErased(target),
       assignRole: canAssignRole(actor, t, "VIEWER").allowed,
       setPermissions: canSetUserPermissions(actor, t, []).allowed,
       addRoles: ADDITIONAL_ROLES.filter((r) => canAddRole(actor, t, r).allowed),
@@ -178,7 +262,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
 
   if (isStaff && input.email) {
     try {
-      const link = await adminAuth.generatePasswordResetLink(input.email, { url: `${env.APP_ORIGIN.split(",")[0].trim()}/login` });
+      const link = await adminAuth.generatePasswordResetLink(input.email, { url: `${env.APP_ORIGIN.split(",")[0].trim()}/employee` });
       await sendEmail(input.email, staffInviteEmail({ link, name: input.fullName, roleName: ROLE_INFO[input.role].name }));
     } catch (error) {
       console.error("[users] invite email failed", error);
@@ -205,17 +289,27 @@ async function revokeEverything(firebaseUid: string, userId: string): Promise<vo
   await prisma.authSession.updateMany({ where: { userId }, data: { revoked: true, revokedAt: new Date() } });
 }
 
-const statusSchema = z.object({ status: z.enum(["ACTIVE", "SUSPENDED", "DEACTIVATED"]), reason: z.string().trim().max(300).optional() });
+const reasonSchema = z.string().trim().min(5, "Tell us why (at least 5 characters).").max(300);
+// A reason is required for every status change (activate too) — it's kept in the activity log.
+const statusSchema = z.object({ status: z.enum(["ACTIVE", "SUSPENDED", "DEACTIVATED"]), reason: reasonSchema }).strict();
 
 /** POST /api/users/:id/status — activate, suspend or deactivate (revokes sessions when not active). */
 export async function setUserStatus(req: Request, res: Response): Promise<void> {
   const target = await loadTarget(req);
-  enforce(canManageUser(actorOf(req), targetOf(target)));
+  enforce(canDeactivateUser(actorOf(req), targetOf(target)));
+  if (target.accountStatus === "DELETED") fail("failed-precondition", REASONS.INVALID_STATE, "This account has been deleted.");
   const { status, reason } = parseInput(statusSchema, req.body);
 
-  await prisma.user.update({ where: { id: target.id }, data: { accountStatus: status } });
-  await adminAuth.updateUser(target.firebaseUid, { disabled: status !== "ACTIVE" });
-  if (status !== "ACTIVE") await revokeEverything(target.firebaseUid, target.id);
+  await prisma.user.update({
+    where: { id: target.id },
+    data: { accountStatus: status, statusReason: status === "ACTIVE" ? null : (reason ?? null), statusChangedAt: new Date() },
+  });
+  // Only the DB status changes. The API's account gate refuses every request from a non-active account
+  // (403 ACCOUNT_DISABLED with the reason), so nothing is revoked: Firebase user, tokens and sessions stay,
+  // and re-activating works instantly (the app's "Try again" gets 200). To sign someone out for security,
+  // use "Force sign-out" (POST /users/:id/revoke-sessions).
+  // (Older accounts that an earlier version disabled in Firebase are re-enabled when activated.)
+  if (status === "ACTIVE") await adminAuth.updateUser(target.firebaseUid, { disabled: false }).catch(() => undefined);
 
   await logActivity(req, "user.status", "user", target.id, { from: target.accountStatus, to: status, reason });
   await writeAuditLog({ action: "account.status.change", outcome: "success", userId: target.id, metadata: { status, by: me(req).id }, ...requestMeta(req) });
@@ -223,6 +317,10 @@ export async function setUserStatus(req: Request, res: Response): Promise<void> 
 }
 
 /** POST /api/users/:id/revoke-sessions — sign the user out everywhere. */
+/**
+ * POST /api/v1/users/:id/revoke-sessions — "Force sign-out" (security: e.g. a hacked account).
+ * Revokes Firebase refresh tokens and our sessions; separate from deactivate / delete, which never revoke.
+ */
 export async function revokeSessions(req: Request, res: Response): Promise<void> {
   const target = await loadTarget(req);
   enforce(canManageUser(actorOf(req), targetOf(target)));
@@ -395,4 +493,87 @@ export async function addMyRole(req: Request, res: Response): Promise<void> {
 export async function removeMyRole(req: Request, res: Response): Promise<void> {
   const role = parseInput(z.enum(ROLES), req.params.role);
   await removeRole(req, res, await loadSelf(req), role);
+}
+
+const deleteSchema = z.object({ reason: reasonSchema }).strict();
+
+/**
+ * DELETE /api/v1/users/:id — delete an account (users.delete; Super Admin by default).
+ * Soft delete: the account is marked DELETED and can never sign in again, but ALL of its data stays —
+ * profile (name, phone, email, photo, demographics), properties, leases, payments, reviews, consents, KYC
+ * and the activity log. Signing in with the same number shows "account deleted" (403 ACCOUNT_DELETED).
+ * Refused while the account still has an active lease or a property that isn't archived.
+ */
+export async function deleteUser(req: Request, res: Response): Promise<void> {
+  const target = await loadTarget(req);
+  enforce(canDeleteUser(actorOf(req), targetOf(target)));
+  if (target.accountStatus === "DELETED") fail("failed-precondition", REASONS.INVALID_STATE, "This account is already deleted.");
+  const { reason } = parseInput(deleteSchema, req.body ?? {});
+
+  const [activeLeases, liveProperties] = await Promise.all([
+    prisma.lease.count({ where: { status: "ACTIVE", OR: [{ tenantId: target.id }, { landlordId: target.id }] } }),
+    prisma.property.count({ where: { ownerId: target.id, activeStatus: { not: "ARCHIVED" } } }),
+  ]);
+  const blockers = [
+    activeLeases ? `${activeLeases} active lease${activeLeases === 1 ? "" : "s"} (end ${activeLeases === 1 ? "it" : "them"} first)` : null,
+    liveProperties ? `${liveProperties} propert${liveProperties === 1 ? "y" : "ies"} not archived (archive or transfer ${liveProperties === 1 ? "it" : "them"} first)` : null,
+  ].filter(Boolean) as string[];
+  if (blockers.length) fail("failed-precondition", REASONS.INVALID_STATE, `This account can't be deleted yet: ${blockers.join("; ")}.`, { activeLeases, liveProperties });
+
+  const before = { fullName: target.fullName, role: target.role, accountStatus: target.accountStatus };
+  await prisma.$transaction(async (tx) => {
+    // Only the status changes — every profile field is kept as it was.
+    await tx.user.update({
+      where: { id: target.id },
+      data: {
+        accountStatus: "DELETED",
+        deletedAt: new Date(),
+        deletedById: me(req).id,
+        deletionReason: reason,
+        deletedPhoneHash: target.phoneNumber ? phoneHash(target.phoneNumber) : null,
+        deletedSnapshot: { fullName: target.fullName, role: target.role, phone: target.phoneNumber, email: target.email },
+        statusChangedAt: new Date(),
+      },
+    });
+    await logActivity(req, "user.delete", "user", target.id, { before, reason }, tx);
+  });
+  // Only the DB status changes: no Firebase delete/disable, no token or session revoke. The account gate
+  // answers 403 ACCOUNT_DELETED to every request, and Restore works without the user signing in again.
+  await writeAuditLog({ action: "account.deleted", outcome: "success", userId: target.id, metadata: { by: me(req).id, reason }, ...requestMeta(req) });
+  res.locals.message = "Account deleted";
+  res.json({ ok: true, id: target.id, accountStatus: "DELETED" });
+}
+
+/**
+ * POST /api/v1/users/:id/restore — bring a deleted account back (users.delete; same rank rules as delete).
+ * Body: { reason } (required). The account becomes ACTIVE with all its data; it can sign in again.
+ */
+export async function restoreUser(req: Request, res: Response): Promise<void> {
+  const target = await loadTarget(req);
+  enforce(canDeleteUser(actorOf(req), targetOf(target)));
+  if (target.accountStatus !== "DELETED") fail("failed-precondition", REASONS.INVALID_STATE, "This account isn't deleted.");
+  if (isLegacyErased(target)) fail("failed-precondition", REASONS.INVALID_STATE, "This account's details were erased when it was deleted, so it can't be restored.");
+  const { reason } = parseInput(deleteSchema, req.body ?? {});
+
+  const before = { accountStatus: target.accountStatus, deletedAt: target.deletedAt, deletedById: target.deletedById, deletionReason: target.deletionReason };
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: target.id },
+      data: {
+        accountStatus: "ACTIVE",
+        statusReason: null,
+        statusChangedAt: new Date(),
+        deletedAt: null,
+        deletedById: null,
+        deletionReason: null,
+        deletedPhoneHash: null,
+        deletedSnapshot: Prisma.DbNull,
+      },
+    });
+    await logActivity(req, "user.restore", "user", target.id, { before, reason }, tx);
+  });
+  await adminAuth.updateUser(target.firebaseUid, { disabled: false }).catch(() => undefined);
+  await writeAuditLog({ action: "account.restored", outcome: "success", userId: target.id, metadata: { by: me(req).id, reason }, ...requestMeta(req) });
+  res.locals.message = "Account restored";
+  res.json({ ok: true, id: target.id, accountStatus: "ACTIVE" });
 }

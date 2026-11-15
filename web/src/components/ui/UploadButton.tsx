@@ -4,7 +4,8 @@ import { upload } from "@/services/api";
 import { errorMessage } from "@/utils/errors";
 import { Button } from "./Button";
 
-const MAX_BYTES = 5 * 1024 * 1024;
+/** Hard ceiling only — the real limit is set in Admin → App configuration and checked by the server. */
+const MAX_BYTES = 25 * 1024 * 1024;
 
 /** File picker that uploads straight to an API endpoint (multipart). */
 export function UploadButton({
@@ -35,7 +36,7 @@ export function UploadButton({
     if (!files?.length) return;
     const tooBig = Array.from(files).find((f) => f.size > MAX_BYTES);
     if (tooBig) {
-      onError(`${tooBig.name} is larger than 5 MB.`);
+      onError(`${tooBig.name} is larger than 25 MB.`);
       return;
     }
     const form = new FormData();

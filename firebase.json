@@ -3,7 +3,8 @@
     "public": "web/dist",
     "ignore": [
       "firebase.json",
-      "**/.*",
+      "**/.DS_Store",
+      "**/.env*",
       "**/node_modules/**"
     ],
     "predeploy": [
@@ -16,6 +17,19 @@
       }
     ],
     "headers": [
+      {
+        "source": "/.well-known/assetlinks.json",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=300"
+          }
+        ]
+      },
       {
         "source": "**",
         "headers": [

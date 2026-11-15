@@ -5,7 +5,7 @@
  *                       only approved photos, no meter numbers. Undisclosed values stay NOT_DISCLOSED.
  */
 import type { Property } from "@prisma/client";
-import { propertyTypeDef } from "./catalog";
+import { pricedPerUnit, propertyTypeDef } from "./catalog";
 import { computeCompleteness, type CompletenessResult } from "./completeness";
 import { costBreakdown, type ChargeLike } from "./costs";
 import { completenessInput, type PropertyAggregate } from "./service";
@@ -15,6 +15,31 @@ export const documentUrl = (id: string) => `/api/v1/files/documents/${id}`;
 
 type Pricing = PropertyAggregate["pricing"][number];
 type Utility = PropertyAggregate["utilities"][number];
+
+const INHERITED_TERMS = ["advanceRentMonths", "rentDueDay", "lateFeePolicy", "lockInPeriodMonths", "noticePeriodDays", "rentIncreasePolicy", "agreementCharges", "refundPolicy", "otherTerms"] as const;
+
+/**
+ * Apartments: what a flat costs = the flat's own rent / deposit (and its own charges) + the building's
+ * common charges and terms (maintenance, water, agreement charges, notice period …). A charge set on the
+ * flat replaces the common one of the same kind.
+ */
+function flatPricing(unit: Pricing | undefined, common: Pricing | undefined): Pricing | undefined {
+  if (!common) return unit;
+  if (!unit) return { ...common, id: `${common.id}:flat`, monthlyRent: null, securityDeposit: null, salePrice: null };
+  const charges = [...unit.charges, ...common.charges.filter((c) => !unit.charges.some((u) => u.kind === c.kind && u.label === c.label))];
+  const merged: Record<string, unknown> = { ...unit, charges };
+  for (const k of INHERITED_TERMS) if (merged[k] === null || merged[k] === undefined) merged[k] = common[k];
+  if (unit.agreementChargesPaidBy === "NOT_DISCLOSED") merged.agreementChargesPaidBy = common.agreementChargesPaidBy;
+  if (unit.rentNegotiable === "NOT_DISCLOSED") merged.rentNegotiable = common.rentNegotiable;
+  return merged as Pricing;
+}
+
+/** PG room: its rent (per bed) and deposit + the building's common charges and terms. */
+function roomPricing(room: { rentPerBed: unknown; securityDeposit: unknown }, common: Pricing | undefined, utility: Utility | undefined) {
+  const base = { ...(common ?? {}), monthlyRent: room.rentPerBed ?? null, securityDeposit: room.securityDeposit ?? null, salePrice: null } as unknown as Pricing;
+  const charges = (common?.charges ?? []) as unknown as ChargeLike[];
+  return { monthlyRent: room.rentPerBed ?? null, securityDeposit: room.securityDeposit ?? null, charges: common?.charges ?? [], breakdown: costBreakdown(base, charges, utility ?? null) };
+}
 
 function presentPricing(p: Pricing | undefined, utility: Utility | undefined) {
   if (!p) return null;
@@ -65,6 +90,7 @@ export function presentProperty(p: PropertyAggregate, completeness?: Completenes
   const utilityFor = (scope: string) => p.utilities.find((u) => u.scopeKey === scope);
   const propertyUtility = utilityFor("PROPERTY");
   const pricingFor = (scope: string) => p.pricing.find((x) => x.scopeKey === scope);
+  const perFlat = pricedPerUnit(p.propertyTypeKey, p.attributes as Record<string, unknown> | null);
   return {
     ...propertySummary(p),
     description: p.description,
@@ -82,13 +108,15 @@ export function presentProperty(p: PropertyAggregate, completeness?: Completenes
     units: p.units.map((u) => ({
       ...u,
       attributes: u.attributes ?? {},
-      pricing: presentPricing(pricingFor(u.id), utilityFor(u.id) ?? propertyUtility),
+      pricing: presentPricing(perFlat ? flatPricing(pricingFor(u.id), pricingFor("PROPERTY")) : pricingFor(u.id), utilityFor(u.id) ?? propertyUtility),
       utilities: utilityFor(u.id) ?? null,
       amenities: p.amenities.filter((a) => a.scopeKey === u.id),
       imageIds: p.images.filter((i) => i.unitId === u.id).map((i) => i.id),
     })),
     rooms: p.rooms.map((r) => ({
       ...r,
+      amenities: p.amenities.filter((a) => a.scopeKey === r.id),
+      pricing: roomPricing(r, pricingFor("PROPERTY"), propertyUtility),
       bedCount: r.beds.length,
       availableBeds: r.beds.filter((b) => b.activeStatus === "ACTIVE" && b.availabilityStatus === "AVAILABLE").length,
       occupiedBeds: r.beds.filter((b) => b.availabilityStatus === "OCCUPIED").length,
@@ -120,6 +148,7 @@ export function presentPublic(p: PropertyAggregate) {
   const utilityFor = (scope: string) => p.utilities.find((u) => u.scopeKey === scope);
   const propertyUtility = utilityFor("PROPERTY");
   const pricingFor = (scope: string) => p.pricing.find((x) => x.scopeKey === scope);
+  const perFlat = pricedPerUnit(p.propertyTypeKey, p.attributes as Record<string, unknown> | null);
   const completeness = computeCompleteness(completenessInput(p));
   return {
     id: p.id,
@@ -153,7 +182,7 @@ export function presentPublic(p: PropertyAggregate) {
         return {
           ...rest,
           attributes: attributes ?? {},
-          pricing: presentPricing(pricingFor(u.id), utilityFor(u.id) ?? propertyUtility),
+          pricing: presentPricing(perFlat ? flatPricing(pricingFor(u.id), pricingFor("PROPERTY")) : pricingFor(u.id), utilityFor(u.id) ?? propertyUtility),
           utilities: publicUtility(utilityFor(u.id)),
           amenities: p.amenities.filter((a) => a.scopeKey === u.id).map(({ key, label, status, notes }) => ({ key, label, status, notes })),
           imageIds: approved.filter((i) => i.unitId === u.id).map((i) => i.id),
@@ -177,6 +206,8 @@ export function presentPublic(p: PropertyAggregate) {
         // Bed occupancy only — never who occupies it.
         beds: r.beds.filter((b) => b.activeStatus === "ACTIVE" && b.availabilityStatus !== "OCCUPIED").map((b) => ({ id: b.id, code: b.code, bedNumber: b.bedNumber, rent: b.rent ?? r.rentPerBed, availabilityStatus: b.availabilityStatus })),
         imageIds: approved.filter((i) => i.roomId === r.id).map((i) => i.id),
+        amenities: p.amenities.filter((a) => a.scopeKey === r.id).map(({ key, label, status, notes }) => ({ key, label, status, notes })),
+        pricing: roomPricing(r, pricingFor("PROPERTY"), propertyUtility),
       })),
     utilities: publicUtility(propertyUtility),
     policy: p.policy ? { ...p.policy, propertyId: undefined, updatedAt: undefined } : null,

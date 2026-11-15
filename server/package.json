@@ -14,6 +14,8 @@
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "bootstrap:super-admin": "tsx --env-file=.env src/bootstrap/cli.ts",
+    "dev:close-exit": "tsx --env-file=.env src/scripts/dev-close-lease-exit.ts",
+    "dev:delete-properties": "tsx --env-file=.env src/scripts/dev-delete-all-properties.ts",
     "postinstall": "prisma generate",
     "test:integration": "vitest run test/integration",
     "openapi": "tsx --env-file=.env src/scripts/export-openapi.ts",
