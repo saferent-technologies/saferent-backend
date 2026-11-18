@@ -1,3 +1,4 @@
+import { dispatchSupportQueue } from "./services/supportQueue";
 import { finalizeDueExits } from "./controllers/leaseExit.controller";
 import { publishDueReviews } from "./controllers/reviews.controller";
 import { rebuildLocations } from "./properties/locations";
@@ -31,6 +32,7 @@ async function runOnce(): Promise<void> {
     ["locations", rebuildLocationsHourly],
     ["rent-notifications", sendRentNotifications],
     ["home-alerts", processHomeAlerts],
+    ["support-queue", dispatchSupportQueue],
   ] as const) {
     try {
       await job();

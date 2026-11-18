@@ -18,6 +18,9 @@ const schema = z.object({
   // https://app.saferenttechnologies.com (production) / https://dev.saferenttechnologies.com (dev).
   // Defaults to the first APP_ORIGIN.
   APP_LINK_ORIGIN: z.string().trim().optional(),
+  // Public origin of the API (absolute photo URLs in pushes, e.g. home alerts). Defaults to APP_LINK_ORIGIN,
+  // then the first APP_ORIGIN (the web app serves /api on the same origin).
+  PUBLIC_API_ORIGIN: z.string().trim().url().optional(),
   // /.well-known/assetlinks.json: the app's package and its SHA-256 signing fingerprints
   // (comma separated, uppercase hex with colons — debug, upload key, Play App Signing).
   ANDROID_APP_PACKAGE: z.string().trim().default("com.saferenttechnologies.android"),
@@ -106,6 +109,14 @@ export const env = parsed.data;
 if (env.EMAIL_PROVIDER === "smtp" && (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASS)) {
   console.error("\n❌ EMAIL_PROVIDER=smtp requires SMTP_HOST, SMTP_USER and SMTP_PASS in server/.env\n");
   process.exit(1);
+}
+
+if (env.NODE_ENV === "production" && env.EMAIL_PROVIDER === "console") {
+  console.error("\n❌ EMAIL_PROVIDER=console only prints emails (sign-in codes, invites) in the server log. Set EMAIL_PROVIDER=smtp with SMTP_* in production.\n");
+  process.exit(1);
+}
+if (env.EMAIL_PROVIDER === "console") {
+  console.warn("⚠️  EMAIL_PROVIDER=console: emails are NOT sent, they are printed in this log (development only).");
 }
 
 if (env.NODE_ENV === "production" && env.KYC_PROVIDER === "mock") {

@@ -47,7 +47,7 @@ export async function browseProperties(req: Request, res: Response): Promise<voi
   };
   const orderBy: Prisma.PropertyOrderByWithRelationInput =
     f.sort === "rent_asc" ? { rentFrom: "asc" } : f.sort === "rent_desc" ? { rentTo: "desc" } : f.sort === "completeness" ? { completenessScore: "desc" } : { publishedAt: "desc" };
-  const include = { images: { where: { status: "APPROVED" as const, inspectionId: null }, select: { id: true, status: true }, orderBy: [{ displayOrder: "asc" as const }, { createdAt: "asc" as const }], take: 1 } };
+  const include = { images: { where: { status: "APPROVED" as const, inspectionId: null, category: { not: "PANORAMA_360" as const } }, select: { id: true, status: true, category: true }, orderBy: [{ displayOrder: "asc" as const }, { createdAt: "asc" as const }], take: 1 } };
   const here = f.lat !== undefined && f.lng !== undefined ? { lat: f.lat, lng: f.lng } : null;
   let items: Array<Prisma.PropertyGetPayload<{ include: typeof include }>>;
   let total: number;
@@ -74,6 +74,10 @@ export async function browseProperties(req: Request, res: Response): Promise<voi
   const verifiedOwners = new Set(
     (await prisma.landlordProfile.findMany({ where: { userId: { in: [...new Set(items.map((x) => x.ownerId))] }, kycStatus: "APPROVED" }, select: { userId: true } })).map((o) => o.userId),
   );
+  // "360°" badge: listings with at least one approved panorama.
+  const with360 = new Set(
+    (await prisma.propertyImage.groupBy({ by: ["propertyId"], where: { propertyId: { in: items.map((x) => x.id) }, category: "PANORAMA_360", status: "APPROVED" } })).map((g) => g.propertyId),
+  );
   // Public summary: no owner, no internal workflow fields.
   res.json(
     paged(
@@ -97,6 +101,7 @@ export async function browseProperties(req: Request, res: Response): Promise<voi
           completenessScore: s.completenessScore,
           verificationStatus: s.verificationStatus,
           ownerVerified: verifiedOwners.has(x.ownerId),
+          has360: with360.has(x.id),
           coverImageId: s.coverImageId,
           publishedAt: s.publishedAt,
           /** Only with lat / lng: distance from the device in km (1 decimal). */

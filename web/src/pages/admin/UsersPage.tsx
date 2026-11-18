@@ -12,6 +12,9 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { PasswordInput } from "@/components/ui/PasswordInput";
+import { passwordPolicySchema } from "@/validations/auth.schemas";
 import { Modal } from "@/components/ui/Modal";
 import { PhoneField } from "@/components/ui/PhoneField";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -149,11 +152,19 @@ const createSchema = z
     role: z.string().min(1, "Choose a role."),
     email: z.string().trim().optional(),
     phoneNumber: z.string().trim().optional(),
+    password: z.string().optional(),
+    confirmPassword: z.string().optional(),
+    requirePasswordChange: z.boolean().optional(),
   })
   .superRefine((v, ctx) => {
     const staff = (STAFF_ROLES as readonly string[]).includes(v.role);
     if (staff && !/^[^@\s]+@saferenttechnologies\.com$/i.test(v.email ?? "")) ctx.addIssue({ code: "custom", path: ["email"], message: "Use an @saferenttechnologies.com email." });
-    if (!staff && v.role && !/^\+[1-9]\d{7,14}$/.test(v.phoneNumber ?? "")) ctx.addIssue({ code: "custom", path: ["phoneNumber"], message: "Enter a valid phone number." });
+    if (v.role && !/^\+[1-9]\d{7,14}$/.test(v.phoneNumber ?? "")) ctx.addIssue({ code: "custom", path: ["phoneNumber"], message: "Enter a valid phone number." });
+    if (staff) {
+      const policy = passwordPolicySchema.safeParse(v.password ?? "");
+      if (!policy.success) ctx.addIssue({ code: "custom", path: ["password"], message: policy.error.issues[0]?.message ?? "Choose a stronger password." });
+      else if (v.password !== v.confirmPassword) ctx.addIssue({ code: "custom", path: ["confirmPassword"], message: "Passwords do not match." });
+    }
   });
 type CreateValues = z.infer<typeof createSchema>;
 
@@ -167,7 +178,7 @@ function CreateUserModal({ open, onClose, onCreated }: { open: boolean; onClose:
     reset,
     setValue,
     formState: { errors, isSubmitting },
-  } = useForm<CreateValues>({ resolver: zodResolver(createSchema), defaultValues: { fullName: "", role: "", email: "", phoneNumber: "" } });
+  } = useForm<CreateValues>({ resolver: zodResolver(createSchema), defaultValues: { fullName: "", role: "", email: "", phoneNumber: "", password: "", confirmPassword: "", requirePasswordChange: false } });
   const role = watch("role");
   const staff = (STAFF_ROLES as readonly string[]).includes(role);
   // The API enforces the same rule: only lower roles, and only the founder can create Super Admins.
@@ -182,7 +193,14 @@ function CreateUserModal({ open, onClose, onCreated }: { open: boolean; onClose:
   const onSubmit = handleSubmit(async (v) => {
     setError(null);
     try {
-      await request("/users", { method: "POST", body: { fullName: v.fullName, role: v.role, email: staff ? v.email : undefined, phoneNumber: v.phoneNumber || undefined } });
+      await request("/users", { method: "POST", body: {
+          fullName: v.fullName,
+          role: v.role,
+          email: staff ? v.email : undefined,
+          phoneNumber: v.phoneNumber || undefined,
+          ...(staff ? { password: v.password, requirePasswordChange: !!v.requirePasswordChange } : {}),
+        },
+      });
       onCreated();
       close();
     } catch (err) {
@@ -191,13 +209,21 @@ function CreateUserModal({ open, onClose, onCreated }: { open: boolean; onClose:
   });
 
   return (
-    <Modal open={open} onClose={close} title="Add user" description="Staff receive an email to set their password. Others sign in with their phone number.">
+    <Modal open={open} onClose={close} title="Add user" description="Staff sign in to the portal with the email and password you set here. Others sign in with their phone number.">
       <form onSubmit={onSubmit} noValidate className="space-y-4">
         {error && <Alert kind="error">{error}</Alert>}
         <Input label="Full name" error={errors.fullName?.message} {...register("fullName")} />
         <Select label="Role" placeholder="Choose a role" options={allowedRoles} error={errors.role?.message} {...register("role")} />
         {role && staff && <Input label="Work email" type="email" placeholder="name@saferenttechnologies.com" error={errors.email?.message} {...register("email")} />}
-        {role && <PhoneField label={staff ? "Phone (optional)" : "Phone number"} value={watch("phoneNumber") ?? ""} onChange={(v) => setValue("phoneNumber", v, { shouldValidate: !!errors.phoneNumber })} error={errors.phoneNumber?.message} />}
+        {role && <PhoneField label="Phone number" value={watch("phoneNumber") ?? ""} onChange={(v) => setValue("phoneNumber", v, { shouldValidate: !!errors.phoneNumber })} error={errors.phoneNumber?.message} />}
+        {role && staff && (
+          <>
+            <PasswordInput label="Password" autoComplete="new-password" hint="At least 12 characters with upper and lower case letters, a number and a symbol." error={errors.password?.message} {...register("password")} />
+            <PasswordInput label="Confirm password" autoComplete="new-password" error={errors.confirmPassword?.message} {...register("confirmPassword")} />
+            <Checkbox label="Ask them to choose a new password at first sign-in" {...register("requirePasswordChange")} />
+            <p className="text-xs text-muted">Share the password with them privately. It is not emailed.</p>
+          </>
+        )}
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button variant="secondary" onClick={close}>
             Cancel

@@ -14,6 +14,7 @@ import { compareNames, DIGILOCKER_DAILY_LIMIT, kycStage } from "../lib/kyc";
 import { prisma } from "../lib/prisma";
 import { discardUploads, relativePath, removeStoredFile, sendStoredFile, sniffMime, UPLOAD_ROOT } from "../lib/uploads";
 import { parseInput } from "../lib/validation";
+import { notifyStaff } from "../lib/notifyStaff";
 import { can, hasRole, me } from "../middleware/auth";
 
 /*
@@ -199,6 +200,7 @@ export async function submitKyc(req: Request, res: Response): Promise<void> {
   if (!profile?.selfiePath) fail("failed-precondition", REASONS.INVALID_STATE, "Take a selfie first.");
   await prisma.landlordProfile.update({ where: { userId: user.id }, data: { kycStatus: "PENDING", kycSubmittedAt: new Date(), kycNote: null } });
   await logActivity(req, "kyc.submit", "user", user.id);
+  await notifyStaff("users.manage", "Landlord verification to review", `${user.fullName} submitted their identity verification.`, `/users/${user.id}`, user.id);
   res.json({ ok: true });
 }
 

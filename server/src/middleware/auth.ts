@@ -145,10 +145,20 @@ export function permissionMeta(handler: RequestHandler): { all?: PermissionKey[]
   return (handler as Tagged)[PERMISSION_META];
 }
 
-/** Sensitive operations require a sign-in or password re-confirmation within the last few minutes. */
+/** The web portal (staff / employee panel and the web app) — sends X-Client-Platform: ADMIN_PANEL. Everything else is the mobile app. */
+export function isPortal(req: Request): boolean {
+  return req.platform === "ADMIN_PANEL";
+}
+
+/**
+ * Sensitive operations require a sign-in or password re-confirmation within the last few minutes.
+ * Portal only: the mobile app signs in with phone OTP (no password), so it is never asked to confirm a
+ * password — it gets 403 REAUTH_REQUIRED ("verify your phone number again"), never 401.
+ */
 export function requireRecentAuth(req: Request, maxAgeSeconds: number = SESSION.RECENT_AUTH_MAX_AGE_S): void {
   if (!req.auth || secondsSince(req.auth.auth_time, Date.now()) > maxAgeSeconds) {
-    fail("failed-precondition", REASONS.RECENT_LOGIN_REQUIRED, "Please confirm your password to continue.");
+    if (isPortal(req)) fail("failed-precondition", REASONS.RECENT_LOGIN_REQUIRED, "Please confirm your password to continue.");
+    fail("permission-denied", REASONS.RECENT_LOGIN_REQUIRED, "For your security, please verify your phone number again.");
   }
 }
 

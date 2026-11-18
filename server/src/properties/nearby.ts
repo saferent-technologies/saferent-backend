@@ -40,7 +40,7 @@ const nearbySelect = {
   activeStatus: true,
   createdAt: true,
   owner: { select: { id: true, fullName: true, phoneNumber: true } },
-  images: { where: { status: { not: "REJECTED" } }, select: { id: true }, orderBy: { createdAt: "asc" }, take: 1 },
+  images: { where: { status: { not: "REJECTED" }, category: { not: "PANORAMA_360" } }, select: { id: true }, orderBy: { createdAt: "asc" }, take: 1 },
 } satisfies Prisma.PropertySelect;
 
 /** Other non-archived, submitted properties within `radius` metres, closest first. */

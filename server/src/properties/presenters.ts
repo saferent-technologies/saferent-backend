@@ -53,7 +53,7 @@ function presentPricing(p: Pricing | undefined, utility: Utility | undefined) {
   };
 }
 
-export function propertySummary(p: Property & { owner?: { id: string; fullName: string } | null; images?: Array<{ id: string; status: string }> }) {
+export function propertySummary(p: Property & { owner?: { id: string; fullName: string } | null; images?: Array<{ id: string; status: string; category?: string }> }) {
   const type = propertyTypeDef(p.propertyTypeKey);
   return {
     id: p.id,
@@ -78,7 +78,8 @@ export function propertySummary(p: Property & { owner?: { id: string; fullName: 
     occupiedCount: p.occupiedCount,
     wizardStep: p.wizardStep,
     owner: p.owner ?? null,
-    coverImageId: p.images?.find((i) => i.status !== "REJECTED")?.id ?? null,
+    // Cover: first non-rejected photo that isn't a 360° panorama.
+    coverImageId: p.images?.find((i) => i.status !== "REJECTED" && (i as { category?: string }).category !== "PANORAMA_360")?.id ?? null,
     submittedAt: p.submittedAt,
     publishedAt: p.publishedAt,
     createdAt: p.createdAt,
@@ -217,7 +218,7 @@ export function presentPublic(p: PropertyAggregate) {
     policy: p.policy ? { ...p.policy, propertyId: undefined, updatedAt: undefined } : null,
     amenities: p.amenities.filter((a) => a.scopeKey === "PROPERTY").map(({ key, label, status, notes }) => ({ key, label, status, notes })),
     pricing: presentPricing(pricingFor("PROPERTY"), propertyUtility),
-    images: approved.map((i) => ({ id: i.id, category: i.category, slot: i.slot, unitId: i.unitId, roomId: i.roomId, url: imageUrl(i.id) })),
+    images: approved.map((i) => ({ id: i.id, category: i.category, slot: i.slot, unitId: i.unitId, roomId: i.roomId, width: i.width, height: i.height, url: imageUrl(i.id) })),
     publishedAt: p.publishedAt,
     disclosureLegend: {
       YES: "Yes",

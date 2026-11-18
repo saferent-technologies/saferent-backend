@@ -11,7 +11,7 @@ import { adminAuth } from "../lib/firebaseAdmin";
 import { enumQuery, found, idParam, paged, pagination } from "../lib/http";
 import { notify } from "../lib/notify";
 import { prisma } from "../lib/prisma";
-import { companyEmailSchema, parseInput, phoneE164Schema } from "../lib/validation";
+import { companyEmailSchema, parseInput, passwordSchema, phoneE164Schema } from "../lib/validation";
 import { can, me, syncRoleClaim } from "../middleware/auth";
 import { ROLES, ROLE_INFO, type RoleKey } from "../rbac/catalog";
 import {
@@ -205,12 +205,19 @@ const createSchema = z
     role: z.enum(ROLES),
     email: z.string().trim().toLowerCase().email().max(254).optional().or(z.literal("").transform(() => undefined)),
     phoneNumber: phoneE164Schema.optional().or(z.literal("").transform(() => undefined)),
+    // Staff: the creator sets the first password, so the person can sign in to the portal straight away.
+    password: passwordSchema.optional(),
+    requirePasswordChange: z.boolean().default(false),
   })
   .superRefine((v, ctx) => {
     if (ROLE_INFO[v.role].isStaff) {
       if (!v.email || !companyEmailSchema.safeParse(v.email).success) {
         ctx.addIssue({ code: "custom", path: ["email"], message: "Staff accounts need an @saferenttechnologies.com email." });
       }
+      if (!v.phoneNumber) ctx.addIssue({ code: "custom", path: ["phoneNumber"], message: "Enter the staff member's phone number." });
+      if (!v.password) ctx.addIssue({ code: "custom", path: ["password"], message: "Set a password for this staff account." });
+    } else if (v.password) {
+      ctx.addIssue({ code: "custom", path: ["password"], message: "This role signs in with a phone number and has no password." });
     } else if (!v.phoneNumber) {
       ctx.addIssue({ code: "custom", path: ["phoneNumber"], message: "This role signs in with a phone number." });
     }
@@ -218,7 +225,8 @@ const createSchema = z
 
 /**
  * POST /api/users — create an account (no public registration for these roles).
- * Staff: Firebase user with company email → "set your password" link emailed.
+ * Staff: company email + phone + password set by the creator → signs in to the portal with that
+ *        email + password (then the usual email OTP). `requirePasswordChange` forces a new password first.
  * Agents / service providers / customers: Firebase user with phone → sign in with phone OTP.
  */
 export async function createUser(req: Request, res: Response): Promise<void> {
@@ -234,14 +242,25 @@ export async function createUser(req: Request, res: Response): Promise<void> {
 
   const isStaff = ROLE_INFO[input.role].isStaff;
   // Reuse an existing Firebase account for this identity if there is one (no duplicate auth accounts).
-  const existingFirebase = await (input.email ? adminAuth.getUserByEmail(input.email) : adminAuth.getUserByPhoneNumber(input.phoneNumber!)).catch(() => null);
-  const firebaseUser =
-    existingFirebase ??
-    (await adminAuth.createUser({
-      displayName: input.fullName,
-      ...(input.email ? { email: input.email, emailVerified: false } : {}),
-      ...(input.phoneNumber ? { phoneNumber: input.phoneNumber } : {}),
-    }));
+  const byEmail = input.email ? await adminAuth.getUserByEmail(input.email).catch(() => null) : null;
+  const byPhone = input.phoneNumber ? await adminAuth.getUserByPhoneNumber(input.phoneNumber).catch(() => null) : null;
+  if (byEmail && byPhone && byEmail.uid !== byPhone.uid) fail("already-exists", REASONS.CONFLICT, "This phone number is already used by another sign-in account.");
+  const existingFirebase = byEmail ?? byPhone;
+  // Staff: the password set here works immediately (email marked verified: it's a company address the admin typed).
+  const credentials = isStaff && input.password ? { password: input.password, emailVerified: true } : {};
+  const firebaseUser = existingFirebase
+    ? await adminAuth.updateUser(existingFirebase.uid, {
+        displayName: input.fullName,
+        ...credentials,
+        ...(input.phoneNumber && !existingFirebase.phoneNumber ? { phoneNumber: input.phoneNumber } : {}),
+      })
+    : await adminAuth.createUser({
+        displayName: input.fullName,
+        ...(input.email ? { email: input.email, emailVerified: false } : {}),
+        ...(input.phoneNumber ? { phoneNumber: input.phoneNumber } : {}),
+        ...credentials,
+      });
+  if (isStaff && input.password) await adminAuth.revokeRefreshTokens(firebaseUser.uid); // any old session of a reused account ends
   await adminAuth.setCustomUserClaims(firebaseUser.uid, { role: input.role });
 
   const created = await prisma.$transaction(async (tx) => {
@@ -253,6 +272,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
         phoneNumber: input.phoneNumber ?? null,
         role: input.role,
         createdById: actor.id,
+        ...(isStaff && input.password ? { mustChangePassword: input.requirePasswordChange, passwordChangedAt: new Date() } : {}),
       },
     });
     if (input.role === "LANDLORD") await tx.landlordProfile.create({ data: { userId: user.id } });
@@ -263,7 +283,8 @@ export async function createUser(req: Request, res: Response): Promise<void> {
     return user;
   });
 
-  if (isStaff && input.email) {
+  // Old flow (no password given): email a "set your password" link. The password itself is never emailed or logged.
+  if (isStaff && input.email && !input.password) {
     try {
       const link = await adminAuth.generatePasswordResetLink(input.email, { url: `${env.APP_ORIGIN.split(",")[0].trim()}/employee` });
       await sendEmail(input.email, staffInviteEmail({ link, name: input.fullName, roleName: ROLE_INFO[input.role].name }));

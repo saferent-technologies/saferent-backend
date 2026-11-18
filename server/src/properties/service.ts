@@ -145,7 +145,7 @@ export const aggregateInclude = {
   policy: true,
   amenities: { orderBy: { label: "asc" } },
   pricing: { include: { charges: { orderBy: { kind: "asc" } } } },
-  images: { orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }], select: { id: true, unitId: true, roomId: true, inspectionId: true, category: true, slot: true, displayOrder: true, status: true, createdAt: true } },
+  images: { orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }], select: { id: true, unitId: true, roomId: true, inspectionId: true, category: true, slot: true, displayOrder: true, status: true, width: true, height: true, createdAt: true } },
   documents: { orderBy: { createdAt: "desc" }, select: { id: true, code: true, unitId: true, docType: true, originalName: true, status: true, verifiedAt: true, rejectionReason: true, createdAt: true, needsVerification: true, isCurrent: true, archivedAt: true } },
   assignments: { include: { user: { select: { id: true, fullName: true, role: true } } } },
 } satisfies Prisma.PropertyInclude;
@@ -164,7 +164,8 @@ export function completenessInput(p: PropertyAggregate): CompletenessInput {
     listingType: p.listingType,
     property: p,
     building: flatValues({ name: p.name, totalFloors: p.totalFloors, totalUnits: p.totalUnits, attributes: p.attributes }),
-    imageCount: p.images.filter((i) => i.status !== "REJECTED" && !i.inspectionId).length,
+    // 360° panoramas don't count toward the required photos.
+    imageCount: p.images.filter((i) => i.status !== "REJECTED" && !i.inspectionId && i.category !== "PANORAMA_360").length,
     units: p.units.map((u) => ({ id: u.id, values: flatValues(u as unknown as Record<string, unknown>), floorCount: u.floors.length })),
     rooms: p.rooms.map((r) => ({ bedCount: r.beds.length, rentPerBed: r.rentPerBed, securityDeposit: r.securityDeposit })),
     bedsWithRent: p.rooms.reduce((n, r) => n + r.beds.filter((b) => b.rent !== null).length, 0),

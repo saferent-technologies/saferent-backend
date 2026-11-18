@@ -11,7 +11,10 @@ import { consumeRateLimit } from "../lib/rateLimit";
 import { relativePath, removeStoredFile, sendStoredFile } from "../lib/uploads";
 import { propertyKey, recordStatus } from "../properties/service";
 import { parseInput } from "../lib/validation";
-import { can, me } from "../middleware/auth";
+import { can, isPortal, me } from "../middleware/auth";
+import { notifyStaff } from "../lib/notifyStaff";
+import { SUPPORT_QUEUE } from "../config/constants";
+import { dispatchSupportQueue, heartbeat, isOnline, isSupportAgent, onlineAgents, queueOrder, QUEUED_WHERE, ticketData } from "../services/supportQueue";
 import { and, enquiryWhere, maintenanceWhere, propertyWhere, ticketWhere, visitWhere } from "../rbac/access";
 
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
@@ -196,6 +199,24 @@ export async function closeMaintenance(req: Request, res: Response): Promise<voi
 
 /* ═══════════════ Support tickets ═══════════════ */
 
+/** Public face of a person on a ticket: { id, fullName, role } (role SUPPORT / ADMIN / SUPER_ADMIN for staff). */
+const PERSON = { id: true, fullName: true, role: true } as const;
+
+/**
+ * A staff member touching an unassigned ticket (reply, note, status change) takes it: assignedTo = them,
+ * and the owner gets a push so the app refreshes. Conditional update, so two agents can't both take it.
+ */
+async function claimTicket(ticket: { id: string; raisedById: string; assignedToId: string | null; subject: string }, staffId: string, notifyOwner: boolean): Promise<boolean> {
+  if (ticket.assignedToId || staffId === ticket.raisedById) return false;
+  const { count } = await prisma.supportTicket.updateMany({ where: { id: ticket.id, assignedToId: null }, data: { assignedToId: staffId, assignedAt: new Date(), agentSeenAt: new Date() } });
+  if (!count) return false;
+  if (notifyOwner) {
+    const agent = await prisma.user.findUnique({ where: { id: staffId }, select: { fullName: true } });
+    await notify(ticket.raisedById, "Your ticket is being handled", `${agent?.fullName ?? "A support agent"} is now looking into "${ticket.subject}".`, `/support/${ticket.id}`, undefined, ticketData(ticket.id));
+  }
+  return true;
+}
+
 const ticketSchema = z.object({
   category: z.enum(["TENANT_COMPLAINT", "LANDLORD_COMPLAINT", "PAYMENT", "ACCOUNT", "PROPERTY", "OTHER"]),
   subject: z.string().trim().min(5).max(150),
@@ -209,8 +230,18 @@ export async function createTicket(req: Request, res: Response): Promise<void> {
   const user = me(req);
   await consumeRateLimit(`ticket:${user.id}`, RATE_LIMITS.SUPPORT_TICKET.limit, RATE_LIMITS.SUPPORT_TICKET.windowMs);
   const input = parseInput(ticketSchema, req.body);
-  const ticket = await prisma.supportTicket.create({ data: { ...input, propertyId: input.propertyId ?? null, raisedById: user.id } });
-  res.status(201).json({ ticket });
+  const created = await prisma.supportTicket.create({ data: { ...input, propertyId: input.propertyId ?? null, raisedById: user.id, customerMessageAt: new Date() } });
+  // Straight to a free online support agent (Support badge + bell in the portal), else it waits in the queue.
+  await dispatchSupportQueue();
+  const ticket = await prisma.supportTicket.findUniqueOrThrow({ where: { id: created.id }, include: { assignedTo: { select: PERSON } } });
+  let queue: { position: number; total: number } | null = null;
+  if (!ticket.assignedToId) {
+    const order = await queueOrder();
+    queue = { position: order.indexOf(ticket.id) + 1 || order.length, total: order.length };
+    const link = `/support/${ticket.id}`;
+    await notify(user.id, "You're in the queue", `All our support agents are busy. You're number ${queue.position} in line for "${ticket.subject}". We'll notify you when someone picks it up.`, link, undefined, ticketData(ticket.id));
+  }
+  res.status(201).json({ ticket: { ...ticket, assignedTo: ticket.assignedTo ?? null, queue } });
 }
 
 /** GET /api/support/tickets — support staff: all; others: own. */
@@ -223,34 +254,112 @@ export async function listTickets(req: Request, res: Response): Promise<void> {
   const [items, total] = await Promise.all([
     prisma.supportTicket.findMany({
       where,
-      include: { raisedBy: { select: { id: true, fullName: true, role: true } }, assignedTo: { select: { id: true, fullName: true } }, _count: { select: { messages: true } } },
+      include: { raisedBy: { select: PERSON }, assignedTo: { select: PERSON }, connectedTo: { select: PERSON }, _count: { select: { messages: true } } },
       orderBy: { updatedAt: "desc" },
       skip: p.skip,
       take: p.take,
     }),
     prisma.supportTicket.count({ where }),
   ]);
-  res.json(paged(items, total, p));
+  const queued = items.some((t) => !t.assignedToId && (t.status === "OPEN" || t.status === "IN_PROGRESS")) ? await queueOrder() : [];
+  res.json(paged(items.map((t) => ({ ...t, assignedTo: t.assignedTo ?? null, connectedTo: t.connectedTo ?? null, queue: queueOf(queued, t.id), unread: t.assignedToId === user.id && agentUnread(t) })), total, p));
+}
+
+/** New for the assignee: not opened since it was assigned, or the owner wrote after they last looked. */
+export function agentUnread(t: { agentSeenAt: Date | null; customerMessageAt: Date | null; status: string }): boolean {
+  if (t.status === "RESOLVED" || t.status === "CLOSED") return false;
+  return !t.agentSeenAt || (!!t.customerMessageAt && t.customerMessageAt > t.agentSeenAt);
+}
+
+/** Waiting in the queue → { position, total } (1 = next); otherwise null. */
+function queueOf(order: string[], id: string): { position: number; total: number } | null {
+  const i = order.indexOf(id);
+  return i < 0 ? null : { position: i + 1, total: order.length };
 }
 
 /** GET /api/support/tickets/:id — with messages (internal notes hidden from customers). */
 export async function getTicket(req: Request, res: Response): Promise<void> {
   const user = me(req);
   const staff = can(req, "support.manage");
+  // Staff opening it in the portal: connect (greeting) when it's theirs to handle (assigned to them or nobody).
+  if (staff && isPortal(req)) await connectTicket(idParam(req), user, false);
   const ticket = found(
     await prisma.supportTicket.findFirst({
       where: and(ticketWhere(user), { id: idParam(req) }),
       include: {
         raisedBy: { select: { id: true, fullName: true, role: true, phoneNumber: staff, email: staff } },
-        assignedTo: { select: { id: true, fullName: true } },
+        assignedTo: { select: PERSON },
+        connectedTo: { select: PERSON },
         messages: { where: staff ? {} : { internal: false }, orderBy: { createdAt: "asc" } },
       },
     }),
     "Ticket",
   );
-  const authors = await prisma.user.findMany({ where: { id: { in: [...new Set(ticket.messages.map((m) => m.authorId))] } }, select: { id: true, fullName: true, role: true } });
+  const authors = await prisma.user.findMany({ where: { id: { in: [...new Set(ticket.messages.map((m) => m.authorId))] } }, select: PERSON });
   const byId = Object.fromEntries(authors.map((a) => [a.id, a]));
-  res.json({ ticket: { ...ticket, messages: ticket.messages.map((m) => ({ ...m, author: byId[m.authorId] ?? null })) }, canManage: staff });
+  // Every message carries an author object (a removed account still shows as one, never null).
+  const authorOf = (id: string) => byId[id] ?? { id, fullName: "Former user", role: null };
+  // The assignee opened it → clears the Support badge for this ticket.
+  if (ticket.assignedToId === user.id) await prisma.supportTicket.update({ where: { id: ticket.id }, data: { agentSeenAt: new Date() } });
+  const queue = !ticket.assignedToId && (ticket.status === "OPEN" || ticket.status === "IN_PROGRESS") ? queueOf(await queueOrder(), ticket.id) : null;
+  res.json({ ticket: { ...ticket, assignedTo: ticket.assignedTo ?? null, connectedTo: ticket.connectedTo ?? null, queue, messages: ticket.messages.map((m) => ({ ...m, author: authorOf(m.authorId) })) }, canManage: staff });
+}
+
+/** Full name as saved (extra spaces collapsed); "there" when missing. */
+const displayName = (name: string | null | undefined) => (name ?? "").trim().replace(/\s+/g, " ") || "there";
+
+/**
+ * Connect a staff member to a ticket: connectedTo / connectedAt, assignee if empty, OPEN → IN_PROGRESS,
+ * a greeting message from them in the chat and a push to the owner. Once per staff member:
+ *  - first connect (full names) → "Hi <owner>, I'm <staff> from SafeRent Support. I've opened your ticket …"
+ *  - another staff member taking over (explicit connect, or the new assignee opening it) → "<staff> has joined" message.
+ * `explicit` (POST …/connect) takes the ticket over; just opening it connects only if it's unassigned or theirs.
+ * Conditional updates, so two people opening it at once send one greeting. Returns whether it connected now.
+ */
+async function connectTicket(ticketId: string, staff: { id: string; fullName: string }, explicit: boolean): Promise<boolean> {
+  const t = await prisma.supportTicket.findUnique({ where: { id: ticketId }, select: { id: true, subject: true, status: true, raisedById: true, assignedToId: true, connectedToId: true, raisedBy: { select: { fullName: true } } } });
+  if (!t || t.raisedById === staff.id || t.status === "RESOLVED" || t.status === "CLOSED") return false;
+  if (t.connectedToId === staff.id) return false; // already connected: never greet twice
+  if (!explicit && t.assignedToId && t.assignedToId !== staff.id) return false; // someone else's ticket: viewing doesn't take it
+  const takeover = !!t.connectedToId;
+  const now = new Date();
+  const ownerName = displayName(t.raisedBy.fullName);
+  const staffName = displayName(staff.fullName);
+  const body = takeover
+    ? `Hi ${ownerName}, I'm ${staffName} from SafeRent Support. I've joined your ticket '${t.subject}' and I'll take it from here.`
+    : `Hi ${ownerName}, I'm ${staffName} from SafeRent Support. I've opened your ticket '${t.subject}' and I'm looking into it now.`;
+  const done = await prisma.$transaction(async (tx) => {
+    const { count } = await tx.supportTicket.updateMany({
+      where: { id: t.id, connectedToId: t.connectedToId, status: { in: ["OPEN", "IN_PROGRESS"] } },
+      data: {
+        connectedToId: staff.id,
+        connectedAt: now,
+        status: "IN_PROGRESS",
+        agentSeenAt: now,
+        ...(explicit || !t.assignedToId ? { assignedToId: staff.id, ...(t.assignedToId !== staff.id ? { assignedAt: now } : {}) } : {}),
+      },
+    });
+    if (!count) return false;
+    await tx.ticketMessage.create({ data: { ticketId: t.id, authorId: staff.id, body, internal: false, createdAt: now } });
+    return true;
+  });
+  if (!done) return false;
+  await notify(t.raisedById, "SafeRent Support", `${staffName} has joined your ticket`, `/support/${t.id}`, undefined, ticketData(t.id));
+  console.info("[support] connected", { ticketId: t.id, staffId: staff.id, takeover });
+  // Moving the ticket off the previous assignee frees their slot in the queue.
+  if (explicit && t.assignedToId && t.assignedToId !== staff.id) void dispatchSupportQueue();
+  return true;
+}
+
+/** POST /api/v1/support/tickets/:id/connect — staff explicitly connect to / take over a ticket. */
+export async function connectToTicket(req: Request, res: Response): Promise<void> {
+  const user = me(req);
+  const ticket = found(await prisma.supportTicket.findUnique({ where: { id: idParam(req) }, select: { id: true, status: true, raisedById: true, connectedToId: true } }), "Ticket");
+  if (ticket.raisedById === user.id) fail("failed-precondition", REASONS.INVALID_STATE, "You can't handle your own ticket.");
+  if (ticket.status === "RESOLVED" || ticket.status === "CLOSED") fail("failed-precondition", REASONS.INVALID_STATE, "This ticket is already resolved.");
+  const connected = await connectTicket(ticket.id, user, true);
+  const t = await prisma.supportTicket.findUniqueOrThrow({ where: { id: ticket.id }, select: { connectedAt: true, connectedTo: { select: PERSON }, assignedTo: { select: PERSON }, status: true } });
+  res.json({ connected, connectedTo: t.connectedTo ?? null, connectedAt: t.connectedAt, assignedTo: t.assignedTo ?? null, status: t.status });
 }
 
 const messageSchema = z.object({ body: z.string().trim().min(1).max(5000), internal: z.boolean().default(false) });
@@ -265,11 +374,21 @@ export async function addTicketMessage(req: Request, res: Response): Promise<voi
   const internal = staff && input.internal;
   await prisma.$transaction([
     prisma.ticketMessage.create({ data: { ticketId: ticket.id, authorId: user.id, body: input.body, internal } }),
-    prisma.supportTicket.update({ where: { id: ticket.id }, data: { status: staff && ticket.status === "OPEN" ? "IN_PROGRESS" : ticket.status } }),
+    prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: {
+        status: staff && ticket.status === "OPEN" ? "IN_PROGRESS" : ticket.status,
+        ...(user.id === ticket.raisedById ? { customerMessageAt: new Date() } : {}),
+        ...(user.id === ticket.assignedToId ? { agentSeenAt: new Date() } : {}),
+      },
+    }),
   ]);
-  if (!internal) {
-    const recipient = user.id === ticket.raisedById ? ticket.assignedToId : ticket.raisedById;
-    await notify(recipient, `Reply on: ${ticket.subject}`, input.body.slice(0, 140), `/support/${ticket.id}`);
+  // Staff replying to / noting an unassigned ticket picks it up. A public reply already pushes the owner below.
+  if (staff) await claimTicket(ticket, user.id, internal);
+  // Staff reply → the owner gets a notification + push (the app refreshes the chat).
+  // Owner reply → no notification rows for staff: the assignee's Support badge goes up and the portal rings.
+  if (!internal && user.id !== ticket.raisedById) {
+    await notify(ticket.raisedById, `Reply on: ${ticket.subject}`, input.body.slice(0, 140), `/support/${ticket.id}`, undefined, ticketData(ticket.id));
   }
   res.status(201).json({ ok: true });
 }
@@ -288,14 +407,60 @@ export async function updateTicket(req: Request, res: Response): Promise<void> {
     const assignee = await prisma.user.findFirst({ where: { id: input.assignedToId, accountStatus: "ACTIVE", role: { in: ["SUPPORT", "ADMIN", "SUPER_ADMIN"] } } });
     if (!assignee) fail("invalid-argument", REASONS.INVALID_INPUT, "Tickets can only be assigned to support staff.");
   }
+  const actorId = me(req).id;
+  // Changing status / priority on an unassigned ticket without naming an assignee = this agent picks it up.
+  const selfClaim = input.assignedToId === undefined && !ticket.assignedToId && (input.status !== undefined || input.priority !== undefined) && actorId !== ticket.raisedById;
+  const assignedToId = selfClaim ? actorId : input.assignedToId;
   await prisma.supportTicket.update({
     where: { id: ticket.id },
-    data: { ...input, ...(input.status === "RESOLVED" ? { resolvedAt: new Date() } : {}) },
+    data: {
+      ...input,
+      ...(assignedToId !== undefined ? { assignedToId, assignedAt: assignedToId ? new Date() : null, agentSeenAt: assignedToId === actorId ? new Date() : null } : {}),
+      ...(input.status === "RESOLVED" ? { resolvedAt: new Date() } : {}),
+    },
   });
-  await logActivity(req, "ticket.update", "support_ticket", ticket.id, input);
-  if (input.status && input.status !== ticket.status) await notify(ticket.raisedById, "Ticket update", `"${ticket.subject}" is now ${input.status.replace("_", " ").toLowerCase()}.`, `/support/${ticket.id}`);
-  if (input.assignedToId) await notify(input.assignedToId, "Ticket assigned to you", ticket.subject, `/support/${ticket.id}`);
+  await logActivity(req, "ticket.update", "support_ticket", ticket.id, { ...input, assignedToId });
+  const link = `/support/${ticket.id}`;
+  const statusChanged = !!input.status && input.status !== ticket.status;
+  // A slot freed up (resolved / closed / unassigned / moved) or a ticket went back to the queue → drain it.
+  if ((statusChanged && (input.status === "RESOLVED" || input.status === "CLOSED")) || (assignedToId !== undefined && assignedToId !== ticket.assignedToId) || (statusChanged && !ticket.assignedToId)) {
+    void dispatchSupportQueue();
+  }
+  if (statusChanged) await notify(ticket.raisedById, "Ticket update", `"${ticket.subject}" is now ${input.status!.replace("_", " ").toLowerCase()}.`, link, undefined, ticketData(ticket.id));
+  if (assignedToId && assignedToId !== ticket.assignedToId) {
+    // The new assignee sees it on their Support badge (unread until opened), no notification row.
+    // Owner hears who is handling it (skipped when the status push above already refreshes the app).
+    if (!statusChanged) {
+      const agent = await prisma.user.findUnique({ where: { id: assignedToId }, select: { fullName: true } });
+      await notify(ticket.raisedById, "Your ticket is being handled", `${agent?.fullName ?? "A support agent"} is now looking into "${ticket.subject}".`, link, undefined, ticketData(ticket.id));
+    }
+  }
   res.json({ ok: true });
+}
+
+const presenceSchema = z.object({ available: z.boolean() });
+
+/** POST /api/support/presence — portal heartbeat every 30 s; { available: false } = Away (no new tickets). */
+export async function supportPresence(req: Request, res: Response): Promise<void> {
+  const { available } = parseInput(presenceSchema, req.body);
+  await heartbeat(me(req).id, available);
+  res.json({ available, agent: await isSupportAgent(me(req).id) });
+}
+
+/** GET /api/support/queue — staff: who is online, how busy, and how many tickets wait. */
+export async function supportQueue(req: Request, res: Response): Promise<void> {
+  const user = me(req);
+  const [agents, queued, self] = await Promise.all([
+    onlineAgents(),
+    prisma.supportTicket.count({ where: QUEUED_WHERE }),
+    prisma.user.findUnique({ where: { id: user.id }, select: { supportSeenAt: true } }),
+  ]);
+  res.json({
+    capacity: SUPPORT_QUEUE.AGENT_CAPACITY,
+    queued,
+    me: { online: isOnline(self?.supportSeenAt), agent: await isSupportAgent(user.id) },
+    agents: agents.map((a) => ({ id: a.id, fullName: a.fullName, openTickets: a.load, free: a.load < SUPPORT_QUEUE.AGENT_CAPACITY })),
+  });
 }
 
 /* ═══════════════ Enquiries & visits ═══════════════ */
@@ -405,6 +570,7 @@ const fraudSchema = z.object({ propertyId: z.string().uuid().optional(), reason:
 export async function createFraudReport(req: Request, res: Response): Promise<void> {
   const input = parseInput(fraudSchema, req.body);
   const report = await prisma.fraudReport.create({ data: { ...input, propertyId: input.propertyId ?? null, reportedById: me(req).id } });
+  await notifyStaff("fraud.manage", "New fraud report", "A listing was reported as suspicious. Please take a look.", "/moderation", me(req).id);
   res.status(201).json({ report: { id: report.id, status: report.status } });
 }
 

@@ -65,6 +65,7 @@ import {
 import { canChangeActiveStatus, canPublish, canReview, canSubmit, canUnpublish, publicationAfterEdit } from "../workflow";
 import { evaluateForUser } from "../../services/referral.service";
 import { flagHomeAlertsTx } from "../../services/homeAlerts";
+import { notifyStaff } from "../../lib/notifyStaff";
 import { dateChangesFor } from "../../controllers/leaseDates.controller";
 
 /** Building fields removed from some property types (e.g. APARTMENT parkingAvailable → Amenities). */
@@ -474,6 +475,7 @@ export async function submitProperty(req: Request, res: Response): Promise<void>
     await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "publicationStatus", from: property.publicationStatus, to: "PENDING_VERIFICATION" });
     await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "verificationStatus", from: property.verificationStatus, to: "PENDING" });
   });
+  await notifyStaff("listings.approve", "New property to review", `"${property.title ?? property.code}" was submitted for verification.`, `/properties/${property.id}`, me(req).id);
   res.locals.message = "Submitted for verification";
   res.json({ property: propertySummary(await prisma.property.findUniqueOrThrow({ where: { id: property.id } })) });
 }

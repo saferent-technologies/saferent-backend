@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { flagHomeAlertsTx } from "../../services/homeAlerts";
 import type { Request, Response } from "express";
 import { REASONS } from "../../config/constants";
 import { fail } from "../../lib/errors";
@@ -54,6 +55,7 @@ export async function createRoom(req: Request, res: Response): Promise<void> {
         });
       }
       await audit(tx, req, { propertyId: property.id, entityType: "ROOM", entityId: created.id, action: "room.create", newValue: { code, ...data, beds } });
+      if (beds && data.availabilityStatus === "AVAILABLE") await flagHomeAlertsTx(tx, property.id);
       return created;
     });
     res.locals.message = "Room added";
@@ -145,6 +147,7 @@ export async function updateBed(req: Request, res: Response): Promise<void> {
       if (r.count === 0) fail("already-exists", REASONS.VERSION_CONFLICT, "This bed was changed by someone else. Reload and try again.");
       if (Object.keys(delta.new).length) await audit(tx, req, { propertyId: property.id, entityType: "BED", entityId: bed.id, action: "bed.update", oldValue: delta.old, newValue: delta.new });
       if (data.availabilityStatus) await recordStatus(tx, req, { propertyId: property.id, entityType: "BED", entityId: bed.id, field: "availabilityStatus", from: bed.availabilityStatus, to: data.availabilityStatus });
+      if (data.availabilityStatus === "AVAILABLE" && bed.availabilityStatus !== "AVAILABLE") await flagHomeAlertsTx(tx, property.id);
     });
   } catch (e) {
     if (isUnique(e)) fail("already-exists", REASONS.CONFLICT, "This bed number already exists in the room.");
@@ -198,6 +201,7 @@ export async function releaseBedTx(req: Request, tx: Prisma.TransactionClient, p
   await tx.propertyBed.update({ where: { id: bedId }, data: { tenantId: null, leaseId: null, occupiedSince: null, availabilityStatus: "AVAILABLE", version: { increment: 1 } } });
   await tx.bedAssignment.updateMany({ where: { bedId, endedAt: null }, data: { endedAt: new Date() } });
   await recordStatus(tx, req, { propertyId, entityType: "BED", entityId: bedId, field: "availabilityStatus", from: "OCCUPIED", to: "AVAILABLE", reason });
+  await flagHomeAlertsTx(tx, propertyId);
   await audit(tx, req, { propertyId, entityType: "BED", entityId: bedId, action: "bed.release_tenant", oldValue: { tenantId: bed.tenantId, leaseId: bed.leaseId }, newValue: { reason } });
 }
 

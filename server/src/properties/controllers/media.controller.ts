@@ -14,6 +14,13 @@ import { imageUrl } from "../presenters";
 import { documentVerifySchema, imageUpdateSchema, imageUploadSchema } from "../schemas";
 import { audit, childKey, inScope, isModerator, withProperty } from "../service";
 import { editTarget } from "../revisions";
+import { readFile, writeFile } from "node:fs/promises";
+import { imageSize } from "../../lib/imageSize";
+import { stripImageMetadata } from "../../lib/imageScrub";
+
+/** 360° photos: own limit per property, JPG ≤ 6 MB, ratio ≥ 1.9, ≤ 4096 × 2048. */
+const MAX_PANORAMAS = 5;
+const PANORAMA_MAX_BYTES = 6 * 1024 * 1024;
 import { evaluateForUser } from "../../services/referral.service";
 
 
@@ -46,10 +53,35 @@ export const uploadImages = cleanupOnError(async (req, res) => {
   if (input.unitId && !(await prisma.propertyUnit.count({ where: { id: input.unitId, propertyId: property.id } }))) fail("invalid-argument", REASONS.INVALID_INPUT, "Unit not found in this property.");
   if (input.roomId && !(await prisma.propertyRoom.count({ where: { id: input.roomId, propertyId: property.id } }))) fail("invalid-argument", REASONS.INVALID_INPUT, "Room not found in this property.");
   const inspection = typeof inspectionId === "string" && inspectionId ? found(await prisma.propertyInspection.findFirst({ where: { id: inspectionId, propertyId: property.id } }), "Inspection") : null;
-  const existing = await prisma.propertyImage.count({ where: { propertyId: property.id } });
-  // Limit from Admin → App configuration → Properties.
-  const maxImages = (await appConfig()).properties.maxImages;
-  if (existing + files.length > maxImages) fail("invalid-argument", REASONS.INVALID_INPUT, `A property can have at most ${maxImages} photos.`);
+  const panorama = !inspection && input.category === "PANORAMA_360";
+  // Panoramas have their own limit; ordinary photos use the limit from Admin → App configuration → Properties.
+  const existing = await prisma.propertyImage.count({ where: { propertyId: property.id, category: panorama ? "PANORAMA_360" : { not: "PANORAMA_360" } } });
+  if (panorama) {
+    if (existing + files.length > MAX_PANORAMAS) fail("invalid-argument", REASONS.INVALID_INPUT, `A property can have at most ${MAX_PANORAMAS} 360° photos.`);
+  } else {
+    const maxImages = (await appConfig()).properties.maxImages;
+    if (existing + files.length > maxImages) fail("invalid-argument", REASONS.INVALID_INPUT, `A property can have at most ${maxImages} photos.`);
+  }
+  // Read sizes, check panoramas, strip EXIF / GPS (the file on disk is rewritten without metadata).
+  const sizes: Array<{ width: number; height: number } | null> = [];
+  for (const f of files) {
+    const buf = await readFile(f.path);
+    const size = imageSize(buf);
+    if (panorama) {
+      if (f.mimetype !== "image/jpeg") fail("invalid-argument", REASONS.INVALID_INPUT, "360° photos must be JPG.");
+      if (buf.length > PANORAMA_MAX_BYTES) fail("invalid-argument", REASONS.INVALID_INPUT, "A 360° photo can be up to 6 MB.");
+      if (!size || size.width / size.height < 1.9) fail("invalid-argument", REASONS.INVALID_INPUT, "Not a panorama");
+      if (size!.width > 4096 || size!.height > 2048) fail("invalid-argument", REASONS.INVALID_INPUT, "360° photos can be up to 4096 × 2048 pixels. Please export a smaller size.");
+    }
+    if (f.mimetype === "image/jpeg" || f.mimetype === "image/png") {
+      try {
+        await writeFile(f.path, stripImageMetadata(buf, f.mimetype));
+      } catch {
+        if (panorama) fail("invalid-argument", REASONS.INVALID_INPUT, "That image file looks damaged. Please export it again.");
+      }
+    }
+    sizes.push(size);
+  }
   const user = me(req);
   const created = await withProperty(property.id, async (tx) => {
     const rows = [];
@@ -66,6 +98,8 @@ export const uploadImages = cleanupOnError(async (req, res) => {
             displayOrder: existing + i,
             filePath: storage.keyFor(f),
             mimeType: f.mimetype,
+            width: sizes[i]?.width ?? null,
+            height: sizes[i]?.height ?? null,
             uploadedById: user.id,
             // Inspection evidence is not public listing content; it never needs listing moderation.
             status: inspection ? "APPROVED" : "PENDING",
@@ -77,7 +111,7 @@ export const uploadImages = cleanupOnError(async (req, res) => {
     return rows;
   });
   res.locals.message = `${created.length} photo(s) uploaded`;
-  res.status(201).json({ images: created.map((i) => ({ id: i.id, category: i.category, slot: i.slot, unitId: i.unitId, roomId: i.roomId, status: i.status, displayOrder: i.displayOrder, url: imageUrl(i.id) })) });
+  res.status(201).json({ images: created.map((i) => ({ id: i.id, category: i.category, slot: i.slot, unitId: i.unitId, roomId: i.roomId, status: i.status, displayOrder: i.displayOrder, width: i.width, height: i.height, url: imageUrl(i.id) })) });
 });
 
 /** PATCH /api/v1/properties/:propertyId/images/:imageId — category / display order. */

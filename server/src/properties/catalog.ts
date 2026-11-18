@@ -46,6 +46,7 @@ export const IMAGE_CATEGORIES = [
   "METER_READING",
   "INSPECTION",
   "OTHER",
+  "PANORAMA_360",
 ] as const;
 
 export const DOCUMENT_TYPES = [

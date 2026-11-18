@@ -208,6 +208,8 @@ enum ImageCategory {
   METER_READING
   INSPECTION
   OTHER
+  /// 360° / equirectangular panorama (ratio ≥ 1.9). Never the cover; own limit.
+  PANORAMA_360
 }
 
 enum InspectionType {
@@ -586,6 +588,10 @@ model User {
   mustChangePassword Boolean       @default(false) @map("must_change_password")
   passwordChangedAt  DateTime?     @map("password_changed_at")
   lastLoginAt        DateTime?     @map("last_login_at")
+  /// Support agents: last portal heartbeat while "Available" (online = within the last 90 s). Null = away / signed out.
+  supportSeenAt      DateTime?     @map("support_seen_at")
+  /// Support agents: when the queue last gave them a ticket (round robin between equally free agents).
+  supportAssignedAt  DateTime?     @map("support_assigned_at")
   createdById        String?       @map("created_by_id") @db.Char(36)
   createdAt          DateTime      @default(now()) @map("created_at")
   updatedAt          DateTime      @updatedAt @map("updated_at")
@@ -609,6 +615,7 @@ model User {
   assignedMaintenance MaintenanceRequest[] @relation("MaintenanceProvider")
   tickets             SupportTicket[]      @relation("TicketRaisedBy")
   assignedTickets     SupportTicket[]      @relation("TicketAssignee")
+  connectedTickets    SupportTicket[]      @relation("TicketConnectedTo")
   notifications       Notification[]
 
   /// Approximate area (≈1 km, 2 decimals) sent by the app — only for search ranking, counts and alerts.
@@ -1252,6 +1259,9 @@ model PropertyImage {
   displayOrder Int           @default(0) @map("display_order")
   filePath     String        @map("file_path") @db.VarChar(255)
   mimeType     String        @map("mime_type") @db.VarChar(60)
+  /// Pixel size read from the file (null for old uploads).
+  width        Int?
+  height       Int?
   status       ReviewStatus  @default(PENDING)
   reviewedById String?       @map("reviewed_by_id") @db.Char(36)
   uploadedById String        @map("uploaded_by_id") @db.Char(36)
@@ -2141,15 +2151,26 @@ model SupportTicket {
   assignedToId String?        @map("assigned_to_id") @db.Char(36)
   propertyId   String?        @map("property_id") @db.Char(36)
   resolvedAt   DateTime?      @map("resolved_at")
+  /// When an agent was given this ticket (auto queue or manual). Null while it waits in the queue.
+  assignedAt   DateTime?      @map("assigned_at")
+  /// Last message from the ticket owner (create or reply): drives the agent's unread badge.
+  customerMessageAt DateTime? @map("customer_message_at")
+  /// Staff member the owner is talking to (greeted the owner when they opened the ticket). Null = nobody yet.
+  connectedToId String?       @map("connected_to_id") @db.Char(36)
+  connectedAt  DateTime?      @map("connected_at")
+  /// When the assignee last opened the ticket. Unread = never opened since assignment or a newer owner message.
+  agentSeenAt  DateTime?      @map("agent_seen_at")
   createdAt    DateTime       @default(now()) @map("created_at")
   updatedAt    DateTime       @updatedAt @map("updated_at")
 
   raisedBy   User            @relation("TicketRaisedBy", fields: [raisedById], references: [id])
   assignedTo User?           @relation("TicketAssignee", fields: [assignedToId], references: [id])
+  connectedTo User?          @relation("TicketConnectedTo", fields: [connectedToId], references: [id])
   messages   TicketMessage[]
 
   @@index([raisedById])
   @@index([status, assignedToId])
+  @@index([assignedToId, status, createdAt])
   @@map("support_tickets")
 }
 

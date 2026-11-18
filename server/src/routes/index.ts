@@ -10,6 +10,7 @@ import * as announcements from "../controllers/announcements.controller";
 import * as idVault from "../controllers/idVault.controller";
 import * as homeAlerts from "../controllers/homeAlerts.controller";
 import * as userArea from "../controllers/userArea.controller";
+import * as badges from "../controllers/badges.controller";
 import * as profile from "../controllers/profile.controller";
 import * as assignments from "../controllers/properties.controller";
 import * as rentals from "../controllers/rentals.controller";
@@ -380,6 +381,7 @@ api.post("/maintenance", p("maintenance.create"), uploadImages("maintenance-phot
 api.get("/maintenance/options", p("maintenance.view"), tenantReq.requestOptions);
 api.get("/requests/options", p("maintenance.view"), tenantReq.requestOptions);
 /* Tenant "Open to new homes" alert. */
+api.get("/me/badges", p(), badges.myBadges);
 api.put("/me/location", p(), userArea.putMyLocation);
 api.get("/me/home-alert", p(), homeAlerts.getHomeAlert);
 api.put("/me/home-alert", p(), homeAlerts.putHomeAlert);
@@ -421,6 +423,12 @@ api.post("/support/tickets", p("support.create"), ops.createTicket);
 api.get("/support/tickets/:id", p(), requireAnyPermission("support.create", "support.manage"), ops.getTicket);
 api.post("/support/tickets/:id/messages", p(), requireAnyPermission("support.create", "support.manage"), ops.addTicketMessage);
 api.patch("/support/tickets/:id", p("support.manage"), ops.updateTicket);
+api.post("/support/tickets/:id/connect", p("support.manage"), ops.connectToTicket);
+// Staff-portal alias of the ticket detail (opening it connects the staff member, see getTicket).
+api.get("/admin/support/tickets/:id", p("support.manage"), ops.getTicket);
+api.post("/admin/support/tickets/:id/connect", p("support.manage"), ops.connectToTicket);
+api.post("/support/presence", p("support.manage"), ops.supportPresence);
+api.get("/support/queue", p("support.manage"), ops.supportQueue);
 
 /* ─── Reports, settings, subscriptions, audit ─── */
 api.get("/reports/overview", p("reports.view"), insights.overviewReport);

@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { flagHomeAlertsTx } from "../../services/homeAlerts";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { REASONS } from "../../config/constants";
@@ -76,6 +77,8 @@ export async function createUnit(req: Request, res: Response): Promise<void> {
       if (body.pricing !== undefined) await savePricing(tx, req, property, created.id, body.pricing);
       await audit(tx, req, { propertyId: property.id, entityType: "UNIT", entityId: created.id, action: "unit.create", newValue: { code, ...body.values } });
       await recordStatus(tx, req, { propertyId: property.id, entityType: "UNIT", entityId: created.id, field: "availabilityStatus", from: null, to: created.availabilityStatus });
+      // A new available unit on a live listing → "Open to new homes" alerts (no-op while not live).
+      if (created.availabilityStatus === "AVAILABLE") await flagHomeAlertsTx(tx, property.id);
       return created;
     });
     res.locals.message = `${type.unitLabel ?? "Unit"} added`;
@@ -188,6 +191,8 @@ export async function updateUnit(req: Request, res: Response): Promise<void> {
       if (Object.keys(delta.new).length) await audit(tx, req, { propertyId: property.id, entityType: "UNIT", entityId: unit.id, action: "unit.update", oldValue: delta.old, newValue: delta.new });
       if (body.columns.availabilityStatus) {
         await recordStatus(tx, req, { propertyId: property.id, entityType: "UNIT", entityId: unit.id, field: "availabilityStatus", from: unit.availabilityStatus, to: String(body.columns.availabilityStatus) });
+        // Became available again → home alerts (each user still gets one alert per listing).
+        if (body.columns.availabilityStatus === "AVAILABLE" && unit.availabilityStatus !== "AVAILABLE") await flagHomeAlertsTx(tx, property.id);
       }
     });
   } catch (error) {

@@ -3,6 +3,7 @@ import { notify } from "../lib/notify";
 import { prisma } from "../lib/prisma";
 import { distanceMeters } from "../properties/nearby";
 import { normKey } from "../properties/locations";
+import { env } from "../config/env";
 
 /*
  * "Open to new homes" matching. A listing is queued (homeAlertPendingAt) when it goes live or a unit /
@@ -18,7 +19,28 @@ const DAY = 86_400_000;
 
 /** Queue a live listing for matching (inside the transaction that made it live / freed a unit). */
 export async function flagHomeAlertsTx(tx: Prisma.TransactionClient, propertyId: string): Promise<void> {
-  await tx.property.updateMany({ where: { id: propertyId, revisionOfId: null }, data: { homeAlertPendingAt: new Date() } });
+  const { count } = await tx.property.updateMany({ where: { id: propertyId, revisionOfId: null }, data: { homeAlertPendingAt: new Date() } });
+  if (count) runHomeAlertsSoon();
+}
+
+/**
+ * Match a few seconds after the change commits (the 10-minute job is only the safety net).
+ * Debounced: several flags in a row → one run.
+ */
+let soon: NodeJS.Timeout | null = null;
+export function runHomeAlertsSoon(delayMs = 3000): void {
+  if (soon) return;
+  soon = setTimeout(() => {
+    soon = null;
+    void processHomeAlerts().catch((err) => console.error("[home-alerts] run failed", (err as Error).message));
+  }, delayMs);
+  soon.unref?.();
+}
+
+/** Absolute, no-login URL of a listing photo (FCM / the app can load it without a token). */
+function publicPhotoUrl(imageId: string): string {
+  const origin = (env.PUBLIC_API_ORIGIN ?? env.APP_LINK_ORIGIN ?? env.APP_ORIGIN.split(",")[0]).trim().replace(/\/+$/, "");
+  return `${origin}/api/v1/public/images/${imageId}`;
 }
 
 type Offer = { rent: number | null; label: string };
@@ -66,12 +88,18 @@ export async function processHomeAlerts(): Promise<number> {
 async function matchListing(propertyId: string): Promise<number> {
   const p = await prisma.property.findUnique({
     where: { id: propertyId },
-    select: { id: true, ownerId: true, publicationStatus: true, activeStatus: true, latitude: true, longitude: true, locality: true, city: true, propertyTypeKey: true, type: { select: { label: true } }, images: { where: { status: "APPROVED", inspectionId: null }, orderBy: { displayOrder: "asc" }, take: 1, select: { id: true } } },
+    select: { id: true, ownerId: true, title: true, publicationStatus: true, activeStatus: true, latitude: true, longitude: true, locality: true, city: true, propertyTypeKey: true, type: { select: { label: true } }, images: { where: { status: "APPROVED", inspectionId: null, category: { not: "PANORAMA_360" } }, orderBy: { displayOrder: "asc" }, take: 1, select: { id: true } } },
   });
-  if (!p || p.publicationStatus !== "PUBLISHED" || p.activeStatus !== "ACTIVE") return 0;
+  if (!p || p.publicationStatus !== "PUBLISHED" || p.activeStatus !== "ACTIVE") {
+    console.info("[home-alerts] skipped, not live", { propertyId });
+    return 0;
+  }
   const hasPoint = p.latitude !== null && p.longitude !== null;
   const offers = await offersOf(p.id, p.type.label);
-  if (!offers.length) return 0;
+  if (!offers.length) {
+    console.info("[home-alerts] skipped, nothing available", { propertyId: p.id });
+    return 0;
+  }
   const lat = hasPoint ? Number(p.latitude) : 0;
   const lng = hasPoint ? Number(p.longitude) : 0;
 
@@ -93,7 +121,10 @@ async function matchListing(propertyId: string): Promise<number> {
     },
     take: 5000,
   });
-  if (!alerts.length) return 0;
+  if (!alerts.length) {
+    console.info("[home-alerts] matched", { propertyId: p.id, candidates: 0, matched: 0, pushed: 0 });
+    return 0;
+  }
   const [applied, already, leased] = await Promise.all([
     prisma.rentalApplication.findMany({ where: { propertyId: p.id, tenantId: { in: alerts.map((a) => a.userId) } }, select: { tenantId: true } }),
     prisma.homeAlertMatch.findMany({ where: { propertyId: p.id, userId: { in: alerts.map((a) => a.userId) } }, select: { userId: true } }),
@@ -101,20 +132,30 @@ async function matchListing(propertyId: string): Promise<number> {
   ]);
   const skip = new Set([...applied.map((x) => x.tenantId), ...already.map((x) => x.userId), ...leased.map((x) => x.tenantId)]);
   const where = p.locality ?? p.city ?? "your area";
-  const imageUrl = p.images[0] ? `/api/v1/files/property-images/${p.images[0].id}` : null;
+  const name = p.title?.trim() || p.type.label;
+  const imageUrl = p.images[0] ? publicPhotoUrl(p.images[0].id) : null;
   const since = new Date(Date.now() - DAY);
   let pushed = 0;
+  let matched = 0;
 
   for (const a of alerts) {
     if (skip.has(a.userId)) continue;
     const types = Array.isArray(a.propertyTypes) ? (a.propertyTypes as string[]) : [];
     if (types.length && !types.includes(p.propertyTypeKey)) continue;
-    const near = hasPoint && a.latitude !== null && a.longitude !== null && distanceMeters(lat, lng, Number(a.latitude), Number(a.longitude)) <= a.radiusKm * 1000;
-    const samePlace = a.localityKey ? !!localityKey && a.localityKey === localityKey : !!a.cityKey && a.cityKey === cityKey;
-    if (!near && !samePlace) continue;
-    const fits = offers.filter((o) => a.maxRent === null || (o.rent !== null && o.rent <= a.maxRent));
-    if (!fits.length) continue;
-    const best = fits.reduce((m, o) => (o.rent !== null && (m.rent === null || o.rent < m.rent) ? o : m), fits[0]);
+    // Both have a point → distance only (haversine ≤ radiusKm). Otherwise same locality / city (case-insensitive keys).
+    const alertHasPoint = a.latitude !== null && a.longitude !== null;
+    const inArea =
+      hasPoint && alertHasPoint
+        ? distanceMeters(lat, lng, Number(a.latitude), Number(a.longitude)) <= a.radiusKm * 1000
+        : a.localityKey
+          ? !!localityKey && a.localityKey === localityKey
+          : !!a.cityKey && a.cityKey === cityKey;
+    if (!inArea) continue;
+    // Lowest available rent must be within maxRent (no limit when maxRent is null).
+    const priced = offers.filter((o) => o.rent !== null).sort((x, y) => x.rent! - y.rent!);
+    const lowest = priced[0]?.rent ?? null;
+    if (a.maxRent !== null && (lowest === null || lowest > a.maxRent)) continue;
+    matched++;
 
     const today = await prisma.homeAlertMatch.count({ where: { userId: a.userId, pushed: true, createdAt: { gte: since } } });
     const push = today < DAILY_PUSHES;
@@ -124,14 +165,15 @@ async function matchListing(propertyId: string): Promise<number> {
       continue; // matched already (another run)
     }
     if (push) {
-      const body = `${best.label} in ${where}${best.rent !== null ? ` · ${inr(best.rent)}/month` : ""}`;
-      await notify(a.userId, "New home near you", body, `/homes/${p.id}`, undefined, { type: "HOME_ALERT", propertyId: p.id }, { dataOnly: true, imageUrl });
+      const body = `${name} in ${where}${lowest !== null ? `, ${inr(lowest)}/month` : ""}`;
+      // In-app row + FCM (notification block on channel saferent_default; data: link, imageUrl, type, propertyId).
+      await notify(a.userId, "New home near you", body, `/listings/${p.id}`, undefined, { type: "HOME_ALERT", propertyId: p.id }, { imageUrl });
       pushed++;
     } else {
       await sendDigest(a.userId, a.lastDigestAt);
     }
   }
-  console.info("[home-alerts] matched", { propertyId: p.id, pushed });
+  console.info("[home-alerts] matched", { propertyId: p.id, candidates: alerts.length, matched, pushed });
   return pushed;
 }
 
@@ -144,5 +186,5 @@ async function sendDigest(userId: string, lastDigestAt: Date | null) {
   if (!claimed.count) return;
   const extra = await prisma.homeAlertMatch.count({ where: { userId, pushed: false, createdAt: { gte: startOfDay } } });
   const n = Math.max(1, extra);
-  await notify(userId, `${n} new home${n > 1 ? "s" : ""} near you`, "See the latest homes that match your alert.", "/browse", undefined, { type: "HOME_ALERT" }, { dataOnly: true });
+  await notify(userId, `${n} new home${n > 1 ? "s" : ""} near you`, "See the latest homes that match your alert.", "/browse", undefined, { type: "HOME_ALERT" });
 }

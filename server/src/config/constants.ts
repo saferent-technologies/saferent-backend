@@ -21,6 +21,14 @@ export const SESSION = {
   RECENT_AUTH_MAX_AGE_S: 5 * 60, // sensitive changes require sign-in/re-auth within 5 minutes
 } as const;
 
+/** Support queue: a ticket goes to an online SUPPORT agent with a free slot, else it waits in the queue. */
+export const SUPPORT_QUEUE = {
+  /** Open tickets (OPEN / IN_PROGRESS) one agent handles at a time before new ones queue. */
+  AGENT_CAPACITY: 1,
+  /** An agent is online while the portal heartbeat (every 30 s, while "Available") is newer than this. */
+  ONLINE_WINDOW_MS: 90_000,
+} as const;
+
 export const RATE_LIMITS = {
   PHONE_LOGIN: { limit: 10, windowMs: 60 * 60 * 1000 },
   CONSENTS: { limit: 30, windowMs: 60 * 60 * 1000 },

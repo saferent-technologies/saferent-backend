@@ -331,7 +331,7 @@ export async function viewInvitation(req: Request, res: Response): Promise<void>
   const label = await targetLabel(inv);
   const p = inv.property;
   const [images, unit, bed, landlordKyc] = await Promise.all([
-    prisma.propertyImage.findMany({ where: { propertyId: p.id, status: "APPROVED", inspectionId: null }, orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }], select: { id: true, unitId: true }, take: 12 }),
+    prisma.propertyImage.findMany({ where: { propertyId: p.id, status: "APPROVED", inspectionId: null }, orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }], select: { id: true, unitId: true, category: true, width: true, height: true }, take: 12 }),
     inv.unitId ? prisma.propertyUnit.findUnique({ where: { id: inv.unitId }, select: { id: true, unitNumber: true, name: true, bhkType: true, floorNumber: true } }) : null,
     inv.bedId ? prisma.propertyBed.findUnique({ where: { id: inv.bedId }, select: { id: true, bedNumber: true, room: { select: { id: true, roomNumber: true } } } }) : null,
     prisma.landlordProfile.findUnique({ where: { userId: inv.landlordId }, select: { kycStatus: true } }),
@@ -339,7 +339,7 @@ export async function viewInvitation(req: Request, res: Response): Promise<void>
   // The invited flat's photos first, then the building's.
   const ordered = [...images.filter((i) => inv.unitId && i.unitId === inv.unitId), ...images.filter((i) => !i.unitId), ...images.filter((i) => i.unitId && i.unitId !== inv.unitId)];
   res.json({
-    property: { id: p.id, code: p.code, title: p.title ?? p.code, locality: p.locality, city: p.city, coverImageId: ordered[0]?.id ?? null, images: ordered.map((i) => ({ id: i.id })) },
+    property: { id: p.id, code: p.code, title: p.title ?? p.code, locality: p.locality, city: p.city, coverImageId: ordered.find((i) => (i as { category?: string }).category !== "PANORAMA_360")?.id ?? null, images: ordered.map((i) => ({ id: i.id })) },
     unit: unit ? { id: unit.id, unitNumber: unit.unitNumber, name: unit.name, bhkType: unit.bhkType, floorNumber: unit.floorNumber } : null,
     bed: bed ? { id: bed.id, bedNumber: bed.bedNumber, room: { id: bed.room.id, roomNumber: bed.room.roomNumber } } : null,
     landlord: { fullName: p.owner?.fullName ?? null, verified: landlordKyc?.kycStatus === "APPROVED" },

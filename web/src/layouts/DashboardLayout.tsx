@@ -1,5 +1,5 @@
 import { Bell, ChevronDown, LogOut, Menu, Settings, ShieldCheck, UserRound, Wallet, X } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { Logo } from "@/components/ui/Logo";
 import { useAuth } from "@/hooks/useAuth";
@@ -11,11 +11,52 @@ import { request } from "@/services/api";
 import { AuthImage } from "@/components/ui/AuthImage";
 import { cn } from "@/utils/cn";
 import { COMPANY_NAME, PATHS, ROLE_LABELS } from "@/utils/constants";
+import { installSoundUnlock, playNotificationSound } from "@/utils/notificationSound";
+import { useSupportHeartbeat } from "@/utils/supportPresence";
 import { initials } from "@/utils/format";
+
+/** Counts per sidebar path (GET /me/badges), refreshed every 15 s while the tab is visible. */
+const BadgesContext = createContext<Record<string, number>>({});
+
+function useBadgePolling(enabled: boolean): Record<string, number> {
+  const location = useLocation();
+  const { data, reload } = useQuery(() => request<{ badges: Record<string, number>; total: number; signals?: Record<string, string | null> }>("/me/badges"), [location.pathname], enabled);
+  // Every 15 s, also in a background tab (so the bell rings while you work elsewhere), and right away on return.
+  useEffect(() => {
+    if (!enabled) return;
+    const tick = () => void reload();
+    const timer = window.setInterval(tick, 15_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [enabled, reload]);
+  // Support has no notification rows for staff: ring whenever something new happens there (new ticket for me,
+  // an owner reply on mine, a ticket joining the queue for supervisors), even if the count doesn't change.
+  // Not when that ticket's chat is already open (that page rings for its own replies).
+  const signal = data ? (data.signals?.["/support"] ?? null) : undefined;
+  const lastSignal = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (signal === undefined) return;
+    const prev = lastSignal.current;
+    lastSignal.current = signal;
+    if (prev === undefined || !signal || signal === prev) return;
+    if (prev && signal.split("|")[0] <= prev.split("|")[0]) return; // older event (e.g. ticket resolved) → no ring
+    const ticketId = signal.split("|")[1];
+    if (ticketId && location.pathname.endsWith(`/support/${ticketId}`)) return;
+    playNotificationSound();
+  }, [signal, location.pathname]);
+  return data?.badges ?? {};
+}
 
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   const { can, activeRole } = useAuth();
   const portal = usePortal();
+  const badges = useContext(BadgesContext);
   const groups = visibleNavigation(can, activeRole?.key);
   return (
     <nav aria-label="Main" className="space-y-5">
@@ -39,6 +80,11 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
                   <>
                     <Icon className={cn("size-5 shrink-0", isActive ? "text-brand" : "text-muted")} />
                     <span className="truncate">{label}</span>
+                    {!!badges[to] && (
+                      <span className="ml-auto flex min-w-6 items-center justify-center rounded-full bg-danger px-1.5 text-xs font-bold leading-6 text-white" aria-label={`${badges[to]} waiting`}>
+                        {badges[to] > 99 ? "99+" : badges[to]}
+                      </span>
+                    )}
                   </>
                 )}
               </NavLink>
@@ -129,9 +175,45 @@ function NotificationBell() {
   const { can } = useAuth();
   const { path } = usePortal();
   const location = useLocation();
-  const { data } = useQuery(() => request<{ unread: number }>("/notifications", { query: { pageSize: 1, unread: true } }), [location.pathname], can("notifications.view"));
-  if (!can("notifications.view")) return null;
+  const allowed = can("notifications.view");
+  const { data, reload } = useQuery(() => request<{ unread: number }>("/notifications", { query: { pageSize: 1, unread: true } }), [location.pathname], allowed);
   const unread = data?.unread ?? 0;
+
+  // Check every 15 s while the tab is visible (and right away when it comes back).
+  useEffect(() => {
+    if (!allowed) return;
+    const tick = () => {
+      if (document.visibilityState === "visible") void reload();
+    };
+    const timer = window.setInterval(tick, 15_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [allowed, reload]);
+
+  // Sound: when the unread count goes up, and once after signing in if something is waiting.
+  const last = useRef<number | null>(null);
+  useEffect(() => {
+    if (!data) return;
+    const prev = last.current;
+    last.current = unread;
+    if (prev === null) {
+      let played = false;
+      try {
+        played = sessionStorage.getItem("sr-notif-greeted") === "1";
+        sessionStorage.setItem("sr-notif-greeted", "1");
+      } catch {
+        /* ignore */
+      }
+      if (!played && unread > 0) playNotificationSound();
+      return;
+    }
+    if (unread > prev) playNotificationSound();
+  }, [data, unread]);
+
+  if (!allowed) return null;
   return (
     <Link to={path("/notifications")} aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`} className="relative flex size-11 items-center justify-center rounded-control text-ink-2 hover:bg-subtle">
       <Bell className="size-5" />
@@ -218,6 +300,12 @@ export function DashboardLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const { dashboardPath } = usePortal();
+  const { profile, can } = useAuth();
+  const badges = useBadgePolling(!!profile);
+  // Ticket agents: online for the support queue while the portal is open (and not set to Away).
+  useSupportHeartbeat(!!profile && can("support.manage"));
+  useEffect(() => installSoundUnlock(), []);
+  const pending = Object.entries(badges).some(([k, n]) => k !== "/notifications" && n > 0);
 
   useEffect(() => setMobileOpen(false), [location.pathname]);
   useEffect(() => {
@@ -228,6 +316,7 @@ export function DashboardLayout() {
   }, [mobileOpen]);
 
   return (
+    <BadgesContext.Provider value={badges}>
     <div className="min-h-dvh overflow-x-hidden bg-canvas">
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-line bg-surface lg:block">
@@ -249,8 +338,9 @@ export function DashboardLayout() {
 
       <div className="lg:pl-64">
         <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-line bg-surface/90 px-3 backdrop-blur sm:px-6">
-          <button type="button" onClick={() => setMobileOpen(true)} aria-label="Open navigation" className="flex size-11 items-center justify-center rounded-control text-ink-2 hover:bg-subtle lg:hidden">
+          <button type="button" onClick={() => setMobileOpen(true)} aria-label={pending ? "Open navigation (items waiting)" : "Open navigation"} className="relative flex size-11 items-center justify-center rounded-control text-ink-2 hover:bg-subtle lg:hidden">
             <Menu className="size-5" />
+            {pending && <span className="absolute right-2 top-2 size-2.5 rounded-full bg-danger" />}
           </button>
           <Link to={dashboardPath} className="lg:hidden" aria-label="SafeRent dashboard">
             <Logo className="h-8" />
@@ -268,5 +358,6 @@ export function DashboardLayout() {
         <ReviewRequiredGate />
       </div>
     </div>
+    </BadgesContext.Provider>
   );
 }

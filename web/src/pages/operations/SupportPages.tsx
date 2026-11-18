@@ -1,5 +1,5 @@
 import { ArrowLeft, Lock, Plus, Send } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { DataTable, Pagination } from "@/components/data/DataTable";
 import { ListToolbar } from "@/components/data/ListToolbar";
@@ -22,6 +22,8 @@ import { cn } from "@/utils/cn";
 import { ROLE_LABELS } from "@/utils/constants";
 import { errorMessage } from "@/utils/errors";
 import { formatTimestamp, labelize, toOptions } from "@/utils/format";
+import { playNotificationSound } from "@/utils/notificationSound";
+import { useSupportAvailable } from "@/utils/supportPresence";
 
 interface Ticket {
   id: string;
@@ -32,7 +34,10 @@ interface Ticket {
   createdAt: string;
   updatedAt: string;
   raisedBy: { id: string; fullName: string; role: string };
-  assignedTo: { id: string; fullName: string } | null;
+  assignedTo: { id: string; fullName: string; role?: string } | null;
+  queue?: { position: number; total: number } | null;
+  /** Staff: assigned to me and new / has an owner reply I haven't opened. */
+  unread?: boolean;
   _count?: { messages: number };
 }
 
@@ -44,7 +49,14 @@ export function SupportPage() {
   const [params] = useSearchParams();
   const list = useListParams(["status", "assigned"]);
   const staff = can("support.manage");
-  const { data, loading, error, reload } = useQuery(() => request<Paged<Ticket>>("/support/tickets", { query: list.query }), [list.query]);
+  const { data, loading, error, reload, setData } = useQuery(() => request<Paged<Ticket>>("/support/tickets", { query: list.query }), [list.query]);
+  // Live list: refresh quietly every 15 s while visible (no loading flicker).
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void request<Paged<Ticket>>("/support/tickets", { query: list.query }).then(setData).catch(() => undefined);
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [list.query, setData]);
   const [creating, setCreating] = useState(params.get("new") === "1");
 
   return (
@@ -54,6 +66,7 @@ export function SupportPage() {
         description={staff ? "Assign, reply and resolve." : "Raise a complaint or ask for help — we'll reply here."}
         actions={can("support.create") && <Button leftIcon={<Plus className="size-4" />} onClick={() => setCreating(true)}>New ticket</Button>}
       />
+      {staff && <QueuePanel />}
       <ListToolbar
         search={list.q}
         onSearch={list.setSearch}
@@ -73,16 +86,61 @@ export function SupportPage() {
         onRowClick={(t) => navigate(`/support/${t.id}`)}
         empty="No tickets."
         columns={[
-          { key: "subject", header: "Subject", render: (t) => <span><span className="block font-semibold">{t.subject}</span><span className="text-xs text-muted">{labelize(t.category)}{staff ? ` · ${t.raisedBy.fullName} (${ROLE_LABELS[t.raisedBy.role]})` : ""}</span></span> },
+          { key: "subject", header: "Subject", render: (t) => <span><span className="flex items-center gap-2 font-semibold">{t.unread && <span className="size-2 shrink-0 rounded-full bg-brand" aria-label="New" />}{t.subject}</span><span className="text-xs text-muted">{labelize(t.category)}{staff ? ` · ${t.raisedBy.fullName} (${ROLE_LABELS[t.raisedBy.role]})` : ""}</span></span> },
           { key: "priority", header: "Priority", render: (t) => <StatusBadge status={t.priority} />, className: "hidden lg:table-cell" },
-          ...(staff ? [{ key: "assignee", header: "Assignee", render: (t: Ticket) => t.assignedTo?.fullName ?? <span className="text-muted">Unassigned</span>, className: "hidden lg:table-cell" }] : []),
-          { key: "status", header: "Status", render: (t) => <StatusBadge status={t.status} /> },
+          ...(staff ? [{ key: "assignee", header: "Assignee", render: (t: Ticket) => t.assignedTo?.fullName ?? <span className="text-muted">{t.queue ? `In queue #${t.queue.position}` : "Unassigned"}</span>, className: "hidden lg:table-cell" }] : []),
+          { key: "status", header: "Status", render: (t) => (t.queue && !staff ? <Badge>{`In queue #${t.queue.position}`}</Badge> : <StatusBadge status={t.status} />) },
           { key: "updated", header: "Updated", render: (t) => formatTimestamp(t.updatedAt), className: "hidden xl:table-cell" },
         ]}
       />
       {data && <Pagination page={data.page} totalPages={data.totalPages} total={data.total} onPage={list.setPage} />}
       <NewTicketModal open={creating} onClose={() => setCreating(false)} onDone={async (id) => { setCreating(false); await reload(); navigate(`/support/${id}`); }} />
     </>
+  );
+}
+
+interface QueueInfo {
+  capacity: number;
+  queued: number;
+  me: { online: boolean; agent: boolean };
+  agents: Array<{ id: string; fullName: string; openTickets: number; free: boolean }>;
+}
+
+/** Staff: Available / Away switch, who is online and how many tickets wait. Refreshes every 15 s. */
+function QueuePanel() {
+  const [available, setAvailable] = useSupportAvailable();
+  const { data, reload, setData } = useQuery(() => request<QueueInfo>("/support/queue"), [available]);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void request<QueueInfo>("/support/queue").then(setData).catch(() => undefined);
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [setData]);
+  const toggle = async () => {
+    setAvailable(!available);
+    await request("/support/presence", { method: "POST", body: { available: !available } }).catch(() => undefined);
+    await reload();
+  };
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-line bg-surface p-4 text-sm">
+      {data?.me.agent && (
+        <div className="flex items-center gap-3">
+          <span className={cn("size-2.5 rounded-full", available ? "bg-green-500" : "bg-gray-400")} aria-hidden />
+          <span className="font-semibold">{available ? "Available" : "Away"}</span>
+          <Button size="sm" variant="secondary" onClick={() => void toggle()}>{available ? "Go away" : "Go available"}</Button>
+        </div>
+      )}
+      <div>
+        <span className="font-semibold">{data?.queued ?? 0}</span> <span className="text-muted">waiting in queue</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-muted">Online agents:</span>
+        {data && data.agents.length === 0 && <span className="text-muted">none</span>}
+        {data?.agents.map((a) => (
+          <Badge key={a.id}>{`${a.fullName} · ${a.free ? "free" : "busy"} (${a.openTickets}/${data.capacity})`}</Badge>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -142,6 +200,33 @@ export function TicketPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Live chat: re-check every 4 s while this tab is visible (and at once when it comes back).
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState === "visible") void reload();
+    };
+    const timer = window.setInterval(tick, 4000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [reload]);
+
+  // New message → scroll to it; a reply from the other side also rings the bell.
+  const listEnd = useRef<HTMLDivElement>(null);
+  const seen = useRef<number | null>(null);
+  const messages = data?.ticket.messages ?? [];
+  useEffect(() => {
+    if (!data) return;
+    const count = messages.length;
+    const prev = seen.current;
+    seen.current = count;
+    if (prev === null || count > prev) listEnd.current?.scrollIntoView({ behavior: prev === null ? "auto" : "smooth", block: "end" });
+    if (prev !== null && count > prev && messages.slice(prev).some((m) => m.authorId !== profile?.id)) playNotificationSound();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
   if (loading && !data) return <div className="flex justify-center py-16"><Spinner className="size-7 text-brand" /></div>;
   if (error || !data) return <Alert kind="error">{error ?? "Ticket not found."}</Alert>;
   const t = data.ticket;
@@ -173,11 +258,12 @@ export function TicketPage() {
   return (
     <>
       <Link to="/support" className="mb-4 inline-flex items-center gap-1.5 text-sm font-semibold text-brand-dark hover:text-brand"><ArrowLeft className="size-4" /> Tickets</Link>
-      <PageHeader title={t.subject} description={<span className="flex flex-wrap items-center gap-2"><StatusBadge status={t.status} /><StatusBadge status={t.priority} /><span>{labelize(t.category)}</span></span>} />
+      <PageHeader title={t.subject} description={<span className="flex flex-wrap items-center gap-2"><StatusBadge status={t.status} /><StatusBadge status={t.priority} /><span>{labelize(t.category)}</span>{t.assignedTo ? <span className="text-muted">Handled by {t.assignedTo.fullName}</span> : t.queue ? <Badge tone="warning">{`In queue #${t.queue.position} of ${t.queue.total}`}</Badge> : null}</span>} />
       {err && <Alert kind="error" className="mb-4">{err}</Alert>}
       <div className="grid gap-4 lg:grid-cols-3">
         <section className="card flex min-h-[24rem] flex-col p-4 sm:p-5 lg:col-span-2">
-          <ol className="flex-1 space-y-3">
+          <p className="mb-2 flex items-center gap-1.5 text-xs text-muted"><span className="size-2 animate-pulse rounded-full bg-success" /> Live: new replies appear automatically</p>
+          <ol className="max-h-[60vh] flex-1 space-y-3 overflow-y-auto pr-1">
             <li className="rounded-control bg-subtle p-3 text-sm">
               <p className="mb-1 text-xs font-semibold text-muted">{t.raisedBy.fullName} · {formatTimestamp(t.createdAt)}</p>
               <p className="whitespace-pre-line">{t.description}</p>
@@ -194,10 +280,24 @@ export function TicketPage() {
                 </li>
               );
             })}
+            <div ref={listEnd} />
           </ol>
           {t.status !== "CLOSED" && (
             <div className="mt-4 space-y-2 border-t border-line pt-4">
-              <Textarea aria-label="Reply" rows={3} placeholder="Write a reply…" value={body} onChange={(e) => setBody(e.target.value)} maxLength={5000} />
+              <Textarea
+                aria-label="Reply"
+                rows={3}
+                placeholder="Write a reply… (Ctrl + Enter to send)"
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && body.trim() && !busy) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+                maxLength={5000}
+              />
               <div className="flex flex-wrap items-center justify-between gap-2">
                 {data.canManage ? <Checkbox label="Internal note (hidden from customer)" checked={internal} onChange={(e) => setInternal(e.target.checked)} /> : <span />}
                 <Button leftIcon={<Send className="size-4" />} loading={busy} disabled={!body.trim()} onClick={() => void send()}>Send</Button>

@@ -1,4 +1,5 @@
 import type { Property, PropertyRevision } from "@prisma/client";
+import { flagHomeAlertsTx } from "../../services/homeAlerts";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { REASONS } from "../../config/constants";
@@ -13,6 +14,7 @@ import { syncLocationsForProperty } from "../locations";
 import { presentProperty, propertySummary } from "../presenters";
 import { changedSectionsOf, deleteDraft, draftProblems, draftView, mergeDraft, needsRevision, openRevision, revisionSummary } from "../revisions";
 import { audit, isModerator, loadAggregate, recordStatus, scopedProperty } from "../service";
+import { notifyStaff } from "../../lib/notifyStaff";
 import { canEditContent } from "../workflow";
 
 /*
@@ -62,6 +64,7 @@ export async function submitRevision(req: Request, res: Response): Promise<void>
     await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "changeRequest", from: rev.status, to: "PENDING_VERIFICATION", reason: changedSections.join(", ") });
     return r;
   });
+  await notifyStaff("listings.approve", "Listing changes to review", `Changes to "${property.title ?? property.code}" are waiting for verification.`, `/moderation/changes/${updated.id}`, me(req).id);
   res.locals.message = "Changes sent for verification. Your listing stays live meanwhile.";
   res.json({ pendingRevision: revisionSummary(updated) });
 }
@@ -157,6 +160,8 @@ export async function reviewRevision(req: Request, res: Response): Promise<void>
   const { removedFiles } = await prisma.$transaction(
     async (tx) => {
       const out = await mergeDraft(tx, property.id, rev.draftPropertyId!, user.id);
+      // Approved changes may add / free units or lower rent → re-match (users already alerted for it are skipped).
+      await flagHomeAlertsTx(tx, property.id);
       await tx.propertyRevision.update({
         where: { id: rev.id },
         data: { status: "APPROVED", draftPropertyId: null, data: JSON.parse(JSON.stringify(snapshot)), changedSections, moderationNote: reason || null, decidedAt: new Date(), decidedById: user.id, version: { increment: 1 } },

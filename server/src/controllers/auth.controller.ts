@@ -11,7 +11,7 @@ import { prisma } from "../lib/prisma";
 import { consumeRateLimit, consumeRateLimitTx, throwRateLimited } from "../lib/rateLimit";
 import { isSessionValid } from "../lib/session";
 import { isAllowedEmailDomain, normalizeEmail, parseInput, passwordResetInputSchema, rebindSessionInputSchema, verifyOtpInputSchema } from "../lib/validation";
-import { me as currentUser, requireRecentAuth, signInProvider, syncRoleClaim } from "../middleware/auth";
+import { me as currentUser, isPortal, requireRecentAuth, signInProvider, syncRoleClaim } from "../middleware/auth";
 import { ROLE_INFO, type RoleKey } from "../rbac/catalog";
 import { effectivePermissionsFor, rolesFor } from "../rbac/service";
 import { z } from "zod";
@@ -63,7 +63,8 @@ export async function me(req: Request, res: Response): Promise<void> {
     // Demographic screen: isProfileCompleted is what the app last sent (Admin → App configuration → Authentication).
     ...completionView(user),
     termsAccepted: termsAccepted(await consentStatusFor(token.uid)),
-    user: { ...toProfile(user), roles },
+    // mustChangePassword is a staff-portal flag; the app (phone OTP, no password) never sees it.
+    user: { ...toProfile(user), roles, ...(isPortal(req) ? {} : { mustChangePassword: false }) },
     roleInfo: { key: user.role, ...ROLE_INFO[user.role as RoleKey] },
     roles: roles.map((key) => ({ key, ...ROLE_INFO[key] })),
     permissions: sessionValid ? await effectivePermissionsFor(user, roles) : {},
@@ -282,10 +283,11 @@ export async function completePhoneLogin(req: Request, res: Response): Promise<v
   const existing = await prisma.authSession.findUnique({ where: { userId: user.id } });
   if (isSessionValid(existing, token.auth_time, Date.now()) && user.phoneNumber && token.phone_number === user.phoneNumber) {
     if (device) await saveDevice(token.uid, device);
-    res.json({ ok: true, registrationRequired: false, accountStatus: user.accountStatus, mustChangePassword: user.mustChangePassword, ...completionView(user), termsAccepted: termsAccepted(await consentStatusFor(token.uid)), fcmTokenSaved: !!device });
+    res.json({ ok: true, registrationRequired: false, accountStatus: user.accountStatus, mustChangePassword: isPortal(req) && user.mustChangePassword, ...completionView(user), termsAccepted: termsAccepted(await consentStatusFor(token.uid)), fcmTokenSaved: !!device });
     return;
   }
-  requireRecentAuth(req, 15 * 60);
+  // Fresh OTP within 15 min: portal only. The app keeps its Firebase phone sign-in and may complete later.
+  if (isPortal(req)) requireRecentAuth(req, 15 * 60);
   if (!user.phoneNumber || token.phone_number !== user.phoneNumber) {
     await writeAuditLog({ action: "auth.login", outcome: "failure", userId: user.id, reason: REASONS.ACCOUNT_MISMATCH, metadata: { method: "phone_otp" }, ...meta });
     fail("permission-denied", REASONS.ACCOUNT_MISMATCH, "This phone number is not authorized.");
@@ -301,7 +303,7 @@ export async function completePhoneLogin(req: Request, res: Response): Promise<v
 
   if (device) await saveDevice(token.uid, device);
   await writeAuditLog({ action: "auth.login", outcome: "success", userId: user.id, email: user.email, metadata: { method: "phone_otp" }, ...meta });
-  res.json({ ok: true, registrationRequired: false, accountStatus: user.accountStatus, mustChangePassword: user.mustChangePassword, ...completionView(user), termsAccepted: termsAccepted(await consentStatusFor(token.uid)), fcmTokenSaved: !!device });
+  res.json({ ok: true, registrationRequired: false, accountStatus: user.accountStatus, mustChangePassword: isPortal(req) && user.mustChangePassword, ...completionView(user), termsAccepted: termsAccepted(await consentStatusFor(token.uid)), fcmTokenSaved: !!device });
 }
 
 const registerSchema = z.object({
@@ -344,7 +346,7 @@ export async function createPhoneAccount(req: Request, input: NewAccountInput) {
   if (signInProvider(req) !== "phone" || !token.phone_number) {
     fail("failed-precondition", REASONS.WRONG_SIGN_IN_METHOD, "Verify your phone number first.");
   }
-  requireRecentAuth(req, 15 * 60);
+  if (isPortal(req)) requireRecentAuth(req, 15 * 60);
   await assertPhoneLoginOn(null);
   await assertPhoneNotDeleted(token.phone_number);
   await consumeRateLimit(`register:${token.uid}`, RATE_LIMITS.REGISTRATION.limit, RATE_LIMITS.REGISTRATION.windowMs);
@@ -434,6 +436,7 @@ export async function logout(req: Request, res: Response): Promise<void> {
   const user = await prisma.user.findUnique({ where: { firebaseUid: token.uid }, select: { id: true } });
   if (user) {
     await prisma.authSession.updateMany({ where: { userId: user.id }, data: { revoked: true, revokedAt: new Date() } });
+    if (isPortal(req)) await prisma.user.update({ where: { id: user.id }, data: { supportSeenAt: null } }); // signed out = offline for the support queue
     await writeAuditLog({ action: "auth.logout", outcome: "success", userId: user.id, ...requestMeta(req) });
   }
   res.json({ ok: true });

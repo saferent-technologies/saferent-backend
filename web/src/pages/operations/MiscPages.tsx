@@ -1,4 +1,4 @@
-import { CalendarPlus, CheckCheck } from "lucide-react";
+import { CalendarPlus, CheckCheck, Volume2, VolumeX } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { DataTable, EmptyState, Pagination } from "@/components/data/DataTable";
@@ -22,6 +22,7 @@ import type { Paged } from "@/types/auth";
 import { cn } from "@/utils/cn";
 import { ALL_ROLES, ROLE_LABELS } from "@/utils/constants";
 import { errorMessage } from "@/utils/errors";
+import { playNotificationSound, setSoundEnabled, soundEnabled } from "@/utils/notificationSound";
 import { formatMoney, formatTimestamp, labelize, timeAgo, toOptions } from "@/utils/format";
 
 /* ═══════════ Enquiries & visits ═══════════ */
@@ -180,9 +181,24 @@ export function NotificationsPage() {
     await request("/notifications/read", { method: "POST", body: id ? { id } : {} });
     await reload();
   };
+  const [sound, setSound] = useState(soundEnabled());
+  const toggleSound = () => {
+    setSoundEnabled(!sound);
+    setSound(!sound);
+    if (!sound) playNotificationSound();
+  };
   return (
     <>
-      <PageHeader title="Notifications" description={data ? `${data.unread} unread` : undefined} actions={!!data?.unread && <Button variant="secondary" leftIcon={<CheckCheck className="size-4" />} onClick={() => void markRead()}>Mark all read</Button>} />
+      <PageHeader
+        title="Notifications"
+        description={data ? `${data.unread} unread` : undefined}
+        actions={
+          <span className="flex flex-wrap gap-2">
+            <Button variant="secondary" leftIcon={sound ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />} onClick={toggleSound}>{sound ? "Sound on" : "Sound off"}</Button>
+            {!!data?.unread && <Button variant="secondary" leftIcon={<CheckCheck className="size-4" />} onClick={() => void markRead()}>Mark all read</Button>}
+          </span>
+        }
+      />
       <ListToolbar filters={[{ name: "unread", label: "Show", options: [{ value: "true", label: "Unread only" }] }]} values={list.filters} onFilter={list.setFilter} />
       {error && <Alert kind="error">{error}</Alert>}
       {loading && !data ? (
