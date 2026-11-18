@@ -2,6 +2,8 @@ import type { Prisma } from "@prisma/client";
 import type { Request } from "express";
 import { releaseBedTx } from "./controllers/room.controller";
 import { recordStatus } from "./service";
+import { flagHomeAlertsTx } from "../services/homeAlerts";
+import { endLeaseSharesTx } from "../controllers/idVault.controller";
 
 /**
  * A lease has just closed (agreed move-out, end date reached, or SafeRent closed it): free its flat /
@@ -15,12 +17,15 @@ export async function freeLeasePlaceTx(
   lease: { id: string; propertyId: string; unitId: string | null; bedId: string | null },
   reason: string,
 ): Promise<void> {
+  // ID documents the tenant shared on this lease stop being visible right away (same transaction).
+  if (lease.id) await endLeaseSharesTx(tx, lease.id);
   if (lease.unitId) {
     const stillHeld = await tx.lease.count({ where: { unitId: lease.unitId, status: "ACTIVE", NOT: { id: lease.id } } });
     if (!stillHeld) {
       const unit = await tx.propertyUnit.findUnique({ where: { id: lease.unitId }, select: { availabilityStatus: true } });
       if (unit && unit.availabilityStatus === "OCCUPIED") {
         await tx.propertyUnit.update({ where: { id: lease.unitId }, data: { availabilityStatus: "AVAILABLE", version: { increment: 1 } } });
+        await flagHomeAlertsTx(tx, lease.propertyId);
         await recordStatus(tx, actor, { propertyId: lease.propertyId, entityType: "UNIT", entityId: lease.unitId, field: "availabilityStatus", from: "OCCUPIED", to: "AVAILABLE", reason });
       }
       // Change-request copy (draft) of this unit.
@@ -31,6 +36,7 @@ export async function freeLeasePlaceTx(
     const stillHeld = await tx.lease.count({ where: { bedId: lease.bedId, status: "ACTIVE", NOT: { id: lease.id } } });
     if (!stillHeld) {
       await releaseBedTx(actor, tx, lease.propertyId, lease.bedId, reason);
+      await flagHomeAlertsTx(tx, lease.propertyId);
       await tx.propertyBed.updateMany({ where: { sourceId: lease.bedId, availabilityStatus: "OCCUPIED" }, data: { availabilityStatus: "AVAILABLE", tenantId: null, leaseId: null, occupiedSince: null, version: { increment: 1 } } });
     }
   }

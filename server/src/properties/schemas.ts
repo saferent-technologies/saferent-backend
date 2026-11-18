@@ -16,7 +16,7 @@ import {
   SHARING_TYPES,
   VERIFICATION_STATUSES,
 } from "./catalog";
-import { bigMoneySchema, decimalSchema, moneySchema } from "./fields";
+import { decimalSchema, moneySchema } from "./fields";
 
 const disclosure = z.enum(DISCLOSURE);
 const optText = (max: number) => z.string().trim().max(max).nullable().optional();
@@ -28,11 +28,14 @@ export const phoneSchema = z.string().regex(/^\+[1-9]\d{7,14}$/, "Phone number m
 
 // ───── Property ─────
 
+/** RENT | LEASE. "SALE" → "SafeRent is for rentals only". */
+const rentalOnly = z.string().refine((v) => v !== "SALE", { message: "SafeRent is for rentals only" }).pipe(z.enum(LISTING_TYPES));
+
 export const createPropertySchema = z
   .object({
     propertyTypeKey: z.string().trim().min(2).max(40),
     category: z.enum(CATEGORIES).optional(),
-    listingType: z.enum(LISTING_TYPES).default("RENT"),
+    listingType: rentalOnly.default("RENT"),
     title: z.string().trim().min(3).max(150).optional(),
     /** Staff / agents creating a listing for a registered landlord. Ignored for landlords. */
     landlordPhone: phoneSchema.optional(),
@@ -42,7 +45,7 @@ export const createPropertySchema = z
 export const updatePropertySchema = z
   .object({
     version: versionField,
-    listingType: z.enum(LISTING_TYPES).optional(),
+    listingType: rentalOnly.optional(),
     title: z.string().trim().min(3).max(150).nullable().optional(),
     description: z.string().trim().max(5000).nullable().optional(),
     addressLine: optText(255),
@@ -79,7 +82,8 @@ export const browseQuery = z.object({
   state: z.string().trim().max(80).optional(),
   category: z.enum(CATEGORIES).optional(),
   propertyType: z.string().trim().max(40).optional(),
-  listingType: z.enum(LISTING_TYPES).optional(),
+  // SALE (no longer offered) is ignored rather than rejected.
+  listingType: z.preprocess((v) => (v === "SALE" ? undefined : v), z.enum(LISTING_TYPES).optional()),
   minRent: z.coerce.number().min(0).optional(),
   maxRent: z.coerce.number().min(0).optional(),
   bedrooms: z.coerce.number().int().min(0).max(30).optional(),
@@ -347,7 +351,8 @@ export const pricingSchema = z
   .object({
     currency: z.literal("INR").default("INR"),
     monthlyRent: optMoney,
-    salePrice: bigMoneySchema.nullable().optional(),
+    /** Removed — SafeRent lists rentals only. Sent anyway → 400 field issue. */
+    salePrice: z.unknown().optional(),
     securityDeposit: optMoney,
     advanceRentMonths: optInt(0, 24),
     rentDueDay: optInt(1, 28),
@@ -367,6 +372,7 @@ export const pricingSchema = z
   })
   .strict()
   .superRefine((p, ctx) => {
+    if (p.salePrice !== undefined) ctx.addIssue({ code: "custom", path: ["salePrice"], message: "SafeRent is for rentals only. Set the monthly rent instead." });
     if (p.monthlyRent !== null && p.monthlyRent !== undefined && Number(p.monthlyRent) <= 0) ctx.addIssue({ code: "custom", path: ["monthlyRent"], message: "Monthly rent must be more than zero." });
     if (p.agreementCharges && p.agreementChargesPaidBy === "NOT_APPLICABLE") ctx.addIssue({ code: "custom", path: ["agreementChargesPaidBy"], message: "Say who pays the agreement charges." });
     const seen = new Set<string>();

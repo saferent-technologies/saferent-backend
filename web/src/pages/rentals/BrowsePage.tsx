@@ -233,7 +233,7 @@ export function ListingPage({ mode = "app" }: { mode?: BrowseMode }) {
   };
   const previewBanner = preview ? <Alert kind="info" className="mb-4">Preview — this is how tenants see this listing. Apply and enquiry buttons are hidden here.</Alert> : null;
   const pending = (unitId?: string | null, bedId?: string | null) => data.myApplications.find((a) => ["PENDING", "APPROVED"].includes(a.status) && a.unitId === (unitId ?? null) && a.bedId === (bedId ?? null));
-  const canApply = can("applications.create") && p.listingType !== "SALE";
+  const canApply = can("applications.create");
 
   return (
     <>
@@ -373,7 +373,7 @@ export function ListingPage({ mode = "app" }: { mode?: BrowseMode }) {
               {p.ownerVerified ? <Badge tone="success"><BadgeCheck className="size-3.5" />Owner verified</Badge> : <Badge tone="warning">Owner not verified</Badge>}
             </div>
             <div className="grid gap-2 pt-2">
-              {isPublic && p.listingType !== "SALE" && (
+              {isPublic && (
                 <>
                   <Button leftIcon={<Send className="size-4" />} onClick={continueInApp}>{signedInCustomer ? "Apply or ask a question" : "Sign in to apply"}</Button>
                   {!signedInCustomer && <p className="text-center text-xs text-muted">Sign in with your mobile number — new here? Your account is created in a minute.</p>}
@@ -524,7 +524,7 @@ function FlatSection({
 }) {
   const label = (u: PublicUnit) => u.name ?? (u.unitNumber ? `${word} ${u.unitNumber}` : u.code);
   const words = `${word.toLowerCase()}${flats.length === 1 ? "" : "s"}`;
-  const rentOf = (u: PublicUnit) => (u.pricing as { monthlyRent?: string | null; salePrice?: string | null } | null)?.monthlyRent ?? (u.pricing as { salePrice?: string | null } | null)?.salePrice ?? null;
+  const rentOf = (u: PublicUnit) => (u.pricing as { monthlyRent?: string | null } | null)?.monthlyRent ?? null;
   return (
     <section className="card p-5">
       <h2 className="mb-1 font-semibold">Choose a {word.toLowerCase()}</h2>

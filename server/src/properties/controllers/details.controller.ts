@@ -152,20 +152,18 @@ const CHARGE_LABELS: Record<string, string> = { MAINTENANCE: "Maintenance", ELEC
  */
 export async function savePricing(tx: Tx, req: Request, property: Property, unitId: string | null, body: unknown) {
   const input = parseInput(pricingSchema, body);
-  const listing = property.listingType;
-  if (listing === "SALE" && input.monthlyRent) fail("invalid-argument", REASONS.INVALID_INPUT, "A property listed for sale has a sale price, not a monthly rent.");
-  if (listing !== "SALE" && input.salePrice) fail("invalid-argument", REASONS.INVALID_INPUT, "A sale price only applies to properties listed for sale.");
   // Buildings with separately rented units / rooms: the building only has common charges and terms.
-  if (!unitId && (input.monthlyRent || input.securityDeposit || input.salePrice)) {
+  if (!unitId && (input.monthlyRent || input.securityDeposit)) {
     if (pricedPerRoom(property.propertyTypeKey)) fail("invalid-argument", REASONS.INVALID_INPUT, "For a PG or hostel, set the rent and deposit on each room or bed. The building only has common charges.");
     if (pricedPerUnit(property.propertyTypeKey, property.attributes as Record<string, unknown> | null)) {
       const unit = (propertyTypeDef(property.propertyTypeKey)?.unitLabel ?? "unit").toLowerCase();
-      fail("invalid-argument", REASONS.INVALID_INPUT, `Set the rent, deposit or price on each ${unit}. The building only has common charges.`);
+      fail("invalid-argument", REASONS.INVALID_INPUT, `Set the rent and deposit on each ${unit}. The building only has common charges.`);
     }
   }
   const scopeKey = unitId ?? PROPERTY_SCOPE;
   const current = await tx.propertyPricing.findUnique({ where: { propertyId_scopeKey: { propertyId: property.id, scopeKey } }, include: { charges: true } });
-  const { charges, ...core } = input;
+  const { charges, salePrice: _sale, ...core } = input;
+  void _sale;
   const row = await tx.propertyPricing.upsert({
     where: { propertyId_scopeKey: { propertyId: property.id, scopeKey } },
     create: { ...(core as Prisma.PropertyPricingUncheckedCreateInput), propertyId: property.id, unitId, scopeKey },
@@ -181,13 +179,13 @@ export async function savePricing(tx: Tx, req: Request, property: Property, unit
   }
   const delta = diff((current ?? {}) as Record<string, unknown>, core as Record<string, unknown>);
   const entityId = unitId ?? property.id;
-  if (delta.new.monthlyRent !== undefined || delta.new.salePrice !== undefined) {
-    await audit(tx, req, { propertyId: property.id, entityType: "PRICING", entityId, action: "pricing.rent_change", oldValue: { monthlyRent: delta.old.monthlyRent ?? null, salePrice: delta.old.salePrice ?? null }, newValue: { monthlyRent: delta.new.monthlyRent ?? null, salePrice: delta.new.salePrice ?? null } });
+  if (delta.new.monthlyRent !== undefined) {
+    await audit(tx, req, { propertyId: property.id, entityType: "PRICING", entityId, action: "pricing.rent_change", oldValue: { monthlyRent: delta.old.monthlyRent ?? null }, newValue: { monthlyRent: delta.new.monthlyRent ?? null } });
   }
   if (delta.new.securityDeposit !== undefined) {
     await audit(tx, req, { propertyId: property.id, entityType: "PRICING", entityId, action: "pricing.deposit_change", oldValue: { securityDeposit: delta.old.securityDeposit }, newValue: { securityDeposit: delta.new.securityDeposit } });
   }
-  const other = Object.keys(delta.new).filter((k) => !["monthlyRent", "salePrice", "securityDeposit"].includes(k));
+  const other = Object.keys(delta.new).filter((k) => !["monthlyRent", "securityDeposit"].includes(k));
   if (other.length || charges) {
     await audit(tx, req, {
       propertyId: property.id,

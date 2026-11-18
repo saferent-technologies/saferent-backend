@@ -105,7 +105,7 @@ describe("submission readiness", () => {
     input.pricing = [{ unitId: null, values: { monthlyRent: "25000.00" }, charges: [] }, { unitId: "u1", values: { monthlyRent: "25000.00" }, charges: [] }];
     expect(submissionProblems(input)).toContain("Add the rent.");
   });
-  it("requires floor-wise details for a duplex and a sale price for SALE listings", () => {
+  it("requires floor-wise details for a duplex", () => {
     const duplex: CompletenessInput = {
       ...completeApartment(),
       type: propertyTypeDef("DUPLEX_HOUSE")!,
@@ -113,12 +113,10 @@ describe("submission readiness", () => {
       units: [{ id: "d1", floorCount: 0, values: { unitNumber: "7", configuration: "G+1", totalFloors: 2, furnishing: "UNFURNISHED", availabilityStatus: "AVAILABLE" } }],
     };
     expect(submissionProblems(duplex).some((p) => p.includes("floor-wise"))).toBe(true);
-    const sale: CompletenessInput = { ...completeApartment(), listingType: "SALE" };
-    expect(submissionProblems(sale)).toContain("Add the sale price.");
   });
   it("rejects listing types the property type does not support", () => {
-    const pg: CompletenessInput = { ...completeApartment(), type: propertyTypeDef("PG")!, building: {}, listingType: "SALE", rooms: [{ bedCount: 2 }] };
-    expect(submissionProblems(pg).some((p) => p.includes("cannot be listed for sale"))).toBe(true);
+    const pg: CompletenessInput = { ...completeApartment(), type: propertyTypeDef("PG")!, building: {}, listingType: "LEASE", rooms: [{ bedCount: 2 }] };
+    expect(submissionProblems(pg).some((p) => p.includes("cannot be listed for lease"))).toBe(true);
   });
 });
 

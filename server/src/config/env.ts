@@ -29,6 +29,8 @@ const schema = z.object({
 
   // Secret used to hash OTPs (min 32 chars). Generate: openssl rand -base64 48
   OTP_PEPPER: z.string().min(32, "OTP_PEPPER must be at least 32 characters"),
+  /** ID documents vault: base64 of 32 random bytes (key-encryption key). Keep it secret; losing it loses the files. */
+  DOCUMENT_MASTER_KEY: z.string().trim().optional(),
 
   // Email: "console" prints emails in the terminal (development); "smtp" sends real emails
   EMAIL_PROVIDER: z.enum(["console", "smtp"]).default("console"),

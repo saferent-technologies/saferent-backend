@@ -20,6 +20,13 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     res.status(400).json({ error: { reason: "INVALID_INPUT", message: err.issues[0]?.message ?? "Invalid request." } });
     return;
   }
+  // Upload limits (multer): too big / too many files → a clear 400 instead of a 500.
+  const code = (err as { name?: string; code?: string }).name === "MulterError" ? (err as { code?: string }).code : undefined;
+  if (code) {
+    const message = code === "LIMIT_FILE_SIZE" ? "That file is too large." : code === "LIMIT_FILE_COUNT" || code === "LIMIT_UNEXPECTED_FILE" ? "Too many files, or a file in the wrong field." : "The upload couldn't be read. Please try again.";
+    res.status(400).json({ error: { reason: "INVALID_INPUT", message } });
+    return;
+  }
   if ((err as { type?: string }).type === "entity.parse.failed" || (err as { type?: string }).type === "entity.too.large") {
     res.status(400).json({ error: { reason: "INVALID_INPUT", message: "Invalid request." } });
     return;

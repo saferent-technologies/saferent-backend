@@ -12,7 +12,8 @@
 export const CATEGORIES = ["RESIDENTIAL", "COMMERCIAL", "LAND"] as const;
 export type Category = (typeof CATEGORIES)[number];
 
-export const LISTING_TYPES = ["RENT", "LEASE", "SALE"] as const;
+/** SafeRent is for renting / leasing only (no sale listings). */
+export const LISTING_TYPES = ["RENT", "LEASE"] as const;
 export type ListingTypeKey = (typeof LISTING_TYPES)[number];
 
 export const DISCLOSURE = ["YES", "NO", "NOT_APPLICABLE", "NOT_DISCLOSED"] as const;
@@ -206,7 +207,7 @@ export const PROPERTY_TYPES: readonly PropertyTypeDef[] = [
     structure: "MULTI_UNIT",
     unitKind: "FLAT",
     unitLabel: "Flat",
-    listingTypes: ["RENT", "LEASE", "SALE"],
+    listingTypes: ["RENT", "LEASE"],
     buildingFields: [
       f.text("name", "Apartment name", { required: true, maxLength: 150 }),
       f.text("buildingName", "Building / block name", { maxLength: 120 }),
@@ -270,7 +271,7 @@ export const PROPERTY_TYPES: readonly PropertyTypeDef[] = [
     structure: "VILLA",
     unitKind: "VILLA",
     unitLabel: "Villa",
-    listingTypes: ["RENT", "LEASE", "SALE"],
+    listingTypes: ["RENT", "LEASE"],
     buildingFields: [
       f.select("villaListing", "Villa listing", ["STANDALONE", "COMMUNITY"], { required: true, help: "A single villa, or a villa community / project with many villas." }),
       f.text("name", "Villa / project name", { required: true, maxLength: 150 }),
@@ -307,7 +308,7 @@ export const PROPERTY_TYPES: readonly PropertyTypeDef[] = [
     structure: "SINGLE_UNIT",
     unitKind: "HOUSE",
     unitLabel: "House",
-    listingTypes: ["RENT", "LEASE", "SALE"],
+    listingTypes: ["RENT", "LEASE"],
     buildingFields: [f.text("name", "House name", { maxLength: 150 })],
     unitFields: [
       f.text("unitNumber", "House number", { required: true, maxLength: 30 }),
@@ -335,7 +336,7 @@ export const PROPERTY_TYPES: readonly PropertyTypeDef[] = [
     unitKind: "DUPLEX",
     unitLabel: "Duplex",
     floorWise: true,
-    listingTypes: ["RENT", "LEASE", "SALE"],
+    listingTypes: ["RENT", "LEASE"],
     buildingFields: [f.text("name", "Duplex name", { maxLength: 150 })],
     unitFields: [
       f.text("unitNumber", "House number", { required: true, maxLength: 30 }),
@@ -374,7 +375,7 @@ export const PROPERTY_TYPES: readonly PropertyTypeDef[] = [
     structure: "SINGLE_UNIT",
     unitKind: "FARMHOUSE",
     unitLabel: "Farmhouse",
-    listingTypes: ["RENT", "LEASE", "SALE"],
+    listingTypes: ["RENT", "LEASE"],
     buildingFields: [f.text("name", "Farmhouse name", { maxLength: 150 })],
     unitFields: [
       f.text("unitNumber", "Survey / house number", { required: true, maxLength: 30 }),
@@ -389,17 +390,17 @@ export const PROPERTY_TYPES: readonly PropertyTypeDef[] = [
       ...availability,
     ],
   },
-  { key: "OFFICE_SPACE", category: "COMMERCIAL", label: "Office space", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Office space", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: commercialBuilding, unitFields: commercialUnit([f.int("workstations", "Workstations", { max: 10000 }), f.int("cabins", "Cabins", { max: 1000 }), f.int("meetingRooms", "Meeting rooms", { max: 500 })]) },
-  { key: "SHOP", category: "COMMERCIAL", label: "Shop", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Shop", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "frontageFt", label: "Frontage (ft)", type: "decimal", min: 0, max: 1000 }, f.yesNo("mainRoadFacing", "Main road facing")]) },
-  { key: "SHOWROOM", category: "COMMERCIAL", label: "Showroom", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Showroom", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "frontageFt", label: "Frontage (ft)", type: "decimal", min: 0, max: 1000 }, f.yesNo("mainRoadFacing", "Main road facing")]) },
-  { key: "WAREHOUSE", category: "COMMERCIAL", label: "Warehouse", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Warehouse unit", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "clearHeightFt", label: "Clear height (ft)", type: "decimal", min: 0, max: 200 }, f.int("loadingDocks", "Loading docks", { max: 200 }), f.yesNo("truckAccess", "Truck access")]) },
-  { key: "INDUSTRIAL_PROPERTY", category: "COMMERCIAL", label: "Industrial property", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Industrial unit", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "powerLoadKw", label: "Sanctioned power load (kW)", type: "decimal", min: 0, max: 100000 }, f.yesNo("truckAccess", "Truck access")]) },
-  { key: "COMMERCIAL_COMPLEX", category: "COMMERCIAL", label: "Commercial complex (shops)", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Shop", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "frontageFt", label: "Frontage (ft)", type: "decimal", min: 0, max: 1000 }, f.yesNo("mainRoadFacing", "Main road facing")]) },
+  { key: "OFFICE_SPACE", category: "COMMERCIAL", label: "Office space", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Office space", listingTypes: ["RENT", "LEASE"], buildingFields: commercialBuilding, unitFields: commercialUnit([f.int("workstations", "Workstations", { max: 10000 }), f.int("cabins", "Cabins", { max: 1000 }), f.int("meetingRooms", "Meeting rooms", { max: 500 })]) },
+  { key: "SHOP", category: "COMMERCIAL", label: "Shop", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Shop", listingTypes: ["RENT", "LEASE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "frontageFt", label: "Frontage (ft)", type: "decimal", min: 0, max: 1000 }, f.yesNo("mainRoadFacing", "Main road facing")]) },
+  { key: "SHOWROOM", category: "COMMERCIAL", label: "Showroom", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Showroom", listingTypes: ["RENT", "LEASE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "frontageFt", label: "Frontage (ft)", type: "decimal", min: 0, max: 1000 }, f.yesNo("mainRoadFacing", "Main road facing")]) },
+  { key: "WAREHOUSE", category: "COMMERCIAL", label: "Warehouse", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Warehouse unit", listingTypes: ["RENT", "LEASE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "clearHeightFt", label: "Clear height (ft)", type: "decimal", min: 0, max: 200 }, f.int("loadingDocks", "Loading docks", { max: 200 }), f.yesNo("truckAccess", "Truck access")]) },
+  { key: "INDUSTRIAL_PROPERTY", category: "COMMERCIAL", label: "Industrial property", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Industrial unit", listingTypes: ["RENT", "LEASE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "powerLoadKw", label: "Sanctioned power load (kW)", type: "decimal", min: 0, max: 100000 }, f.yesNo("truckAccess", "Truck access")]) },
+  { key: "COMMERCIAL_COMPLEX", category: "COMMERCIAL", label: "Commercial complex (shops)", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Shop", listingTypes: ["RENT", "LEASE"], buildingFields: commercialBuilding, unitFields: commercialUnit([{ key: "frontageFt", label: "Frontage (ft)", type: "decimal", min: 0, max: 1000 }, f.yesNo("mainRoadFacing", "Main road facing")]) },
   { key: "COWORKING_SPACE", category: "COMMERCIAL", label: "Coworking space", structure: "MULTI_UNIT", unitKind: "COMMERCIAL_SPACE", unitLabel: "Desk / cabin", listingTypes: ["RENT"], buildingFields: commercialBuilding, unitFields: commercialUnit([f.int("seats", "Seats", { required: true, min: 1, max: 10000 })]) },
-  { key: "RESIDENTIAL_PLOT", category: "LAND", label: "Residential plot", structure: "SINGLE_UNIT", unitKind: "PLOT", unitLabel: "Plot", listingTypes: ["LEASE", "SALE"], buildingFields: landBuilding, unitFields: landUnit },
-  { key: "COMMERCIAL_PLOT", category: "LAND", label: "Commercial plot", structure: "SINGLE_UNIT", unitKind: "PLOT", unitLabel: "Plot", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: landBuilding, unitFields: landUnit },
-  { key: "AGRICULTURAL_LAND", category: "LAND", label: "Agricultural land", structure: "SINGLE_UNIT", unitKind: "PLOT", unitLabel: "Land parcel", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: landBuilding, unitFields: [...landUnit.slice(0, -2), f.text("waterSource", "Water source"), ...availability] },
-  { key: "INDUSTRIAL_LAND", category: "LAND", label: "Industrial land", structure: "SINGLE_UNIT", unitKind: "PLOT", unitLabel: "Land parcel", listingTypes: ["RENT", "LEASE", "SALE"], buildingFields: landBuilding, unitFields: landUnit },
+  { key: "RESIDENTIAL_PLOT", category: "LAND", label: "Residential plot", structure: "SINGLE_UNIT", unitKind: "PLOT", unitLabel: "Plot", listingTypes: ["LEASE"], buildingFields: landBuilding, unitFields: landUnit },
+  { key: "COMMERCIAL_PLOT", category: "LAND", label: "Commercial plot", structure: "SINGLE_UNIT", unitKind: "PLOT", unitLabel: "Plot", listingTypes: ["RENT", "LEASE"], buildingFields: landBuilding, unitFields: landUnit },
+  { key: "AGRICULTURAL_LAND", category: "LAND", label: "Agricultural land", structure: "SINGLE_UNIT", unitKind: "PLOT", unitLabel: "Land parcel", listingTypes: ["RENT", "LEASE"], buildingFields: landBuilding, unitFields: [...landUnit.slice(0, -2), f.text("waterSource", "Water source"), ...availability] },
+  { key: "INDUSTRIAL_LAND", category: "LAND", label: "Industrial land", structure: "SINGLE_UNIT", unitKind: "PLOT", unitLabel: "Land parcel", listingTypes: ["RENT", "LEASE"], buildingFields: landBuilding, unitFields: landUnit },
 ];
 
 function pgBuildingFields(nameLabel: string): FieldDef[] {

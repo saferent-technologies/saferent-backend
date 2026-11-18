@@ -43,10 +43,11 @@ export async function createPaymentRequest(req: Request, res: Response): Promise
   try {
     const due = await prisma.rentPayment.findFirst({
       where: { id: idParam(req), tenantId: user.id },
-      include: { lease: { select: { id: true, propertyId: true, unitId: true, bedId: true, property: { select: { title: true, code: true } } } } },
+      include: { lease: { select: { id: true, status: true, propertyId: true, unitId: true, bedId: true, property: { select: { title: true, code: true } } } } },
     });
     if (!due) fail("not-found", REASONS.NOT_FOUND, "Rent due not found.");
     const d = due!;
+    if (d.lease.status !== "ACTIVE") fail("failed-precondition", REASONS.INVALID_STATE, "This lease has ended.");
     if (!(UNPAID as readonly string[]).includes(d.status)) fail("failed-precondition", REASONS.INVALID_STATE, d.status === "PAID" ? "This rent is already paid." : "Nothing to pay for this month.");
     const input = parseInput(createSchema, req.body);
     if (!req.file) fail("invalid-argument", REASONS.INVALID_INPUT, "Attach a photo or screenshot of the payment (proof).");
@@ -95,6 +96,7 @@ export async function useDepositForDue(req: Request, res: Response): Promise<voi
   const due = await prisma.rentPayment.findFirst({ where: { id: idParam(req), tenantId: user.id }, include: { lease: true } });
   if (!due) fail("not-found", REASONS.NOT_FOUND, "Rent due not found.");
   const d = due!;
+  if (d.lease.status !== "ACTIVE") fail("failed-precondition", REASONS.INVALID_STATE, "This lease has ended.");
   if (!d.lease.depositUsableAsRent) fail("already-exists", REASONS.CONFLICT, "Your landlord doesn't allow paying rent from the deposit");
   if (!(UNPAID as readonly string[]).includes(d.status)) fail("failed-precondition", REASONS.INVALID_STATE, d.status === "PAID" ? "This rent is already paid." : "Nothing to pay for this month.");
   const available = depositAvailable(d.lease);

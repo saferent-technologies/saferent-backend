@@ -64,6 +64,7 @@ import {
 } from "../service";
 import { canChangeActiveStatus, canPublish, canReview, canSubmit, canUnpublish, publicationAfterEdit } from "../workflow";
 import { evaluateForUser } from "../../services/referral.service";
+import { flagHomeAlertsTx } from "../../services/homeAlerts";
 import { dateChangesFor } from "../../controllers/leaseDates.controller";
 
 /** Building fields removed from some property types (e.g. APARTMENT parkingAvailable → Amenities). */
@@ -515,6 +516,7 @@ export async function reviewProperty(req: Request, res: Response): Promise<void>
       reviewedAt: new Date(),
     });
     if (approve) await tx.propertyImage.updateMany({ where: { propertyId: property.id, status: "PENDING" }, data: { status: "APPROVED", reviewedById: user.id } });
+    if (goLive) await flagHomeAlertsTx(tx, property.id);
     await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "publicationStatus", from: property.publicationStatus, to: approve ? approvedStatus : "REJECTED", reason });
     await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "verificationStatus", from: property.verificationStatus, to: approve ? "VERIFIED" : "REJECTED", reason });
     await audit(tx, req, {
@@ -548,6 +550,7 @@ async function setPublished(req: Request, res: Response, publish: boolean): Prom
   const to = publish ? "PUBLISHED" : "APPROVED";
   await withProperty(property.id, async (tx) => {
     await updateWithVersion(tx, property.id, property.version, { publicationStatus: to, publishedAt: publish ? new Date() : undefined });
+    if (publish) await flagHomeAlertsTx(tx, property.id);
     await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "publicationStatus", from: property.publicationStatus, to });
   });
   res.locals.message = publish ? "Property published" : "Property unpublished";

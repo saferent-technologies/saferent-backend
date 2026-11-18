@@ -479,8 +479,7 @@ function UnitsStep({ p, type, reload, next, setMsg }: StepProps) {
 
 function UnitForm({ p, type, unit, onSaved, setMsg }: { p: PropertyDetail; type: PropertyTypeDef; unit: Unit | null; onSaved: () => Promise<void>; setMsg: (m: Msg) => void }) {
   const [values, setValues] = useState<Values>(() => (unit ? { ...unit.attributes, ...unit, availableFrom: unit.availableFrom?.slice(0, 10) ?? "" } : { availabilityStatus: "AVAILABLE", furnishing: "NOT_DISCLOSED" }));
-  const sale = p.listingType === "SALE";
-  const [rent, setRent] = useState(unit?.pricing?.[sale ? "salePrice" : "monthlyRent"] ?? "");
+  const [rent, setRent] = useState(unit?.pricing?.monthlyRent ?? "");
   const [deposit, setDeposit] = useState(unit?.pricing?.securityDeposit ?? "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -492,7 +491,7 @@ function UnitForm({ p, type, unit, onSaved, setMsg }: { p: PropertyDetail; type:
     try {
       const body: Values = { ...toApiValues(fields, values) };
       if (body.availabilityStatus === "OCCUPIED") delete body.availabilityStatus;
-      if (rent !== "" || deposit !== "") body.pricing = sale ? { salePrice: rent === "" ? null : String(rent) } : { monthlyRent: rent === "" ? null : String(rent), securityDeposit: deposit === "" ? null : String(deposit) };
+      if (rent !== "" || deposit !== "") body.pricing = { monthlyRent: rent === "" ? null : String(rent), securityDeposit: deposit === "" ? null : String(deposit) };
       if (unit) await request(`/properties/${p.id}/units/${unit.id}`, { method: "PATCH", body: { ...body, version: unit.version } });
       else await request(`/properties/${p.id}/units`, { method: "POST", body });
       await onSaved();
@@ -510,8 +509,8 @@ function UnitForm({ p, type, unit, onSaved, setMsg }: { p: PropertyDetail; type:
       <DynamicFields defs={fields} values={values} onChange={(k, v) => setValues({ ...values, [k]: v })} />
       {values.availabilityStatus === "OCCUPIED" && <Alert kind="info">Occupied by an active lease — availability changes when the lease ends.</Alert>}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Input label={sale ? "Sale price (₹)" : "Monthly rent (₹)"} type="number" min={0} step="any" value={String(rent ?? "")} onChange={(e) => setRent(e.target.value)} hint="You can add all charges in the Rent & charges step." />
-        {!sale && <Input label="Security deposit (₹)" type="number" min={0} step="any" value={String(deposit ?? "")} onChange={(e) => setDeposit(e.target.value)} />}
+        <Input label="Monthly rent (₹)" type="number" min={0} step="any" value={String(rent ?? "")} onChange={(e) => setRent(e.target.value)} hint="You can add all charges in the Rent & charges step." />
+        <Input label="Security deposit (₹)" type="number" min={0} step="any" value={String(deposit ?? "")} onChange={(e) => setDeposit(e.target.value)} />
       </div>
       {type.floorWise && unit && <DuplexFloors p={p} unit={unit} onSaved={onSaved} />}
       {unitPriced(p) && unit && <ScopedAmenities p={p} target={{ unitId: unit.id }} current={unit.amenities} what={(type.unitLabel ?? "unit").toLowerCase()} onSaved={onSaved} />}
@@ -930,17 +929,15 @@ const CHARGE_ROWS = [
 
 function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
   const pr = p.pricing;
-  const sale = p.listingType === "SALE";
   // Flats / rooms carry their own rent and deposit (step 5), so the property-level ones aren't asked again.
   const perUnitRent = type.structure === "MULTI_UNIT" || type.structure === "ROOMS_BEDS" || unitPriced(p);
   // …and for rentals of those, the lease terms grid (advance, due day, lock-in, notice, agreement) isn't asked either.
-  const showTerms = sale || !perUnitRent;
-  // Apartments: rent, deposit and sale price live on each flat; the building only has common charges and terms.
+  const showTerms = !perUnitRent;
+  // Apartments: rent and deposit live on each flat; the building only has common charges and terms.
   const flatPriced = unitPriced(p) || type.structure === "ROOMS_BEDS";
   const subUnit = type.structure === "ROOMS_BEDS" ? "room or bed" : (type.unitLabel ?? "unit").toLowerCase();
   const [v, setV] = useState<Record<string, string>>(() => ({
     monthlyRent: pr?.monthlyRent ?? "",
-    salePrice: pr?.salePrice ?? "",
     securityDeposit: pr?.securityDeposit ?? "",
     advanceRentMonths: pr?.advanceRentMonths?.toString() ?? "",
     rentDueDay: pr?.rentDueDay?.toString() ?? "",
@@ -968,13 +965,13 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
       request(`/properties/${p.id}/pricing`, {
         method: "PUT",
         body: {
-          ...(sale ? (flatPriced ? {} : { salePrice: money(v.salePrice) }) : showTerms ? { monthlyRent: money(v.monthlyRent), securityDeposit: money(v.securityDeposit), advanceRentMonths: num(v.advanceRentMonths), rentDueDay: num(v.rentDueDay), lockInPeriodMonths: num(v.lockInPeriodMonths), noticePeriodDays: num(v.noticePeriodDays) } : {}),
+          ...(showTerms ? { monthlyRent: money(v.monthlyRent), securityDeposit: money(v.securityDeposit), advanceRentMonths: num(v.advanceRentMonths), rentDueDay: num(v.rentDueDay), lockInPeriodMonths: num(v.lockInPeriodMonths), noticePeriodDays: num(v.noticePeriodDays) } : {}),
           ...(showTerms ? { agreementCharges: money(v.agreementCharges), agreementChargesPaidBy: v.agreementChargesPaidBy } : {}),
           lateFeePolicy: v.lateFeePolicy || null,
           rentIncreasePolicy: v.rentIncreasePolicy || null,
           refundPolicy: v.refundPolicy || null,
           otherTerms: v.otherTerms || null,
-          ...(sale ? {} : { depositUsableAsRent: depositUsable }),
+          depositUsableAsRent: depositUsable,
           charges: charges.map((c) => ({
             kind: c.kind,
             label: c.label,
@@ -991,8 +988,8 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
       title="Rent and financial details"
       description={
         flatPriced
-          ? `Charges and terms common to every ${subUnit} (maintenance, water, food …). ${sale ? "The price" : "Rent and deposit"} are set on each ${subUnit} in step 5 — tenants see its own price plus these common charges.`
-          : perUnitRent && !sale
+          ? `Charges and terms common to every ${subUnit} (maintenance, water, food …). Rent and deposit are set on each ${subUnit} in step 5 — tenants see its own price plus these common charges.`
+          : perUnitRent
             ? "Charges common to every unit. Rent and deposit are set for each unit in step 5."
             : "Every charge is listed separately — never combined into one unclear amount."
       }
@@ -1000,10 +997,7 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
     >
       {showTerms && (
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {sale ? (
-          !flatPriced && <Input label="Sale price (₹)" type="number" min={0} value={v.salePrice} onChange={set("salePrice")} />
-        ) : (
-          <>
+        <>
             {!perUnitRent && (
               <>
                 <Input label="Monthly rent (₹)" type="number" min={0} value={v.monthlyRent} onChange={set("monthlyRent")} />
@@ -1014,8 +1008,7 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
             <Input label="Rent due day (1–28)" type="number" min={1} max={28} value={v.rentDueDay} onChange={set("rentDueDay")} />
             <Input label="Lock-in period (months)" type="number" min={0} value={v.lockInPeriodMonths} onChange={set("lockInPeriodMonths")} />
             <Input label="Notice period (days)" type="number" min={0} value={v.noticePeriodDays} onChange={set("noticePeriodDays")} />
-          </>
-        )}
+        </>
         <Input label="Agreement charges (₹)" type="number" min={0} value={v.agreementCharges} onChange={set("agreementCharges")} />
         <Select label="Agreement charges paid by" options={["LANDLORD", "TENANT", "SHARED", "NOT_APPLICABLE", "NOT_DISCLOSED"].map((o) => ({ value: o, label: labelize(o) }))} value={v.agreementChargesPaidBy} onChange={set("agreementChargesPaidBy")} />
       </div>
@@ -1037,7 +1030,7 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
         <Textarea label="Refund policy" rows={2} value={v.refundPolicy} onChange={set("refundPolicy")} />
         <Textarea label="Other terms" rows={2} value={v.otherTerms} onChange={set("otherTerms")} />
       </div>
-      {!sale && (
+      {(
         <label className="mt-4 flex items-start gap-3 rounded-control border border-line p-3 text-sm">
           <input type="checkbox" className="mt-1 size-4 accent-brand" checked={depositUsable} onChange={(e) => setDepositUsable(e.target.checked)} />
           <span>
@@ -1049,7 +1042,7 @@ function PricingStep({ p, type, enums, reload, next, setMsg }: StepProps) {
       {pr?.breakdown && (
         <div className="mt-6 rounded-control bg-subtle p-4">
           <h3 className="mb-3 font-semibold">What tenants will see</h3>
-          <CostBreakdownView breakdown={pr.breakdown} chargesOnly={perUnitRent && !sale} />
+          <CostBreakdownView breakdown={pr.breakdown} chargesOnly={perUnitRent} />
         </div>
       )}
     </StepCard>

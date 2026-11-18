@@ -7,6 +7,9 @@ import * as insights from "../controllers/insights.controller";
 import * as ops from "../controllers/operations.controller";
 import * as tenantReq from "../controllers/tenantRequests.controller";
 import * as announcements from "../controllers/announcements.controller";
+import * as idVault from "../controllers/idVault.controller";
+import * as homeAlerts from "../controllers/homeAlerts.controller";
+import * as userArea from "../controllers/userArea.controller";
 import * as profile from "../controllers/profile.controller";
 import * as assignments from "../controllers/properties.controller";
 import * as rentals from "../controllers/rentals.controller";
@@ -28,7 +31,7 @@ import * as documents from "../controllers/documents.controller";
 import * as roles from "../controllers/roles.controller";
 import * as userOverview from "../controllers/userOverview.controller";
 import * as users from "../controllers/users.controller";
-import { uploadAnnouncementImage, uploadAvatar, uploadDocument, uploadImages, uploadPaymentProof, uploadSelfie } from "../lib/uploads";
+import { uploadAnnouncementImage, uploadVaultPages, uploadAvatar, uploadDocument, uploadImages, uploadPaymentProof, uploadSelfie } from "../lib/uploads";
 import { verifyAppCheck } from "../middleware/appCheck";
 import { authenticate, authenticateAllowBlocked, loadUser, protect as p, requireAnyPermission } from "../middleware/auth";
 import * as browse from "../properties/controllers/browse.controller";
@@ -376,6 +379,19 @@ api.post("/maintenance", p("maintenance.create"), uploadImages("maintenance-phot
 /* Tenant requests (maintenance / service / complaint): tenant ↔ landlord, with timeline. Aliases under /requests. */
 api.get("/maintenance/options", p("maintenance.view"), tenantReq.requestOptions);
 api.get("/requests/options", p("maintenance.view"), tenantReq.requestOptions);
+/* Tenant "Open to new homes" alert. */
+api.put("/me/location", p(), userArea.putMyLocation);
+api.get("/me/home-alert", p(), homeAlerts.getHomeAlert);
+api.put("/me/home-alert", p(), homeAlerts.putHomeAlert);
+/* Tenant ID documents vault (encrypted) + share with the current landlord. */
+api.get("/me/documents", p(), idVault.getVault);
+api.post("/me/documents", p(), uploadVaultPages, idVault.uploadDocument);
+api.delete("/me/documents/:id", p(), idVault.deleteDocument);
+api.post("/me/documents/:id/shares", p(), idVault.shareDocument);
+api.delete("/me/documents/:id/shares/:leaseId", p(), idVault.unshareDocument);
+api.get("/me/documents/:id/pages/:pageId", p(), idVault.ownPage);
+api.get("/leases/:leaseId/documents", p(), idVault.leaseDocuments);
+api.get("/leases/:leaseId/documents/:docId/pages/:pageId", p(), idVault.leaseDocumentPage);
 /* Landlord announcements → tenants (owner + recipients only). */
 api.post("/announcements", p(), uploadAnnouncementImage, announcements.createAnnouncement);
 api.get("/announcements", p(), announcements.listAnnouncements);

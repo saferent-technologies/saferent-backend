@@ -424,11 +424,10 @@ export async function leasePayments(req: Request, res: Response): Promise<void> 
           : null,
       }
     : null;
-  res.json({
-    leaseId: lease.id,
-    leaseStatus: lease.status,
-    deposit,
-    dues: rows.map((r) => ({
+  const active = lease.status === "ACTIVE";
+  // Ended lease: read-only history (paid / part-paid with receipts, waived); nothing pending.
+  const shown = active ? rows : rows.filter((r) => r.status === "PAID" || r.status === "PARTIAL" || r.status === "WAIVED");
+  const dues = shown.map((r) => ({
       id: r.id,
       period: periodLabel(r.period),
       periodKey: r.period,
@@ -442,7 +441,14 @@ export async function leasePayments(req: Request, res: Response): Promise<void> 
       daysOverdue: daysOverdueOf(r),
       receipt: receiptOf(r),
       paymentRequest: requests.get(r.id) ?? null,
-    })),
+    }));
+  res.json({
+    leaseId: lease.id,
+    leaseStatus: lease.status,
+    deposit,
+    dues,
+    pending: active ? dues.filter((d) => d.status === "DUE" || d.status === "OVERDUE" || d.status === "PARTIAL") : [],
+    history: dues.filter((d) => d.status === "PAID" || d.status === "PARTIAL" || d.status === "WAIVED"),
   });
 }
 

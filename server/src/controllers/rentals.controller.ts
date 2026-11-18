@@ -246,8 +246,10 @@ function presentLease(lease: LeaseWithParties, viewerId: string) {
   const share = lease.status === "ACTIVE" || !isParty;
   return {
     ...lease,
-    landlord: share ? toContact(lease.landlord) : toPublicUser(lease.landlord),
-    tenant: share ? toContact(lease.tenant) : toPublicUser(lease.tenant),
+    // phone: only while the lease is active (a pending close request keeps it ACTIVE); null once ended.
+    landlord: share ? { ...toContact(lease.landlord), phone: lease.landlord.phoneNumber } : { ...toPublicUser(lease.landlord), phone: null },
+    tenant: share ? { ...toContact(lease.tenant), phone: lease.tenant.phoneNumber } : { ...toPublicUser(lease.tenant), phone: null },
+    endedAt: lease.status === "ACTIVE" ? null : lease.endedAt,
     // securityDeposit stays the original amount; this shows how much of it was used for rent and what's left.
     deposit: { ...depositSummary(lease), usableAsRent: lease.depositUsableAsRent },
   };
@@ -265,6 +267,7 @@ function depositSummary(l: { securityDeposit: unknown; depositPaidAt: Date | nul
 export async function listLeases(req: Request, res: Response): Promise<void> {
   const user = me(req);
   await finalizeDueExits();
+  if (req.query.role === "tenant") return tenantLeases(req, res);
   const scope = leaseWhere(user);
   if (!scope) fail("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to do that.");
   const p = pagination(req);
@@ -275,9 +278,34 @@ export async function listLeases(req: Request, res: Response): Promise<void> {
     prisma.lease.findMany({ where, include: leaseInclude, orderBy: { startDate: "desc" }, skip: p.skip, take: p.take }),
     prisma.lease.count({ where }),
   ]);
+  res.json(paged(await fullLeases(items, user.id), total, p));
+}
+
+/** "Flat 302, Green Heights, 12 Road, Madhapur, Hyderabad 500081" */
+function fullAddress(l: LeaseWithParties, place: string | null): string {
+  const cityPin = [l.property.city, l.property.pincode].filter(Boolean).join(" ");
+  return [place, l.property.title ?? l.property.code, l.property.addressLine, l.property.locality, cityPin || null].filter(Boolean).join(", ");
+}
+
+/** The lease shape used by the list and the detail: + place, address and the open close request. */
+async function fullLeases(items: LeaseWithParties[], viewerId: string) {
   const places = await placeLabels(items);
   const exits = await prisma.leaseExitRequest.findMany({ where: { leaseId: { in: items.map((l) => l.id) }, status: { in: ["PENDING", "ACCEPTED"] } }, select: { leaseId: true, status: true, requestedByRole: true, moveOutDate: true } });
-  res.json(paged(items.map((l) => ({ ...presentLease(l, user.id), place: placeOf(places, l), placeCode: placeCodeOf(places, l), exit: exits.find((x) => x.leaseId === l.id) ?? null })), total, p));
+  return items.map((l) => {
+    const place = placeOf(places, l);
+    return { ...presentLease(l, viewerId), place, placeCode: placeCodeOf(places, l), address: fullAddress(l, place), exit: exits.find((x) => x.leaseId === l.id) ?? null };
+  });
+}
+
+/**
+ * GET /api/v1/leases?role=tenant — the signed-in tenant's own leases (ended ones too, read-only):
+ * { leases: [...] } — active first, then ended / terminated; newest first within each.
+ */
+async function tenantLeases(req: Request, res: Response): Promise<void> {
+  const user = me(req);
+  const rows = await prisma.lease.findMany({ where: { tenantId: user.id }, include: leaseInclude, orderBy: [{ startDate: "desc" }, { createdAt: "desc" }], take: 100 });
+  rows.sort((a, b) => Number(b.status === "ACTIVE") - Number(a.status === "ACTIVE"));
+  res.json({ leases: await fullLeases(rows, user.id) });
 }
 
 async function scopedLease(req: Request, permission: "leases.view" | "leases.manage" = "leases.view") {
@@ -289,8 +317,7 @@ async function scopedLease(req: Request, permission: "leases.view" | "leases.man
 /** GET /api/leases/:id */
 export async function getLease(req: Request, res: Response): Promise<void> {
   const lease = await scopedLease(req);
-  const places = await placeLabels([lease]);
-  res.json({ lease: { ...presentLease(lease, me(req).id), place: placeOf(places, lease), placeCode: placeCodeOf(places, lease) } });
+  res.json({ lease: (await fullLeases([lease], me(req).id))[0] });
 }
 
 const terminateSchema = z.object({ reason: z.string().trim().min(5).max(500) });

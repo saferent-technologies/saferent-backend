@@ -10,7 +10,7 @@ import { isEmpty, missingRequired } from "./fields";
 
 export interface CompletenessInput {
   type: PropertyTypeDef;
-  listingType: "RENT" | "LEASE" | "SALE";
+  listingType: "RENT" | "LEASE";
   property: {
     title?: string | null;
     description?: string | null;
@@ -100,7 +100,6 @@ function fraction(checks: Array<[boolean, string]>): { ratio: number; missing: s
 }
 
 function priceDisclosed(input: CompletenessInput): boolean {
-  if (input.listingType === "SALE") return input.pricing.some((p) => !isEmpty(p.values.salePrice));
   // PG / Hostel: every room needs a rent (per bed), or every bed its own rent — the building has none.
   if (input.type.structure === "ROOMS_BEDS") {
     const beds = input.rooms.reduce((n, r) => n + r.bedCount, 0);
@@ -196,8 +195,8 @@ export function computeCompleteness(input: CompletenessInput, weights: Completen
   const charges = input.pricing.flatMap((p) => p.charges);
   const chargeDisclosed = (kind: string, utilKey?: string) =>
     charges.some((c) => c.kind === kind && c.billing !== "NOT_DISCLOSED") || (utilKey ? disclosed(input.utility?.[utilKey]) : false);
-  const rental = input.listingType !== "SALE";
-  const checks: Array<[boolean, string]> = [[priceDisclosed(input), input.listingType === "SALE" ? "Sale price" : "Rent"]];
+  const rental = true; // SafeRent lists rentals only
+  const checks: Array<[boolean, string]> = [[priceDisclosed(input), "Rent"]];
   if (rental) {
     checks.push(
       [!isEmpty(v.securityDeposit) || input.pricing.some((p) => p.unitId && !isEmpty(p.values.securityDeposit)) || input.rooms.some((r) => !isEmpty(r.securityDeposit)), "Security deposit"],
@@ -261,7 +260,7 @@ export function submissionProblems(input: CompletenessInput): string[] {
     });
   }
   if (input.imageCount === 0) problems.push("Add at least one photo.");
-  if (!priceDisclosed(input)) problems.push(input.listingType === "SALE" ? "Add the sale price." : "Add the rent.");
+  if (!priceDisclosed(input)) problems.push("Add the rent.");
   return problems;
 }
 

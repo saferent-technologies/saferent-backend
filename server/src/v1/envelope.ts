@@ -36,6 +36,7 @@ export function errorCodeFor(status: number, reason?: string): string {
   if (reason === "SESSION_REQUIRED") return "SESSION_REQUIRED";
   if (reason === "ACCOUNT_DELETED") return "ACCOUNT_DELETED";
   if (reason === "ACCOUNT_DISABLED") return "ACCOUNT_DISABLED";
+  if (reason === "LEASE_ENDED") return "LEASE_ENDED";
   return ERROR_CODES[status] ?? (status >= 500 ? "INTERNAL_ERROR" : "BAD_REQUEST");
 }
 

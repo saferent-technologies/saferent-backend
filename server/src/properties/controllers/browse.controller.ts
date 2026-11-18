@@ -126,6 +126,7 @@ export async function browseProperty(req: Request, res: Response): Promise<void>
  */
 export async function locationSuggestions(req: Request, res: Response): Promise<void> {
   const q = typeof req.query.q === "string" ? req.query.q : "";
-  const limit = Math.min(20, Math.max(1, Number(req.query.limit) || 10));
+  const limit = Math.min(20, Math.max(1, Number(req.query.limit) || 8));
+  res.setHeader("Cache-Control", "public, max-age=300");
   res.json({ items: await suggestLocations(q, limit) });
 }

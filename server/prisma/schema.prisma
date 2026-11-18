@@ -58,10 +58,10 @@ enum PropertyCategory {
   LAND
 }
 
+/// SafeRent lists rentals only.
 enum ListingType {
   RENT
   LEASE
-  SALE
 }
 
 /// Lifecycle of a record. Independent of publication, verification and availability.
@@ -611,6 +611,16 @@ model User {
   assignedTickets     SupportTicket[]      @relation("TicketAssignee")
   notifications       Notification[]
 
+  /// Approximate area (≈1 km, 2 decimals) sent by the app — only for search ranking, counts and alerts.
+  areaLatitude   Decimal?  @map("area_latitude") @db.Decimal(5, 2)
+  areaLongitude  Decimal?  @map("area_longitude") @db.Decimal(6, 2)
+  areaLocality   String?   @map("area_locality") @db.VarChar(120)
+  areaCity       String?   @map("area_city") @db.VarChar(80)
+  areaState      String?   @map("area_state") @db.VarChar(80)
+  areaPincode    String?   @map("area_pincode") @db.VarChar(10)
+  areaRole       String?   @map("area_role") @db.VarChar(20)
+  areaUpdatedAt  DateTime? @map("area_updated_at")
+  @@index([areaCity, areaLocality])
   @@index([role, accountStatus])
   @@index([deletedPhoneHash])
   @@map("users")
@@ -919,6 +929,8 @@ model Property {
   reviewedById       String?            @map("reviewed_by_id") @db.Char(36)
   reviewedAt         DateTime?          @map("reviewed_at")
   submittedAt        DateTime?          @map("submitted_at")
+  /// Set when the listing goes live or a unit / bed frees up; the home-alerts job matches it, then clears it.
+  homeAlertPendingAt DateTime?          @map("home_alert_pending_at")
   publishedAt        DateTime?          @map("published_at")
   archivedAt         DateTime?          @map("archived_at")
   wizardStep         Int                @default(1) @map("wizard_step")
@@ -957,6 +969,7 @@ model Property {
   @@index([ownerId, publicationStatus])
   @@index([publicationStatus, activeStatus, city])
   @@index([propertyTypeKey])
+  @@index([homeAlertPendingAt])
   @@index([rentFrom])
   @@index([revisionOfId])
   @@map("properties")
@@ -1185,7 +1198,6 @@ model PropertyPricing {
   scopeKey               String          @map("scope_key") @db.VarChar(36)
   currency               String          @default("INR") @db.Char(3)
   monthlyRent            Decimal?        @map("monthly_rent") @db.Decimal(12, 2)
-  salePrice              Decimal?        @map("sale_price") @db.Decimal(14, 2)
   securityDeposit        Decimal?        @map("security_deposit") @db.Decimal(12, 2)
   advanceRentMonths      Int?            @map("advance_rent_months")
   rentDueDay             Int?            @map("rent_due_day")
@@ -2370,6 +2382,13 @@ model Location {
   state         String?      @db.VarChar(80)
   /// kind|state|city|name in lower case — one row per place.
   key           String       @unique @db.VarChar(320)
+  /// lower(trim(collapse spaces)) of name / city (localities only) / state. UNIQUE with kind.
+  nameKey       String       @default("") @map("name_key") @db.VarChar(120)
+  cityKey       String       @default("") @map("city_key") @db.VarChar(80)
+  stateKey      String       @default("") @map("state_key") @db.VarChar(80)
+  /// Users whose approximate area is this place.
+  userCount     Int          @default(0) @map("user_count")
+  createdAt     DateTime     @default(now()) @map("created_at")
   /// Average position of the properties in this place (for a map pin / "near me").
   latitude      Decimal?     @db.Decimal(9, 6)
   longitude     Decimal?     @db.Decimal(9, 6)
@@ -2379,7 +2398,10 @@ model Location {
   propertyCount Int          @default(0) @map("property_count")
   updatedAt     DateTime     @updatedAt @map("updated_at")
 
+  @@unique([kind, nameKey, cityKey, stateKey])
   @@index([name])
+  @@index([nameKey])
+  @@index([latitude, longitude])
   @@index([kind, listingCount])
   @@map("locations")
 }
@@ -2454,4 +2476,113 @@ model AnnouncementRecipient {
   @@unique([announcementId, tenantId])
   @@index([tenantId, createdAt])
   @@map("announcement_recipients")
+}
+
+/// Tenant's ID document in the encrypted vault (Aadhaar, PAN …). Pages are encrypted files.
+model TenantDocument {
+  id        String   @id @default(uuid()) @db.Char(36)
+  tenantId  String   @map("tenant_id") @db.Char(36)
+  /// AADHAAR | PAN | PASSPORT | DRIVING_LICENCE | VOTER_ID | EMPLOYEE_ID | OTHER
+  type      String   @db.VarChar(30)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  pages  TenantDocumentPage[]
+  shares TenantDocumentShare[]
+
+  @@index([tenantId, type])
+  @@map("tenant_documents")
+}
+
+/// One encrypted page: AES-256-GCM with its own data key, wrapped by the key-encryption key (keyId).
+model TenantDocumentPage {
+  id         String   @id @default(uuid()) @db.Char(36)
+  documentId String   @map("document_id") @db.Char(36)
+  pageNo     Int      @map("page_no")
+  storageKey String   @map("storage_key") @db.VarChar(255)
+  mimeType   String   @map("mime_type") @db.VarChar(20)
+  size       Int
+  iv         String   @db.VarChar(32)
+  authTag    String   @map("auth_tag") @db.VarChar(32)
+  wrappedKey String   @map("wrapped_key") @db.VarChar(255)
+  keyId      String   @map("key_id") @db.VarChar(40)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  document TenantDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, pageNo])
+  @@map("tenant_document_pages")
+}
+
+/// Tenant shared a document with the landlord of one lease — valid only while that lease is ACTIVE.
+model TenantDocumentShare {
+  id         String   @id @default(uuid()) @db.Char(36)
+  documentId String   @map("document_id") @db.Char(36)
+  leaseId    String   @map("lease_id") @db.Char(36)
+  landlordId String   @map("landlord_id") @db.Char(36)
+  tenantId   String   @map("tenant_id") @db.Char(36)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  document TenantDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, leaseId])
+  @@index([leaseId])
+  @@map("tenant_document_shares")
+}
+
+/// Vault audit trail — ids only (never names, numbers or URLs).
+model TenantDocumentAccessLog {
+  id         String   @id @default(uuid()) @db.Char(36)
+  actorId    String   @map("actor_id") @db.Char(36)
+  /// UPLOAD | REPLACE | VIEW | SHARE | UNSHARE | DELETE | SHRED | LEASE_END
+  action     String   @db.VarChar(20)
+  documentId String?  @map("document_id") @db.Char(36)
+  pageId     String?  @map("page_id") @db.Char(36)
+  leaseId    String?  @map("lease_id") @db.Char(36)
+  tenantId   String?  @map("tenant_id") @db.Char(36)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@index([documentId])
+  @@map("tenant_document_access_logs")
+}
+
+/// Tenant's "Open to new homes" alert (one per user). Location is used only for matching.
+model HomeAlert {
+  id            String    @id @default(uuid()) @db.Char(36)
+  userId        String    @unique @map("user_id") @db.Char(36)
+  enabled       Boolean   @default(false)
+  latitude      Decimal?  @db.Decimal(9, 6)
+  longitude     Decimal?  @db.Decimal(9, 6)
+  areaLabel     String?   @map("area_label") @db.VarChar(120)
+  radiusKm      Int       @default(5) @map("radius_km")
+  maxRent       Int?      @map("max_rent")
+  /// Property type keys; empty / null = all types.
+  propertyTypes Json?     @map("property_types")
+  locality      String?   @db.VarChar(120)
+  city          String?   @db.VarChar(80)
+  /// Normalized locality / city — an alert matches listings in the same place even without a point.
+  localityKey   String?   @map("locality_key") @db.VarChar(120)
+  cityKey       String?   @map("city_key") @db.VarChar(80)
+  /// Last "N new homes near you" summary push (at most one a day).
+  lastDigestAt  DateTime? @map("last_digest_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([enabled, latitude, longitude])
+  @@index([enabled, localityKey])
+  @@index([enabled, cityKey])
+  @@map("home_alerts")
+}
+
+/// A listing already matched for a user (at most one push per listing per user). pushed=false → in a summary.
+model HomeAlertMatch {
+  id         String   @id @default(uuid()) @db.Char(36)
+  userId     String   @map("user_id") @db.Char(36)
+  propertyId String   @map("property_id") @db.Char(36)
+  pushed     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, propertyId])
+  @@index([userId, createdAt])
+  @@map("home_alert_matches")
 }

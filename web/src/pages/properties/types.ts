@@ -77,7 +77,6 @@ export interface CostBreakdown {
 export interface Pricing {
   id: string;
   monthlyRent: string | null;
-  salePrice: string | null;
   securityDeposit: string | null;
   advanceRentMonths: number | null;
   rentDueDay: number | null;

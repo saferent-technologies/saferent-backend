@@ -86,6 +86,15 @@ export const uploadImages = (folder: string, max = 10): RequestHandler[] => [upl
 export const uploadDocument = (folder: string): RequestHandler[] => [uploader(folder, UPLOADS.DOCUMENT_TYPES).single("file"), verifyContent("document")];
 export const uploadAvatar: RequestHandler[] = [uploader("avatars", UPLOADS.IMAGE_TYPES).single("file"), verifyContent("image")];
 /** Owner-verification selfies (never public; served only to the owner and reviewers). */
+/**
+ * ID documents vault: kept in MEMORY only (never written to disk unencrypted), field "files": up to
+ * 2 JPG / PNG pages (5 MB each), or 1 PDF (10 MB). The controller checks the bytes, strips EXIF and encrypts.
+ */
+export const uploadVaultPages: RequestHandler = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 2 }, // images are held to 5 MB in the controller
+  fileFilter: (_req, file, cb) => (["image/jpeg", "image/png", "application/pdf"].includes(file.mimetype) ? cb(null, true) : cb(new AppError("invalid-argument", REASONS.INVALID_INPUT, "Upload JPG or PNG photos, or a PDF, of the document."))),
+}).array("files", 2);
 /** Announcement picture, multipart field "image". */
 export const uploadAnnouncementImage: RequestHandler[] = [uploader("announcements", UPLOADS.IMAGE_TYPES).single("image"), verifyContent("image")];
 /** Tenant rent payment proof (screenshot / photo), multipart field "proof". */

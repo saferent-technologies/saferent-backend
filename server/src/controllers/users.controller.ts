@@ -29,6 +29,9 @@ import {
 import { effectivePermissionsFor } from "../rbac/service";
 import { sendEmail } from "../services/email";
 import { staffInviteEmail } from "../services/templates";
+import { shredTenantDocuments } from "./idVault.controller";
+import { deleteHomeAlertFor } from "./homeAlerts.controller";
+import { clearUserArea } from "./userArea.controller";
 import { toAuditEntry, toProfile } from "./serializers";
 
 function enforce(decision: Decision): void {
@@ -539,6 +542,10 @@ export async function deleteUser(req: Request, res: Response): Promise<void> {
   });
   // Only the DB status changes: no Firebase delete/disable, no token or session revoke. The account gate
   // answers 403 ACCOUNT_DELETED to every request, and Restore works without the user signing in again.
+  // ID documents vault: crypto-shredded (not brought back by Restore).
+  await shredTenantDocuments(target.id, me(req).id);
+  await deleteHomeAlertFor(target.id);
+  await clearUserArea(target.id);
   await writeAuditLog({ action: "account.deleted", outcome: "success", userId: target.id, metadata: { by: me(req).id, reason }, ...requestMeta(req) });
   res.locals.message = "Account deleted";
   res.json({ ok: true, id: target.id, accountStatus: "DELETED" });

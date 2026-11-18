@@ -25,7 +25,7 @@ const INHERITED_TERMS = ["advanceRentMonths", "rentDueDay", "lateFeePolicy", "lo
  */
 function flatPricing(unit: Pricing | undefined, common: Pricing | undefined): Pricing | undefined {
   if (!common) return unit;
-  if (!unit) return { ...common, id: `${common.id}:flat`, monthlyRent: null, securityDeposit: null, salePrice: null };
+  if (!unit) return { ...common, id: `${common.id}:flat`, monthlyRent: null, securityDeposit: null };
   const charges = [...unit.charges, ...common.charges.filter((c) => !unit.charges.some((u) => u.kind === c.kind && u.label === c.label))];
   const merged: Record<string, unknown> = { ...unit, charges };
   for (const k of INHERITED_TERMS) if (merged[k] === null || merged[k] === undefined) merged[k] = common[k];
@@ -37,7 +37,7 @@ function flatPricing(unit: Pricing | undefined, common: Pricing | undefined): Pr
 
 /** PG room: its rent (per bed) and deposit + the building's common charges and terms. */
 function roomPricing(room: { rentPerBed: unknown; securityDeposit: unknown }, common: Pricing | undefined, utility: Utility | undefined) {
-  const base = { ...(common ?? {}), monthlyRent: room.rentPerBed ?? null, securityDeposit: room.securityDeposit ?? null, salePrice: null } as unknown as Pricing;
+  const base = { ...(common ?? {}), monthlyRent: room.rentPerBed ?? null, securityDeposit: room.securityDeposit ?? null } as unknown as Pricing;
   const charges = (common?.charges ?? []) as unknown as ChargeLike[];
   return { monthlyRent: room.rentPerBed ?? null, securityDeposit: room.securityDeposit ?? null, depositUsableAsRent: common?.depositUsableAsRent ?? false, charges: common?.charges ?? [], breakdown: costBreakdown(base, charges, utility ?? null) };
 }

@@ -39,6 +39,15 @@ export function placesOf(address: { state?: string | null; city?: string | null;
   return out;
 }
 
+/** lower(trim(collapse spaces)) — the comparison key for names. */
+export function normKey(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+export function placeKeys(place: PlaceRef) {
+  return { nameKey: normKey(place.name), cityKey: place.kind === "LOCALITY" ? normKey(place.city) : "", stateKey: normKey(place.state) };
+}
+
 /** Properties that make up a place (MySQL comparisons are case-insensitive). */
 function whereFor(place: PlaceRef): Prisma.PropertyWhereInput {
   if (place.kind === "STATE") return { state: place.name };
@@ -46,33 +55,70 @@ function whereFor(place: PlaceRef): Prisma.PropertyWhereInput {
   return { locality: place.name, city: place.city ?? undefined, ...(place.state ? { state: place.state } : {}) };
 }
 
-const SUBMITTED: Prisma.PropertyWhereInput = { activeStatus: { not: "ARCHIVED" }, publicationStatus: { not: "DRAFT" } };
-const LIVE: Prisma.PropertyWhereInput = { publicationStatus: "PUBLISHED", activeStatus: "ACTIVE", availableCount: { gt: 0 } };
+/** Users whose approximate area is this place (deleted accounts excluded). */
+function usersIn(place: PlaceRef): Prisma.UserWhereInput {
+  const alive: Prisma.UserWhereInput = { accountStatus: { not: "DELETED" } };
+  if (place.kind === "STATE") return { ...alive, areaState: place.name };
+  if (place.kind === "CITY") return { ...alive, areaCity: place.name, ...(place.state ? { areaState: place.state } : {}) };
+  return { ...alive, areaLocality: place.name, areaCity: place.city ?? undefined };
+}
 
-/** Recounts one place and saves it (or removes it when no property is left there). */
+const SUBMITTED: Prisma.PropertyWhereInput = { activeStatus: { not: "ARCHIVED" }, publicationStatus: { not: "DRAFT" }, revisionOfId: null };
+const LIVE: Prisma.PropertyWhereInput = { publicationStatus: "PUBLISHED", activeStatus: "ACTIVE", revisionOfId: null };
+
+const round2 = (v: number) => Math.round(v * 100) / 100;
+
+/**
+ * Recounts one place and saves it — one row per (kind, name, city, state) key, ever:
+ * updates the existing row only when something changed; skips creating a spelling variant of a place
+ * that already sits at the same ~1 km point; removes the row when no property and no user is left.
+ */
 async function syncPlace(place: PlaceRef): Promise<void> {
   const key = locationKey(place.kind, place.name, place.city, place.state);
+  const keys = placeKeys(place);
   const where = whereFor(place);
-  const [propertyCount, listingCount, avg] = await Promise.all([
+  const [propertyCount, listingCount, userCount, avg, userAvg] = await Promise.all([
     prisma.property.count({ where: { AND: [where, SUBMITTED] } }),
     prisma.property.count({ where: { AND: [where, LIVE] } }),
+    prisma.user.count({ where: usersIn(place) }),
     prisma.property.aggregate({ where: { AND: [where, SUBMITTED, { latitude: { not: null } }, { longitude: { not: null } }] }, _avg: { latitude: true, longitude: true } }),
+    prisma.user.aggregate({ where: { AND: [usersIn(place), { areaLatitude: { not: null } }] }, _avg: { areaLatitude: true, areaLongitude: true } }),
   ]);
-  if (!propertyCount) {
-    await prisma.location.deleteMany({ where: { key } });
+  const existing = await prisma.location.findFirst({ where: { OR: [{ key }, { kind: place.kind, ...keys }] }, orderBy: { id: "asc" } });
+  if (!propertyCount && !userCount) {
+    if (existing) await prisma.location.delete({ where: { id: existing.id } });
     return;
   }
-  const data = {
-    kind: place.kind,
-    name: place.name,
-    city: place.city,
-    state: place.state,
-    listingCount,
-    propertyCount,
-    latitude: avg._avg.latitude,
-    longitude: avg._avg.longitude,
-  };
-  await prisma.location.upsert({ where: { key }, create: { key, ...data }, update: data });
+  // Centre: average of its listings' points, else of its users' points.
+  const lat = avg._avg.latitude ?? userAvg._avg.areaLatitude;
+  const lng = avg._avg.longitude ?? userAvg._avg.areaLongitude;
+  const latitude = lat === null || lat === undefined ? null : Math.round(Number(lat) * 1e6) / 1e6;
+  const longitude = lng === null || lng === undefined ? null : Math.round(Number(lng) * 1e6) / 1e6;
+
+  if (existing) {
+    const moved =
+      (existing.latitude === null) !== (latitude === null) ||
+      (latitude !== null && existing.latitude !== null && (Math.abs(Number(existing.latitude) - latitude) > 0.001 || Math.abs(Number(existing.longitude) - (longitude ?? 0)) > 0.001));
+    const changed = moved || existing.listingCount !== listingCount || existing.propertyCount !== propertyCount || existing.userCount !== userCount;
+    if (changed) {
+      await prisma.location.update({ where: { id: existing.id }, data: { listingCount, propertyCount, userCount, ...(moved ? { latitude, longitude } : {}) } });
+    }
+    return;
+  }
+  // Spelling-variant guard: same name at the same ~1 km point → keep the older row.
+  if (latitude !== null && longitude !== null) {
+    const near = await prisma.location.findMany({
+      where: { kind: place.kind, nameKey: keys.nameKey, latitude: { gte: round2(latitude) - 0.005, lte: round2(latitude) + 0.005 }, longitude: { gte: round2(longitude) - 0.005, lte: round2(longitude) + 0.005 } },
+      select: { id: true },
+      take: 1,
+    });
+    if (near.length) return;
+  }
+  try {
+    await prisma.location.create({ data: { key, ...keys, kind: place.kind, name: place.name, city: place.city, state: place.state, listingCount, propertyCount, userCount, latitude, longitude } });
+  } catch (err) {
+    if ((err as { code?: string }).code !== "P2002") throw err; // created meanwhile by another run
+  }
 }
 
 /** Refresh the places of one or more addresses (e.g. the property's old and new address). Never throws. */
@@ -87,7 +133,7 @@ export async function syncLocationsFor(...addresses: Array<{ state?: string | nu
       try {
         await syncPlace(place);
       } catch (err) {
-        console.error("[locations] sync failed", key, err);
+        console.error("[locations] sync failed", { kind: place.kind }, (err as Error).message);
       }
     }
   }
@@ -99,12 +145,16 @@ export async function syncLocationsForProperty(propertyId: string, previous?: { 
   await syncLocationsFor(p, previous);
 }
 
-/** Rebuilds the whole table from the properties (startup + hourly). */
+/** Rebuilds the whole table from the properties and users' areas (startup + hourly). */
 export async function rebuildLocations(): Promise<void> {
-  const groups = await prisma.property.groupBy({ by: ["state", "city", "locality"], where: SUBMITTED });
+  const [groups, userGroups] = await Promise.all([
+    prisma.property.groupBy({ by: ["state", "city", "locality"], where: SUBMITTED }),
+    prisma.user.groupBy({ by: ["areaState", "areaCity", "areaLocality"], where: { accountStatus: { not: "DELETED" }, OR: [{ areaCity: { not: null } }, { areaLocality: { not: null } }] } }),
+  ]);
   const keep = new Set<string>();
   const places = new Map<string, PlaceRef>();
-  for (const g of groups) {
+  const addresses = [...groups, ...userGroups.map((g) => ({ state: g.areaState, city: g.areaCity, locality: g.areaLocality }))];
+  for (const g of addresses) {
     for (const place of placesOf(g)) {
       const key = locationKey(place.kind, place.name, place.city, place.state);
       keep.add(key);
@@ -115,26 +165,28 @@ export async function rebuildLocations(): Promise<void> {
     try {
       await syncPlace(place);
     } catch (err) {
-      console.error("[locations] rebuild failed", place.name, err);
+      console.error("[locations] rebuild failed", { kind: place.kind }, (err as Error).message);
     }
   }
   const stale = (await prisma.location.findMany({ select: { key: true } })).map((l) => l.key).filter((k) => !keep.has(k));
   if (stale.length) await prisma.location.deleteMany({ where: { key: { in: stale } } });
 }
 
-/** Search suggestions: places that start with `q` first, then places that contain it; only live ones. */
-export async function suggestLocations(q: string, limit = 10) {
-  const text = q.replace(/\s+/g, " ").trim().slice(0, 60);
-  if (!text) return [];
-  const live = { listingCount: { gt: 0 } };
-  const order: Prisma.LocationOrderByWithRelationInput[] = [{ listingCount: "desc" }, { name: "asc" }];
-  const starts = await prisma.location.findMany({ where: { ...live, name: { startsWith: text } }, orderBy: order, take: limit * 2 });
+/**
+ * Search: name prefix first, then contains (q ≥ 2 chars). Within each: listing count, user count, name.
+ * Places with only users (no listings) come after the ones with listings.
+ */
+export async function suggestLocations(q: string, limit = 8) {
+  const text = normKey(q).slice(0, 60);
+  if (text.length < 2) return [];
+  const order: Prisma.LocationOrderByWithRelationInput[] = [{ listingCount: "desc" }, { userCount: "desc" }, { name: "asc" }];
+  const starts = await prisma.location.findMany({ where: { nameKey: { startsWith: text } }, orderBy: order, take: limit * 2 });
   const more =
     starts.length < limit
-      ? await prisma.location.findMany({ where: { ...live, name: { contains: text }, id: { notIn: starts.map((s) => s.id) } }, orderBy: order, take: limit })
+      ? await prisma.location.findMany({ where: { nameKey: { contains: text }, id: { notIn: starts.map((s) => s.id) } }, orderBy: order, take: limit * 2 })
       : [];
-  const rank: Record<LocationKind, number> = { CITY: 0, LOCALITY: 1, STATE: 2 };
-  const sorted = [...starts.sort((a, b) => rank[a.kind] - rank[b.kind] || b.listingCount - a.listingCount), ...more].slice(0, limit);
+  const byListings = (a: { listingCount: number }, b: { listingCount: number }) => Number(b.listingCount > 0) - Number(a.listingCount > 0);
+  const sorted = [...starts.sort(byListings), ...more.sort(byListings)].slice(0, limit);
   return sorted.map((l) => ({
     kind: l.kind,
     name: l.name,
@@ -143,7 +195,19 @@ export async function suggestLocations(q: string, limit = 10) {
     /** "Madhapur, Hyderabad" · "Hyderabad, Telangana" · "Telangana" */
     label: [l.name, l.kind === "LOCALITY" ? l.city : l.kind === "CITY" ? l.state : null].filter(Boolean).join(", "),
     listingCount: l.listingCount,
+    latitude: l.latitude === null ? null : Number(l.latitude),
+    longitude: l.longitude === null ? null : Number(l.longitude),
     /** Ready-made filters for GET /browse (or /public/listings). */
     filters: l.kind === "STATE" ? { state: l.name } : l.kind === "CITY" ? { city: l.name, ...(l.state ? { state: l.state } : {}) } : { locality: l.name, city: l.city, ...(l.state ? { state: l.state } : {}) },
   }));
+}
+
+/** Centre of a place by locality (+ city) or city name — for alerts set by area name only. */
+export async function placeCentre(locality: string | null, city: string | null): Promise<{ latitude: number; longitude: number } | null> {
+  const row = locality
+    ? await prisma.location.findFirst({ where: { kind: "LOCALITY", nameKey: normKey(locality), ...(city ? { cityKey: normKey(city) } : {}), latitude: { not: null } }, orderBy: { listingCount: "desc" } })
+    : city
+      ? await prisma.location.findFirst({ where: { kind: "CITY", nameKey: normKey(city), latitude: { not: null } }, orderBy: { listingCount: "desc" } })
+      : null;
+  return row && row.latitude !== null && row.longitude !== null ? { latitude: Number(row.latitude), longitude: Number(row.longitude) } : null;
 }

@@ -3,6 +3,7 @@ import { publishDueReviews } from "./controllers/reviews.controller";
 import { rebuildLocations } from "./properties/locations";
 import { sendRentNotifications } from "./services/rentNotifications";
 import { endExpiredLeases } from "./services/leaseExpiry";
+import { processHomeAlerts } from "./services/homeAlerts";
 
 /** Search-suggestion places are rebuilt from the properties at most once an hour (safety net). */
 let lastLocationsRebuild = 0;
@@ -29,6 +30,7 @@ async function runOnce(): Promise<void> {
     ["review-publication", publishDueReviews],
     ["locations", rebuildLocationsHourly],
     ["rent-notifications", sendRentNotifications],
+    ["home-alerts", processHomeAlerts],
   ] as const) {
     try {
       await job();
