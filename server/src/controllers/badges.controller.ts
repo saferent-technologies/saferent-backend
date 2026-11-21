@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { REVIEWABLE_PROPERTY } from "../properties/docQueue";
 import { prisma } from "../lib/prisma";
 import { can, me } from "../middleware/auth";
 import { needsActionCount } from "./tenantRequests.controller";
@@ -44,9 +45,10 @@ export async function myBadges(req: Request, res: Response): Promise<void> {
       prisma.property.count({ where: { publicationStatus: "PENDING_VERIFICATION", revisionOfId: null, activeStatus: { not: "ARCHIVED" } } }),
       prisma.propertyRevision.count({ where: { status: "PENDING_VERIFICATION" } }),
       prisma.propertyImage.count({ where: { status: "PENDING", inspectionId: null, property: { publicationStatus: { in: ["APPROVED", "PUBLISHED"] }, revisionOfId: null } } }),
+      prisma.propertyVideo.count({ where: { status: "PENDING" } }),
     );
   }
-  if (staff("documents.verify")) moderation.push(prisma.propertyDocument.count({ where: { status: "PENDING", needsVerification: true, isCurrent: true, archivedAt: null } }));
+  if (staff("documents.verify")) moderation.push(prisma.propertyDocument.count({ where: { status: "PENDING", needsVerification: true, isCurrent: true, archivedAt: null, property: REVIEWABLE_PROPERTY } }));
   if (staff("fraud.manage")) moderation.push(prisma.fraudReport.count({ where: { status: { in: ["OPEN", "INVESTIGATING"] } } }));
   if (moderation.length) jobs.push(["/moderation", Promise.all(moderation).then((n) => n.reduce((a, b) => a + b, 0))]);
 

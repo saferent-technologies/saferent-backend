@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { REVIEWABLE_PROPERTY } from "../properties/docQueue";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { REASONS } from "../config/constants";
@@ -112,7 +113,7 @@ export async function dashboard(req: Request, res: Response): Promise<void> {
       const [listings, images, documents, fraud] = await Promise.all([
         prisma.property.count({ where: { publicationStatus: "PENDING_VERIFICATION", activeStatus: "ACTIVE", revisionOfId: null } }),
         prisma.propertyImage.count({ where: { status: "PENDING" } }),
-        prisma.propertyDocument.count({ where: { status: "PENDING", needsVerification: true, isCurrent: true, archivedAt: null } }),
+        prisma.propertyDocument.count({ where: { status: "PENDING", needsVerification: true, isCurrent: true, archivedAt: null, property: REVIEWABLE_PROPERTY } }),
         prisma.fraudReport.count({ where: { status: { in: ["OPEN", "INVESTIGATING"] } } }),
       ]);
       cards.push(

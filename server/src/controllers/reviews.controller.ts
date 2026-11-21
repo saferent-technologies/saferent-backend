@@ -104,7 +104,7 @@ async function present(rows: ReviewRow[], viewerId: string, moderator = false) {
       overallRating: visible ? r.overallRating : null,
       categoryRatings: visible ? r.categoryRatings : null,
       reviewText: visible ? r.reviewText : null,
-      tags: visible ? r.tags : null,
+      tags: visible ? (Array.isArray(r.tags) ? r.tags : []) : null,
       evidence: visible ? r.evidence : null,
       response: responseVisible ? { text: r.responseText, respondedAt: r.respondedAt, editedAt: r.responseEditedAt, hidden: r.responseHidden } : null,
       moderationNote: mine || moderator ? r.moderationNote : null,
@@ -413,15 +413,22 @@ export async function propertyReviews(req: Request, res: Response): Promise<void
     property.publicationStatus === "PUBLISHED" || can(req, "reviews.moderate") || (await inScope(req, "properties.view", propertyId)) || (await prisma.lease.count({ where: { propertyId, tenantId: user.id } })) > 0;
   if (!allowed) fail("not-found", REASONS.NOT_FOUND, "Property not found.");
   await publishDueReviews();
+  // Only reviews from tenants whose lease was on that flat (unitId) or bed (bedId); all when neither is given.
   const unitId = typeof req.query.unitId === "string" && req.query.unitId ? req.query.unitId : undefined;
+  const bedId = typeof req.query.bedId === "string" && req.query.bedId ? req.query.bedId : undefined;
   const p = pagination(req);
-  const where: Prisma.RentalReviewWhereInput = { propertyId, reviewerRole: "TENANT", status: { in: PUBLIC }, ...(unitId ? { OR: [{ unitId }, { bedId: unitId }] } : {}) };
+  const where: Prisma.RentalReviewWhereInput = {
+    propertyId,
+    reviewerRole: "TENANT",
+    status: { in: PUBLIC },
+    ...(bedId ? { bedId } : unitId ? { OR: [{ unitId }, { bedId: unitId }] } : {}),
+  };
   const [rows, total, all] = await Promise.all([
     prisma.rentalReview.findMany({ where, include: reviewInclude, orderBy: { publishedAt: "desc" }, skip: p.skip, take: p.take }),
     prisma.rentalReview.count({ where }),
     prisma.rentalReview.findMany({ where, select: { overallRating: true, categoryRatings: true } }),
   ]);
-  res.json({ ...paged(await present(rows, user.id), total, p), property: { id: property.id, name: property.title ?? property.code }, unitId: unitId ?? null, stats: ratingStats(all.map((x) => ({ overallRating: x.overallRating, categoryRatings: x.categoryRatings as Record<string, number> }))) });
+  res.json({ ...paged(await present(rows, user.id), total, p), property: { id: property.id, name: property.title ?? property.code }, unitId: unitId ?? null, bedId: bedId ?? null, stats: ratingStats(all.map((x) => ({ overallRating: x.overallRating, categoryRatings: x.categoryRatings as Record<string, number> }))) });
 }
 
 const responseSchema = z.object({ text: z.string().min(2).max(1500) }).strict();

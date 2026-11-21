@@ -237,9 +237,8 @@ const SECTIONS: Section[] = [
     title: "Onboarding",
     description: "Intro screens shown after the splash and before sign-in. Add as many as you need (up to 10); each has a title, description and an optional image, video or Lottie animation.",
     fields: [
-      { path: "version", label: "Onboarding version", kind: "readonly", hint: "Goes up automatically every time you save a change in this section (1.0 → 1.1 … 1.9 → 2.0) — with \"show once\", the app shows the new version again." },
+      { path: "version", label: "Onboarding version", kind: "readonly", hint: "Goes up automatically every time you save a change in this section (1.0 → 1.1 … 1.9 → 2.0)." },
       { path: "enabled", label: "Show onboarding", kind: "toggle" },
-      { path: "showOnce", label: "Show only once per install", kind: "toggle", hint: "Shown again automatically if you change the screens." },
       { path: "skippable", label: "Allow Skip", kind: "toggle" },
       { path: "nextButtonText", label: "Next button text", kind: "text", hint: "Used on every screen except the last, unless the screen has its own text." },
       { path: "finishButtonText", label: "Last screen button text", kind: "text", hint: "e.g. Get started — used on the last screen unless it has its own text." },

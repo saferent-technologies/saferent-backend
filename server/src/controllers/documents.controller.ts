@@ -240,7 +240,8 @@ export async function updateDocument(req: Request, res: Response): Promise<void>
   const input = parseInput(updateSchema, req.body);
   if (doc.docType === "OTHER" && input.customName !== undefined && (input.customName ?? "").length < 2) fail("invalid-argument", REASONS.INVALID_INPUT, "Enter the document name.");
   const updated = await withProperty(doc.propertyId, async (tx) => {
-    const u = await tx.propertyDocument.update({ where: { id: doc.id }, data: input });
+    const expiryChanged = input.expiryDate !== undefined && (input.expiryDate?.getTime() ?? null) !== (doc.expiryDate?.getTime() ?? null);
+    const u = await tx.propertyDocument.update({ where: { id: doc.id }, data: { ...input, ...(expiryChanged ? { expiryNoticeStage: 0 } : {}) } });
     await audit(tx, req, {
       propertyId: doc.propertyId,
       entityType: "DOCUMENT",
@@ -348,7 +349,11 @@ export async function getDocumentFile(req: Request, res: Response): Promise<void
   await prisma.propertyAuditLog.create({
     data: { eventId: randomUUID(), propertyId: doc.propertyId, entityType: "DOCUMENT", entityId: doc.id, action: staff ? "document.download" : "document.tenant_download", performedById: user.id, actorRole: user.roles.join(",").slice(0, 32), sourcePlatform: req.platform ?? "BACKEND", requestId: req.requestId ?? null },
   });
-  storage.send(res, doc.filePath, doc.mimeType, doc.originalName);
+  // View only: shown inline in the browser (no "save as" download prompt), never cached.
+  const safeName = (doc.originalName ?? "document").replace(/[^\w.-]/g, "_");
+  res.setHeader("Content-Disposition", `inline; filename="${safeName}"`);
+  storage.send(res, doc.filePath, doc.mimeType);
+  res.setHeader("Cache-Control", "no-store, private");
 }
 
 /* ─────────────── Tenant ─────────────── */

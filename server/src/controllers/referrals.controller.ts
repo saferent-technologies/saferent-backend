@@ -1,4 +1,6 @@
 import type { Prisma, ReferralType } from "@prisma/client";
+import { lockName } from "../lib/nameLock";
+import { recordStatus } from "../properties/service";
 import type { Request, Response } from "express";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -190,6 +192,7 @@ export async function decideKyc(req: Request, res: Response): Promise<void> {
     // Owner verification: needs DigiLocker + selfie to approve; clears the submission; drops the DigiLocker photo.
     const files = await afterKycDecision(tx, id, decision);
     await tx.landlordProfile.update({ where: { userId: id }, data: { kycStatus: decision, kycNote: note ?? null, kycReviewedById: actor.id, kycReviewedAt: new Date(), kycManual: false } });
+    if (decision === "APPROVED") await lockName(id, tx);
     await logActivity(req, decision === "APPROVED" ? "landlord.kyc_approve" : "landlord.kyc_reject", "user", id, { from: profile.kycStatus, to: decision, note }, tx);
     return files;
   });
@@ -199,6 +202,8 @@ export async function decideKyc(req: Request, res: Response): Promise<void> {
     decision === "APPROVED" ? "Owner verified ✅" : "Owner verification needs attention",
     decision === "APPROVED" ? "SafeRent has verified your identity. Your properties can now be approved." : `We couldn't verify you: ${note}. Please fix it and submit again.`,
     "/verify",
+    undefined,
+    { type: "KYC_DECISION", kycStatus: decision },
   );
   await evaluateForUser(id);
   res.locals.message = decision === "APPROVED" ? "Identity verified" : "Identity verification rejected";
@@ -494,6 +499,7 @@ export async function manualVerifyKyc(req: Request, res: Response): Promise<void
       where: { userId: id },
       data: { kycStatus: "APPROVED", kycManual: true, kycNote: `Verified manually: ${reason}`, kycReviewedById: actor.id, kycReviewedAt: new Date(), kycSubmittedAt: null },
     });
+    await lockName(id, tx);
     // Same clean-up as a normal decision: the DigiLocker photo (if any) is not kept.
     const files = await tx.identityVerification.findMany({ where: { userId: id, photoPath: { not: null } }, select: { photoPath: true } });
     await tx.identityVerification.updateMany({ where: { userId: id, photoPath: { not: null } }, data: { photoPath: null } });
@@ -506,4 +512,115 @@ export async function manualVerifyKyc(req: Request, res: Response): Promise<void
   await evaluateForUser(id);
   res.locals.message = "Landlord verified manually";
   res.json({ kycStatus: "APPROVED", manual: true });
+}
+
+/* ─────────────── Remove / restore owner verification ─────────────── */
+
+const KYC_ACTIONS = ["landlord.kyc_approve", "landlord.kyc_reject", "landlord.kyc_manual_approve", "landlord.kyc_revoke", "landlord.kyc_restore"];
+
+/** Who did what to this owner's verification, when and why (newest first). */
+export async function kycHistoryOf(userId: string) {
+  const rows = await prisma.adminActivityLog.findMany({ where: { targetType: "user", targetId: userId, action: { in: KYC_ACTIONS } }, orderBy: { createdAt: "desc" }, take: 30 });
+  const people = await prisma.user.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.actorId))] } }, select: { id: true, fullName: true } });
+  const nameOf = new Map(people.map((p) => [p.id, p.fullName]));
+  return rows.map((r) => {
+    const c = (r.changes ?? {}) as { reason?: string; note?: string; unpublished?: number };
+    return {
+      action: r.action.replace("landlord.kyc_", "").toUpperCase(), // APPROVE | REJECT | MANUAL_APPROVE | REVOKE | RESTORE
+      at: r.createdAt.toISOString(),
+      by: { id: r.actorId, fullName: nameOf.get(r.actorId) ?? null },
+      reason: c.reason ?? c.note ?? null,
+      unpublishedListings: c.unpublished ?? null,
+    };
+  });
+}
+
+/** Can the last removal be undone? Only while the owner is still in the state the removal left them in. */
+async function lastRevoke(userId: string) {
+  const last = await prisma.adminActivityLog.findFirst({ where: { targetType: "user", targetId: userId, action: { in: KYC_ACTIONS } }, orderBy: { createdAt: "desc" } });
+  return last?.action === "landlord.kyc_revoke" ? last : null;
+}
+
+export async function kycRemovalState(userId: string, kycStatus: string) {
+  return { canRevoke: kycStatus === "APPROVED", canRestore: kycStatus === "REJECTED" && !!(await lastRevoke(userId)) };
+}
+
+const revokeSchema = z
+  .object({
+    reason: z.string().trim().min(5, "Give a reason (at least 5 characters).").max(500),
+    // Also take the owner's live listings off (back to Approved, not visible to tenants).
+    unpublishListings: z.boolean().default(false),
+  })
+  .strict();
+
+/**
+ * POST /api/v1/users/:id/kyc/revoke — remove a landlord's "Owner verified" (fraud, wrong document …).
+ * They're unverified again (new properties can't be approved until they verify again or staff restore it).
+ * Optional: unpublish their live listings. Who / when / why is recorded; the owner is notified.
+ */
+export async function revokeKyc(req: Request, res: Response): Promise<void> {
+  const actor = me(req);
+  const id = idParam(req);
+  if (id === actor.id) fail("permission-denied", REASONS.PERMISSION_DENIED, "You can't change your own verification.");
+  const profile = found(await prisma.landlordProfile.findUnique({ where: { userId: id } }), "Landlord profile");
+  if (profile.kycStatus !== "APPROVED") fail("failed-precondition", REASONS.INVALID_STATE, "This landlord isn't verified.");
+  const { reason, unpublishListings } = parseInput(revokeSchema, req.body ?? {});
+
+  let unpublished = 0;
+  await prisma.$transaction(async (tx) => {
+    await tx.landlordProfile.update({
+      where: { userId: id },
+      data: { kycStatus: "REJECTED", kycNote: `Verification removed: ${reason}`, kycReviewedById: actor.id, kycReviewedAt: new Date(), kycSubmittedAt: null },
+    });
+    if (unpublishListings) {
+      const live = await tx.property.findMany({ where: { ownerId: id, revisionOfId: null, publicationStatus: "PUBLISHED" }, select: { id: true } });
+      for (const p of live) {
+        await tx.property.update({ where: { id: p.id }, data: { publicationStatus: "APPROVED", version: { increment: 1 } } });
+        await recordStatus(tx, req, { propertyId: p.id, entityType: "PROPERTY", entityId: p.id, field: "publicationStatus", from: "PUBLISHED", to: "APPROVED", reason: `Owner verification removed: ${reason}` });
+      }
+      unpublished = live.length;
+    }
+    await logActivity(req, "landlord.kyc_revoke", "user", id, { from: "APPROVED", to: "REJECTED", reason, wasManual: profile.kycManual, unpublished }, tx);
+  });
+  await writeAuditLog({ action: "kyc.revoke", outcome: "success", userId: id, metadata: { by: actor.id, unpublished }, ...requestMeta(req) });
+  await notify(
+    id,
+    "Owner verification removed",
+    `SafeRent removed your owner verification: ${reason}${unpublished ? ` Your ${unpublished} live listing${unpublished > 1 ? "s were" : " was"} taken off.` : ""} Verify again to get your properties approved.`,
+    "/verify",
+    undefined,
+    { type: "KYC_DECISION", kycStatus: "REJECTED" },
+  );
+  res.locals.message = unpublished ? `Verification removed and ${unpublished} listing${unpublished > 1 ? "s" : ""} taken off` : "Verification removed";
+  res.json({ kycStatus: "REJECTED", unpublishedListings: unpublished, history: await kycHistoryOf(id) });
+}
+
+const restoreSchema = z.object({ reason: z.string().trim().min(5, "Give a reason (at least 5 characters).").max(500) }).strict();
+
+/**
+ * POST /api/v1/users/:id/kyc/restore — undo the last removal (the owner is verified again, as before).
+ * Listings taken off by the removal are NOT put back automatically: the owner publishes them again.
+ */
+export async function restoreKyc(req: Request, res: Response): Promise<void> {
+  const actor = me(req);
+  const id = idParam(req);
+  if (id === actor.id) fail("permission-denied", REASONS.PERMISSION_DENIED, "You can't change your own verification.");
+  const profile = found(await prisma.landlordProfile.findUnique({ where: { userId: id } }), "Landlord profile");
+  const revoke = profile.kycStatus === "REJECTED" ? await lastRevoke(id) : null;
+  if (!revoke) fail("failed-precondition", REASONS.INVALID_STATE, "There's no removed verification to restore for this landlord.");
+  const { reason } = parseInput(restoreSchema, req.body ?? {});
+  const wasManual = !!(revoke.changes as { wasManual?: boolean } | null)?.wasManual;
+  await prisma.$transaction(async (tx) => {
+    await tx.landlordProfile.update({
+      where: { userId: id },
+      data: { kycStatus: "APPROVED", kycManual: wasManual, kycNote: `Verification restored: ${reason}`, kycReviewedById: actor.id, kycReviewedAt: new Date(), kycSubmittedAt: null },
+    });
+    await lockName(id, tx);
+    await logActivity(req, "landlord.kyc_restore", "user", id, { from: "REJECTED", to: "APPROVED", reason }, tx);
+  });
+  await writeAuditLog({ action: "kyc.restore", outcome: "success", userId: id, metadata: { by: actor.id }, ...requestMeta(req) });
+  await notify(id, "Owner verified ✅", "SafeRent restored your owner verification. Your properties can be approved again.", "/verify", undefined, { type: "KYC_DECISION", kycStatus: "APPROVED" });
+  await evaluateForUser(id);
+  res.locals.message = "Verification restored";
+  res.json({ kycStatus: "APPROVED", history: await kycHistoryOf(id) });
 }

@@ -37,6 +37,12 @@ export function errorCodeFor(status: number, reason?: string): string {
   if (reason === "ACCOUNT_DELETED") return "ACCOUNT_DELETED";
   if (reason === "ACCOUNT_DISABLED") return "ACCOUNT_DISABLED";
   if (reason === "LEASE_ENDED") return "LEASE_ENDED";
+  if (reason === "OWNER_NOT_VERIFIED") return "OWNER_NOT_VERIFIED";
+  if (reason === "OWNERSHIP_PROOF_REQUIRED") return "OWNERSHIP_PROOF_REQUIRED";
+  if (reason === "ID_TYPE_UNAVAILABLE") return "ID_TYPE_UNAVAILABLE";
+  if (reason === "INVALID_FILE") return "INVALID_FILE";
+  if (reason === "NAME_LOCKED") return "NAME_LOCKED";
+  if (reason === "VIDEO_REQUIRED") return "VIDEO_REQUIRED";
   if (reason === "RECENT_LOGIN_REQUIRED") return "REAUTH_REQUIRED";
   if (reason === "LOGIN_METHOD_DISABLED") return "LOGIN_METHOD_DISABLED";
   return ERROR_CODES[status] ?? (status >= 500 ? "INTERNAL_ERROR" : "BAD_REQUEST");

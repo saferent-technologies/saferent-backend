@@ -6,9 +6,12 @@ export function toProfile(user: User) {
   return {
     id: user.id,
     fullName: user.fullName,
+    // Verified legal name: the app shows the name read-only (changes → 412 NAME_LOCKED).
+    nameLocked: user.nameLocked,
     email: user.email,
     pendingEmail: user.pendingEmail,
     phoneNumber: user.phoneNumber,
+    safeRentId: user.safeRentId ?? null,
     profileImage: user.profileImage ? `/api/profile/image/${user.id}` : null,
     gender: user.gender ?? null,
     dateOfBirth: user.dateOfBirth ? user.dateOfBirth.toISOString().slice(0, 10) : null,

@@ -32,6 +32,12 @@ export function VerifyOtpPage() {
 
   const handleError = async (err: unknown) => {
     const appError = toAppError(err);
+    // The password sign-in is older than 15 minutes (page left open): start again from the password step.
+    if (appError.reason === "RECENT_LOGIN_REQUIRED") {
+      await logout({ kind: "info", message: "Your sign-in timed out. Enter your email and password again to get a new code." });
+      navigate(PATHS.employeeLogin, { replace: true });
+      return;
+    }
     if (SIGN_OUT_REASONS.has(appError.reason)) {
       await logout({ kind: "error", message: appError.message });
       navigate(PATHS.employeeLogin, { replace: true });

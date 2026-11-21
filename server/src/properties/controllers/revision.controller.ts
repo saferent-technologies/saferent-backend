@@ -1,4 +1,5 @@
 import type { Property, PropertyRevision } from "@prisma/client";
+import { flatsWithoutVideo, videosFor } from "./videos.controller";
 import { flagHomeAlertsTx } from "../../services/homeAlerts";
 import type { Request, Response } from "express";
 import { z } from "zod";
@@ -53,6 +54,9 @@ export async function submitRevision(req: Request, res: Response): Promise<void>
   if (!decision.ok) fail("failed-precondition", REASONS.INVALID_STATE, decision.reason);
   const problems = await draftProblems(rev.draftPropertyId!);
   if (problems.length) fail("failed-precondition", REASONS.INVALID_STATE, "Complete the required details before submitting.", { problems });
+  // Every flat (as edited) needs a video tour, waiting for review or approved. unitIds = the copy's ids.
+  const noVideo = await flatsWithoutVideo(property.id, rev.draftPropertyId!);
+  if (noVideo.length) fail("failed-precondition", REASONS.VIDEO_REQUIRED, "Add a video tour for every flat before submitting.", { unitIds: noVideo });
   const changedSections = await changedSectionsOf(property.id, rev.draftPropertyId!);
   if (!changedSections.length) fail("failed-precondition", REASONS.INVALID_STATE, "You haven't changed anything yet.");
   const snapshot = await draftView(property, rev.draftPropertyId!);
@@ -127,7 +131,9 @@ export async function getRevision(req: Request, res: Response): Promise<void> {
   const live = presentProperty(await loadAggregate(prisma, property.id));
   const changed = rev.draftPropertyId ? await draftView(property, rev.draftPropertyId) : (rev.data ?? null);
   const changedSections = rev.draftPropertyId ? await changedSectionsOf(property.id, rev.draftPropertyId) : ((rev.changedSections as string[] | null) ?? []);
-  res.json({ revision: revisionSummary(rev), live, changed, changedSections, owner: await prisma.user.findUnique({ where: { id: property.ownerId }, select: { id: true, fullName: true, phoneNumber: true } }) });
+  // All video tours of the listing (approved + waiting), place ids as in the changed listing.
+  const videos = await videosFor(property.id, false, false, rev.draftPropertyId ? "draft" : "live");
+  res.json({ revision: revisionSummary(rev), live, changed, changedSections, videos, owner: await prisma.user.findUnique({ where: { id: property.ownerId }, select: { id: true, fullName: true, phoneNumber: true } }) });
 }
 
 const reviewSchema = z
@@ -160,6 +166,8 @@ export async function reviewRevision(req: Request, res: Response): Promise<void>
   const { removedFiles } = await prisma.$transaction(
     async (tx) => {
       const out = await mergeDraft(tx, property.id, rev.draftPropertyId!, user.id);
+      // Video tours added with the change go live with it.
+      await tx.propertyVideo.updateMany({ where: { propertyId: property.id, status: "PENDING" }, data: { status: "APPROVED", reviewedById: user.id, reviewedAt: new Date() } });
       // Approved changes may add / free units or lower rent → re-match (users already alerted for it are skipped).
       await flagHomeAlertsTx(tx, property.id);
       await tx.propertyRevision.update({

@@ -20,6 +20,8 @@ import { MATCH_LABEL, OWNERSHIP_LABEL, type KycIdentity, type KycProperty, type 
 
 type Status = "SUBMITTED" | "APPROVED" | "REJECTED";
 
+const DOC_LABEL: Record<string, string> = { DIGILOCKER: "DigiLocker (Aadhaar)", AADHAAR_XML: "Aadhaar offline eKYC", PAN: "PAN card", PASSPORT: "Passport" };
+
 interface Row {
   userId: string;
   fullName: string;
@@ -44,7 +46,7 @@ interface Detail {
   properties: KycProperty[];
 }
 
-/** /admin/kyc — staff compare DigiLocker photo vs live selfie and names, then approve / reject. */
+/** /admin/kyc — staff compare the ID document / photo vs live selfie and names, then approve / reject. */
 export function OwnerVerificationPage() {
   const [status, setStatus] = useState<Status>("SUBMITTED");
   const [page, setPage] = useState(1);
@@ -54,7 +56,7 @@ export function OwnerVerificationPage() {
 
   return (
     <>
-      <PageHeader title="Owner verification" description="Check each owner's DigiLocker ID against their live selfie before their listings can go live." />
+      <PageHeader title="Owner verification" description="Check each owner's ID document against their live selfie before their listings can go live." />
       {msg && <Alert kind={msg.kind} className="mb-4">{msg.text}</Alert>}
       <Tabs<Status>
         idPrefix="kyc"
@@ -72,7 +74,7 @@ export function OwnerVerificationPage() {
         empty={status === "SUBMITTED" ? "No owners waiting for review." : "Nothing here yet."}
         columns={[
           { key: "name", header: "Owner", render: (r) => <span className="font-semibold">{r.fullName}</span> },
-          { key: "dl", header: "DigiLocker name", render: (r) => <span className="flex flex-wrap items-center gap-1">{r.digilockerName ?? "—"}{r.nameMatch && <Badge tone={MATCH_LABEL[r.nameMatch].tone}>{MATCH_LABEL[r.nameMatch].text}</Badge>}{r.test && <Badge tone="warning">TEST</Badge>}</span> },
+          { key: "dl", header: "Name on ID", render: (r) => <span className="flex flex-wrap items-center gap-1">{r.digilockerName ?? "—"}{r.nameMatch && <Badge tone={MATCH_LABEL[r.nameMatch].tone}>{MATCH_LABEL[r.nameMatch].text}</Badge>}{r.test && <Badge tone="warning">TEST</Badge>}</span> },
           { key: "phone", header: "Phone", render: (r) => (r.phoneNumber ? maskPhone(r.phoneNumber) : "—"), className: "hidden md:table-cell" },
           { key: "docs", header: "Ownership docs to check", render: (r) => (r.pendingOwnershipDocs ? <Badge tone="warning">{r.pendingOwnershipDocs}</Badge> : "—"), className: "hidden lg:table-cell" },
           { key: "when", header: status === "SUBMITTED" ? "Submitted" : "Reviewed", render: (r) => formatTimestamp(status === "SUBMITTED" ? r.submittedAt : r.reviewedAt) },
@@ -120,11 +122,26 @@ function ReviewModal({ userId, onClose, onDone }: { userId: string; onClose: () 
         <div className="space-y-4 text-sm">
           {err && <Alert kind="error">{err}</Alert>}
           {id?.test && <Alert kind="info">TEST data from the fake DigiLocker — don't approve real owners from this.</Alert>}
-          <div className="grid grid-cols-2 gap-3">
-            <figure className="space-y-1">
-              {id?.hasPhoto ? <AuthImage path={`/kyc/files/${userId}/photo`} alt="DigiLocker photo" className="aspect-[4/5] w-full rounded-control" /> : <div className="flex aspect-[4/5] items-center justify-center rounded-control bg-subtle text-muted">No DigiLocker photo</div>}
-              <figcaption className="text-center text-xs text-muted">DigiLocker (Aadhaar) photo</figcaption>
-            </figure>
+          <div className={`grid gap-3 ${id?.hasBack ? "grid-cols-3" : "grid-cols-2"}`}>
+            {id?.hasFront ? (
+              <>
+                <figure className="space-y-1">
+                  <AuthImage path={`/kyc/files/${userId}/front`} alt={`${DOC_LABEL[id.documentType] ?? "Document"} front`} className="aspect-[4/5] w-full rounded-control object-contain" />
+                  <figcaption className="text-center text-xs text-muted">{DOC_LABEL[id.documentType] ?? "Document"}{id.hasBack ? " (front)" : ""}</figcaption>
+                </figure>
+                {id.hasBack && (
+                  <figure className="space-y-1">
+                    <AuthImage path={`/kyc/files/${userId}/back`} alt={`${DOC_LABEL[id.documentType] ?? "Document"} back`} className="aspect-[4/5] w-full rounded-control object-contain" />
+                    <figcaption className="text-center text-xs text-muted">{DOC_LABEL[id.documentType] ?? "Document"} (back)</figcaption>
+                  </figure>
+                )}
+              </>
+            ) : (
+              <figure className="space-y-1">
+                {id?.hasPhoto ? <AuthImage path={`/kyc/files/${userId}/photo`} alt="Aadhaar photo" className="aspect-[4/5] w-full rounded-control" /> : <div className="flex aspect-[4/5] items-center justify-center rounded-control bg-subtle text-muted">No ID photo</div>}
+                <figcaption className="text-center text-xs text-muted">{id ? `${DOC_LABEL[id.documentType] ?? "ID"} photo` : "ID photo"}</figcaption>
+              </figure>
+            )}
             <figure className="space-y-1">
               {data.selfie ? <AuthImage path={`/kyc/files/${userId}/selfie`} alt="Live selfie" className="aspect-[4/5] w-full rounded-control" /> : <div className="flex aspect-[4/5] items-center justify-center rounded-control bg-subtle text-muted">No selfie</div>}
               <figcaption className="text-center text-xs text-muted">Live selfie</figcaption>
@@ -132,8 +149,16 @@ function ReviewModal({ userId, onClose, onDone }: { userId: string; onClose: () 
           </div>
 
           <dl className="grid grid-cols-2 gap-2 rounded-control bg-subtle p-3">
-            <dt className="text-muted">DigiLocker name</dt>
-            <dd className="flex flex-wrap items-center gap-1 font-medium">{id?.name ?? "—"}{id && <Badge tone={MATCH_LABEL[id.nameMatch].tone}>{MATCH_LABEL[id.nameMatch].text}</Badge>}</dd>
+            <dt className="text-muted">Document</dt>
+            <dd className="font-medium">{id ? `${DOC_LABEL[id.documentType] ?? id.documentType}${id.documentType === "AADHAAR_XML" ? " (UIDAI signature checked)" : id.documentType === "PAN" || id.documentType === "PASSPORT" ? " (check the photo)" : ""}` : "None"}</dd>
+            {id?.documentNumber && (
+              <>
+                <dt className="text-muted">Document number</dt>
+                <dd className="font-mono">{id.documentNumber}</dd>
+              </>
+            )}
+            <dt className="text-muted">Name on ID</dt>
+            <dd className="flex flex-wrap items-center gap-1 font-medium">{id?.name ?? "Not given"}{id?.nameMatch && <Badge tone={MATCH_LABEL[id.nameMatch].tone}>{MATCH_LABEL[id.nameMatch].text}</Badge>}</dd>
             <dt className="text-muted">Profile name</dt><dd className="font-medium">{data.user.fullName}</dd>
             <dt className="text-muted">Date of birth</dt><dd>{id?.dob ?? "—"}</dd>
             <dt className="text-muted">Aadhaar</dt><dd>{id?.aadhaarLast4 ? `•••• ${id.aadhaarLast4}` : "—"}</dd>
@@ -143,7 +168,7 @@ function ReviewModal({ userId, onClose, onDone }: { userId: string; onClose: () 
 
           <div className="space-y-2">
             <h3 className="font-semibold">Properties &amp; ownership proof</h3>
-            <p className="text-xs text-muted">Open the property's Documents tab to verify the proof. Check the name matches the DigiLocker name, and cross-check the tax / power-bill number on the official site.</p>
+            <p className="text-xs text-muted">Open the property's Documents tab to verify the proof. Check the name matches the name on the ID, and cross-check the tax / power-bill number on the official site.</p>
             {data.properties.length === 0 ? <p className="text-muted">No properties yet.</p> : (
               <ul className="divide-y divide-line rounded-control border border-line">
                 {data.properties.map((p) => (
@@ -160,7 +185,7 @@ function ReviewModal({ userId, onClose, onDone }: { userId: string; onClose: () 
           </div>
 
           {data.note && <p className="text-muted">Last note: {data.note}</p>}
-          {data.kycStatus !== "APPROVED" && (!id || !data.selfie) && <Alert kind="info">The owner hasn't finished DigiLocker and the selfie yet.</Alert>}
+          {data.kycStatus !== "APPROVED" && (!id || !data.selfie) && <Alert kind="info">The owner hasn't added an ID document and the selfie yet.</Alert>}
 
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             {data.kycStatus === "APPROVED" ? (
@@ -172,7 +197,7 @@ function ReviewModal({ userId, onClose, onDone }: { userId: string; onClose: () 
                 <Button variant="secondary" leftIcon={<XCircle className="size-4" />} disabled={busy || !id} onClick={() => confirm({ title: "Send back to owner", message: "Tell the owner what to fix (e.g. selfie unclear, name doesn't match).", tone: "danger", confirmLabel: "Send back", reason: { label: "Reason", required: true, minLength: 5 }, onConfirm: (note) => decide("REJECTED", note) })}>
                   Send back
                 </Button>
-                <Button leftIcon={<CheckCircle2 className="size-4" />} disabled={!canDecide} loading={busy} onClick={() => confirm({ title: "Verify owner", message: "Confirm the selfie matches the DigiLocker photo and the names match.", confirmLabel: "Verify", onConfirm: () => decide("APPROVED") })}>
+                <Button leftIcon={<CheckCircle2 className="size-4" />} disabled={!canDecide} loading={busy} onClick={() => confirm({ title: "Verify owner", message: "Confirm the selfie matches the ID photo and the names match.", confirmLabel: "Verify", onConfirm: () => decide("APPROVED") })}>
                   Verify owner
                 </Button>
               </>

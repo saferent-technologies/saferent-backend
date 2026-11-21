@@ -1,4 +1,6 @@
 import type { Prisma } from "@prisma/client";
+import { ownerDetailsSchema } from "../lib/ownership";
+import { NAME_LOCKED_MESSAGE, nameChangeBlocked } from "../lib/nameLock";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { REASONS } from "../config/constants";
@@ -37,6 +39,13 @@ const roleProfileSchemas = {
       .optional()
       .nullable()
       .or(z.literal("").transform(() => null)),
+    // Owner contact details (also GET/PUT /landlord/owner-details).
+    alternatePhone: ownerDetailsSchema.shape.alternatePhone,
+    preferredLanguage: ownerDetailsSchema.shape.preferredLanguage,
+    preferredContactMethod: ownerDetailsSchema.shape.preferredContactMethod,
+    emergencyContactName: ownerDetailsSchema.shape.emergencyContactName,
+    emergencyContactPhone: ownerDetailsSchema.shape.emergencyContactPhone,
+    emergencyContactRelation: ownerDetailsSchema.shape.emergencyContactRelation,
   }),
   TENANT: z.object({
     occupation: optionalText(80),
@@ -113,8 +122,9 @@ export async function updateProfile(req: Request, res: Response): Promise<void> 
   const user = me(req);
   const role = user.role as RoleKey;
   const input = parseInput(commonSchema, req.body);
+  if (nameChangeBlocked(user.nameLocked, user.fullName, input.fullName)) fail("failed-precondition", REASONS.NAME_LOCKED, NAME_LOCKED_MESSAGE);
 
-  const data: { fullName: string; email?: string | null; emailVerified?: boolean } = { fullName: input.fullName };
+  const data: { fullName?: string; email?: string | null; emailVerified?: boolean } = user.nameLocked ? {} : { fullName: input.fullName };
   // Staff emails are sign-in identities and change only through the verified flow (Settings → Email).
   if (!ROLE_INFO[role].isStaff && input.email !== undefined && input.email !== user.email) {
     if (input.email) {
@@ -186,6 +196,8 @@ export async function updateDemographics(req: Request, res: Response): Promise<v
   const role = user.role as RoleKey;
   if (ROLE_INFO[role].isStaff) fail("permission-denied", REASONS.PERMISSION_DENIED, "Staff profiles are managed in Settings.");
   const input = parseInput(demographicsSchema, req.body);
+  // Verified name: a different name is refused (nothing is saved); the same name (any case) is fine.
+  if (nameChangeBlocked(user.nameLocked, user.fullName, input.fullName)) fail("failed-precondition", REASONS.NAME_LOCKED, NAME_LOCKED_MESSAGE);
 
   const after = {
     fullName: input.fullName ?? user.fullName,
@@ -201,7 +213,7 @@ export async function updateDemographics(req: Request, res: Response): Promise<v
 
   const data: Prisma.UserUpdateInput = {
     profileCompleted: input.isProfileCompleted,
-    ...(input.fullName ? { fullName: input.fullName } : {}),
+    ...(input.fullName && !user.nameLocked ? { fullName: input.fullName } : {}),
     ...(input.gender ? { gender: input.gender } : {}),
     ...(input.dateOfBirth ? { dateOfBirth: toDateOnly(input.dateOfBirth) } : {}),
     ...(input.city ? { city: input.city } : {}),

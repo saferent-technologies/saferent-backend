@@ -1,4 +1,4 @@
-import { Archive, CheckCircle2, Download, FilePlus2, History, Pencil, RotateCcw, Upload, XCircle } from "lucide-react";
+import { Archive, CheckCircle2, Eye, FilePlus2, History, Pencil, RotateCcw, Upload, XCircle } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
@@ -59,7 +59,7 @@ interface DocRequest {
 }
 
 export const MAIN_CATEGORIES = ["RENTAL_AGREEMENT", "ELECTRICITY_BILL", "PROPERTY_TAX_RECEIPT", "OTHER"] as const;
-const MORE_CATEGORIES = ["OWNERSHIP_PROOF", "SALE_DEED", "BUILDING_PERMISSION", "LANDLORD_IDENTITY"] as const;
+const MORE_CATEGORIES = ["OWNERSHIP_PROOF", "SALE_DEED", "BUILDING_PERMISSION", "LANDLORD_IDENTITY", "POWER_OF_ATTORNEY", "STRUCTURAL_SAFETY_CERTIFICATE", "FIRE_NOC", "OCCUPANCY_CERTIFICATE", "TRADE_LICENSE", "SOCIETY_NOC", "POLICE_VERIFICATION", "SOCIETY_RULES"] as const;
 const ACCEPT = "application/pdf,image/jpeg,image/png";
 const MAX_MB = 5;
 
@@ -67,18 +67,60 @@ export function categoryLabel(c: string): string {
   return c === "OTHER" ? "Other document" : labelize(c);
 }
 
+/**
+ * Opens a document to VIEW inside the page (PDF / image viewer overlay) — no download link, no "save as".
+ * PDFs open with the browser viewer's toolbar hidden. (A determined user can still screenshot.)
+ */
 export async function openDocument(doc: { id: string; originalName?: string; name: string }, onError: (t: string) => void) {
   try {
     const blob = await fetchBlob(`/files/documents/${doc.id}`);
     const url = URL.createObjectURL(blob);
-    const win = window.open(url, "_blank", "noopener");
-    if (!win) {
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = doc.originalName ?? doc.name;
-      a.click();
+    const close = () => {
+      overlay.remove();
+      URL.revokeObjectURL(url);
+      document.removeEventListener("keydown", onKey);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    const overlay = document.createElement("div");
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-label", doc.name);
+    overlay.style.cssText = "position:fixed;inset:0;z-index:1000;background:rgba(15,23,42,.85);display:flex;flex-direction:column;";
+    const bar = document.createElement("div");
+    bar.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;color:#fff;font:600 14px system-ui,sans-serif;";
+    const title = document.createElement("span");
+    title.textContent = doc.name;
+    title.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Close";
+    btn.style.cssText = "background:#fff;color:#111;border:0;border-radius:8px;padding:6px 14px;font:600 14px system-ui,sans-serif;cursor:pointer;";
+    btn.onclick = close;
+    bar.append(title, btn);
+    const body = document.createElement("div");
+    body.style.cssText = "flex:1;display:flex;align-items:center;justify-content:center;padding:0 16px 16px;min-height:0;";
+    if (blob.type.startsWith("image/")) {
+      const img = document.createElement("img");
+      img.src = url;
+      img.alt = doc.name;
+      img.draggable = false;
+      img.oncontextmenu = (e) => e.preventDefault();
+      img.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;background:#fff;";
+      body.append(img);
+    } else {
+      const frame = document.createElement("iframe");
+      frame.src = `${url}#toolbar=0&navpanes=0`;
+      frame.title = doc.name;
+      frame.style.cssText = "width:100%;height:100%;border:0;border-radius:8px;background:#fff;";
+      body.append(frame);
     }
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    overlay.append(bar, body);
+    overlay.onclick = (e) => {
+      if (e.target === overlay) close();
+    };
+    document.addEventListener("keydown", onKey);
+    document.body.append(overlay);
   } catch (err) {
     onError(errorMessage(err));
   }
@@ -233,7 +275,7 @@ function VersionsModal({ doc, onClose, onError }: { doc: DocRow; onClose: () => 
         {data?.items.map((r) => (
           <li key={r.id} className="flex items-center justify-between gap-2 py-2">
             <span className="min-w-0"><span className="font-medium">v{r.version}</span> {r.version === doc.version && <Badge tone="success">Current</Badge>}<span className="block truncate text-xs text-muted">{r.originalName} · {formatTimestamp(r.createdAt)}{r.uploadedBy ? ` · ${r.uploadedBy}` : ""}</span></span>
-            <Button size="sm" variant="ghost" leftIcon={<Download className="size-4" />} onClick={() => void openDocument(r, onError)}>Open</Button>
+            <Button size="sm" variant="ghost" leftIcon={<Eye className="size-4" />} onClick={() => void openDocument(r, onError)}>Open</Button>
           </li>
         ))}
       </ul>
@@ -340,7 +382,7 @@ export function PropertyDocumentsTab({ p, canManage, canVerify, onChanged }: { p
           </div>
           {canManage && <Button leftIcon={<FilePlus2 className="size-4" />} onClick={() => setUploading(null)}>Upload document</Button>}
         </div>
-        <p className="mb-3 text-xs text-muted">Private by default — only you, assigned managers and SafeRent verifiers can open them. Shared documents are visible only to the tenant(s) of that property or unit. Every download is logged.</p>
+        <p className="mb-3 text-xs text-muted">Private by default — only you, assigned managers and SafeRent verifiers can open them. Shared documents are visible only to the tenant(s) of that property or unit. Documents open to view only, and every view is logged.</p>
         {docs.loading && !docs.data && <div className="flex justify-center py-8"><Spinner className="size-6 text-brand" /></div>}
         {docs.error && <Alert kind="error">{docs.error}</Alert>}
         {canVerify && docs.data && !filter.archived && !docs.data.items.some((d) => d.needsVerification) && (
@@ -367,7 +409,7 @@ export function PropertyDocumentsTab({ p, canManage, canVerify, onChanged }: { p
                 ) : (
                   <Badge tone={d.sharedWithTenant ? "success" : "neutral"}>{d.sharedWithTenant ? "Shared" : "Private"}</Badge>
                 )}
-                <Button size="sm" variant="ghost" leftIcon={<Download className="size-4" />} onClick={() => void openDocument(d, err)}>Open</Button>
+                <Button size="sm" variant="ghost" leftIcon={<Eye className="size-4" />} onClick={() => void openDocument(d, err)}>Open</Button>
                 {canManage && !d.archivedAt && (
                   <>
                     <Button size="sm" variant="ghost" leftIcon={<Pencil className="size-4" />} onClick={() => setEditing(d)}>Edit</Button>

@@ -1,4 +1,5 @@
 import { appConfig } from "../../appConfig/service";
+import { isReviewable } from "../docQueue";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { RATE_LIMITS, REASONS } from "../../config/constants";
@@ -115,9 +116,18 @@ export const uploadImages = cleanupOnError(async (req, res) => {
 });
 
 /** PATCH /api/v1/properties/:propertyId/images/:imageId — category / display order. */
+/**
+ * The photo to change in the edit target. A live listing is edited through its working copy, whose photos
+ * are copies (sourceId = live photo id): the app may send either id, so both are accepted.
+ */
+async function targetImage(req: Request, propertyId: string) {
+  const id = String(req.params.imageId);
+  return found(await prisma.propertyImage.findFirst({ where: { propertyId, OR: [{ id }, { sourceId: id }] } }), "Image");
+}
+
 export async function updateImage(req: Request, res: Response): Promise<void> {
   const property = await editable(req);
-  const image = found(await prisma.propertyImage.findFirst({ where: { id: String(req.params.imageId), propertyId: property.id } }), "Image");
+  const image = await targetImage(req, property.id);
   const input = parseInput(imageUpdateSchema, req.body);
   if (input.unitId && !(await prisma.propertyUnit.count({ where: { id: input.unitId, propertyId: property.id } }))) fail("invalid-argument", REASONS.INVALID_INPUT, "Unit not found in this property.");
   if (input.roomId && !(await prisma.propertyRoom.count({ where: { id: input.roomId, propertyId: property.id } }))) fail("invalid-argument", REASONS.INVALID_INPUT, "Room not found in this property.");
@@ -130,15 +140,31 @@ export async function updateImage(req: Request, res: Response): Promise<void> {
 }
 
 /** DELETE /api/v1/properties/:propertyId/images/:imageId */
+/**
+ * DELETE /api/v1/properties/:propertyId/images/:imageId
+ * Removing a photo takes effect right away, also on a live listing: the working copy's photo AND the live
+ * photo it was copied from are deleted (no review needed to take a photo down). The file is deleted only
+ * when no other photo row still uses it (copies share the live photo's file).
+ */
 export async function deleteImage(req: Request, res: Response): Promise<void> {
   const property = await editable(req);
-  const image = found(await prisma.propertyImage.findFirst({ where: { id: String(req.params.imageId), propertyId: property.id } }), "Image");
+  const image = await targetImage(req, property.id);
+  const live = image.sourceId ? await prisma.propertyImage.findUnique({ where: { id: image.sourceId } }) : null;
   await withProperty(property.id, async (tx) => {
     await tx.propertyImage.delete({ where: { id: image.id } });
     await tx.propertyUtility.updateMany({ where: { meterReadingImageId: image.id }, data: { meterReadingImageId: null } });
     await audit(tx, req, { propertyId: property.id, entityType: "IMAGE", entityId: image.id, action: "image.delete", oldValue: { category: image.category } });
   });
-  await storage.remove(image.filePath);
+  if (live) {
+    await withProperty(live.propertyId, async (tx) => {
+      await tx.propertyImage.deleteMany({ where: { id: live.id } });
+      await tx.propertyUtility.updateMany({ where: { meterReadingImageId: live.id }, data: { meterReadingImageId: null } });
+      await audit(tx, req, { propertyId: live.propertyId, entityType: "IMAGE", entityId: live.id, action: "image.delete", oldValue: { category: live.category } });
+    });
+  }
+  for (const file of new Set([image.filePath, ...(live ? [live.filePath] : [])])) {
+    if (!(await prisma.propertyImage.count({ where: { filePath: file } }))) await storage.remove(file);
+  }
   res.json({ ok: true });
 }
 
@@ -163,7 +189,8 @@ export async function getImageFile(req: Request, res: Response): Promise<void> {
 
 /** POST /api/v1/documents/:docId/verify — verifiers within scope; never for your own property. */
 export async function verifyDocument(req: Request, res: Response): Promise<void> {
-  const doc = found(await prisma.propertyDocument.findFirst({ where: childKey(req, "docId"), include: { property: { select: { id: true, ownerId: true, title: true, code: true } } } }), "Document");
+  const doc = found(await prisma.propertyDocument.findFirst({ where: childKey(req, "docId"), include: { property: { select: { id: true, ownerId: true, title: true, code: true, publicationStatus: true, revisionOfId: true } } } }), "Document");
+  if (!isReviewable(doc.property)) fail("failed-precondition", REASONS.INVALID_STATE, "This property hasn't been sent for review yet. Verify its documents after the owner submits it.");
   if (!(await inScope(req, "documents.verify", doc.propertyId))) fail("not-found", REASONS.NOT_FOUND, "Document not found.");
   // Four-eyes rule for staff: nobody verifies a document they uploaded or own — except a Super Admin,
   // who can upload and verify (recorded in the audit trail like any other verification).

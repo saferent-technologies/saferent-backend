@@ -1,4 +1,4 @@
-import { Download, FileText, Send, XCircle } from "lucide-react";
+import { Eye, FileText, Send, XCircle } from "lucide-react";
 import { useState } from "react";
 import { useSearchParams } from "react-router";
 import { PageHeader } from "@/components/PageHeader";
@@ -99,7 +99,7 @@ export function MyDocumentsPage() {
                         </div>
                         <div className="flex items-center gap-2">
                           <Badge tone={STATE[d.state]!.tone}>{STATE[d.state]!.label}</Badge>
-                          <Button size="sm" variant="secondary" leftIcon={<Download className="size-4" />} onClick={() => void openDocument(d, (t) => setMsg({ kind: "error", text: t }))}>View</Button>
+                          <Button size="sm" variant="secondary" leftIcon={<Eye className="size-4" />} onClick={() => void openDocument(d, (t) => setMsg({ kind: "error", text: t }))}>View</Button>
                         </div>
                       </li>
                     ))}

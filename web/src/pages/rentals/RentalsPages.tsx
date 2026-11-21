@@ -16,6 +16,10 @@ import { openProtected, request } from "@/services/api";
 import { LeaseReviewModal } from "@/pages/reviews/ReviewsPages";
 import { LeaseExitPanel } from "./LeaseExitPanel";
 import { LandlordPanPanel } from "./LandlordPanPanel";
+import { LeaseCompliancePanel } from "./LeaseCompliancePanel";
+import { LeaseSocietyPanel } from "./LeaseSocietyPanel";
+import { InspectionComparePanel } from "./InspectionComparePanel";
+import { RentReminderSettings } from "./RentReminderSettings";
 import { Badge } from "@/components/ui/Badge";
 import type { Paged } from "@/types/auth";
 import { errorMessage } from "@/utils/errors";
@@ -213,6 +217,9 @@ export function LeasesPage() {
             </dl>
             <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-control bg-subtle p-3 font-sans text-xs text-ink-2">{open.terms}</pre>
             {(open.tenant.id === profile?.id || open.landlord.id === profile?.id) && <LandlordPanPanel leaseId={open.id} />}
+            {(open.tenant.id === profile?.id || open.landlord.id === profile?.id || can("leases.manage")) && <LeaseCompliancePanel leaseId={open.id} />}
+            {(open.tenant.id === profile?.id || open.landlord.id === profile?.id || can("leases.manage")) && <LeaseSocietyPanel leaseId={open.id} />}
+            {(open.tenant.id === profile?.id || open.landlord.id === profile?.id || can("leases.manage")) && <div><InspectionComparePanel leaseId={open.id} /></div>}
             {(open.tenant.id === profile?.id || open.landlord.id === profile?.id || can("leases.manage")) && <LeaseExitPanel leaseId={open.id} onChanged={() => void reload()} />}
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               {can("leases.manage", "ALL") && open.status === "ACTIVE" && open.tenant.id !== profile?.id && open.landlord.id !== profile?.id && (
@@ -321,6 +328,7 @@ export function RentPage() {
       />
       {data?.paymentMode === "test" && isTenant && <Alert kind="warning" className="mb-4">Payments are in TEST mode — no real money is collected.</Alert>}
       {msg && <Alert kind={msg.kind} className="mb-4">{msg.text}</Alert>}
+      {(profile?.role === "LANDLORD" || profile?.roles?.includes("LANDLORD")) && <RentReminderSettings />}
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         {(["DUE", "OVERDUE", "PAID", "WAIVED"] as const).map((k) => (
           <div key={k} className="card p-4">

@@ -57,6 +57,14 @@ export const DOCUMENT_TYPES = [
   "BUILDING_PERMISSION",
   "RENTAL_AGREEMENT",
   "LANDLORD_IDENTITY",
+  "POWER_OF_ATTORNEY",
+  "STRUCTURAL_SAFETY_CERTIFICATE",
+  "FIRE_NOC",
+  "OCCUPANCY_CERTIFICATE",
+  "TRADE_LICENSE",
+  "SOCIETY_NOC",
+  "POLICE_VERIFICATION",
+  "SOCIETY_RULES",
   "OTHER",
 ] as const;
 
@@ -515,6 +523,7 @@ export const ID_PREFIX = {
   REFERRAL: "SR-REF",
   TOPUP: "SR-TOP",
   DOC_REQUEST: "SR-DREQ",
+  USER: "SR-USER",
 } as const;
 export type IdPrefix = (typeof ID_PREFIX)[keyof typeof ID_PREFIX];
 

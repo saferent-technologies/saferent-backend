@@ -34,6 +34,18 @@ vi.mock("../../src/lib/firebaseAdmin", () => ({
 
 type Json = { success: boolean; message: string; data: any; meta: any; errorCode?: string; details?: any };
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+
+// Smallest MP4 the server accepts: ftyp + moov/mvhd (10 s).
+const box = (t: string, b: Buffer) => {
+  const h = Buffer.alloc(8);
+  h.writeUInt32BE(8 + b.length);
+  h.write(t, 4, "latin1");
+  return Buffer.concat([h, b]);
+};
+const MVHD = Buffer.alloc(100);
+MVHD.writeUInt32BE(1000, 12);
+MVHD.writeUInt32BE(10_000, 16);
+const MP4 = Buffer.concat([box("ftyp", Buffer.from("isom\0\0\x02\0isomavc1", "latin1")), box("moov", box("mvhd", MVHD))]);
 const PDF = new TextEncoder().encode("%PDF-1.4\n%test\n");
 
 describe.skipIf(!TEST_DB)("property APIs (MySQL integration)", () => {
@@ -304,6 +316,12 @@ describe.skipIf(!TEST_DB)("property APIs (MySQL integration)", () => {
     const early = await call("landlordA", "POST", `/properties/${ids.aptA}/submit`);
     expect(early.status).toBe(412);
     expect(early.json.details.problems).toContain("Add at least one photo.");
+    expect(early.json.details.problems).toContain("Confirm the ownership declaration.");
+    // Only the owner can declare; the current version is required.
+    expect((await call("landlordA", "POST", `/properties/${ids.aptA}/ownership-declaration`, { accepted: true, version: "v0" })).status).toBe(400);
+    const declared = await call("landlordA", "POST", `/properties/${ids.aptA}/ownership-declaration`, { accepted: true, version: "v1" });
+    expect(declared.status).toBe(200);
+    expect(declared.json.data.declaration.current).toBe(true);
     const form = new FormData();
     form.append("category", "FRONT_VIEW");
     form.append("files", new Blob([PNG], { type: "image/png" }), "front.png");
@@ -312,6 +330,31 @@ describe.skipIf(!TEST_DB)("property APIs (MySQL integration)", () => {
     const fake = new FormData();
     fake.append("files", new Blob([new TextEncoder().encode("<script>")], { type: "image/png" }), "evil.png");
     expect((await call("landlordA", "POST", `/properties/${ids.aptA}/images`, fake)).status).toBe(400);
+
+    // Every flat needs a video tour first.
+    const noVideo = await call("landlordA", "POST", `/properties/${ids.aptA}/submit`);
+    expect(noVideo.status).toBe(412);
+    expect(noVideo.json.errorCode).toBe("VIDEO_REQUIRED");
+    const flats: string[] = noVideo.json.details.unitIds;
+    expect(flats).toContain(ids.flat101);
+    // unitId of another property → 400.
+    const wrong = new FormData();
+    wrong.append("file", new Blob([MP4], { type: "video/mp4" }), "tour.mp4");
+    wrong.append("unitId", "00000000-0000-4000-8000-000000000000");
+    expect((await call("landlordA", "POST", `/properties/${ids.aptA}/videos`, wrong)).status).toBe(400);
+    for (const unitId of flats) {
+      const v = new FormData();
+      v.append("file", new Blob([MP4], { type: "video/mp4" }), "tour.mp4");
+      v.append("unitId", unitId);
+      v.append("durationSec", "10");
+      const up = await call("landlordA", "POST", `/properties/${ids.aptA}/videos`, v);
+      expect(up.status).toBe(201);
+      expect(up.json.data.video).toMatchObject({ unitId, roomId: null, durationSec: 10, status: "PENDING" });
+    }
+    // The owner sees the PENDING videos with their unitIds.
+    const withVideos = await call("landlordA", "GET", `/properties/${ids.aptA}`);
+    expect(withVideos.json.data.property.videos.map((x: { unitId: string }) => x.unitId).sort()).toEqual([...flats].sort());
+    expect(withVideos.json.data.property.videos.every((x: { status: string }) => x.status === "PENDING")).toBe(true);
 
     expect((await call("landlordA", "POST", `/properties/${ids.aptA}/submit`)).status).toBe(200);
     expect((await call("landlordA", "PATCH", `/properties/${ids.aptA}`, { title: "Edit while pending" })).status).toBe(412);
@@ -334,6 +377,24 @@ describe.skipIf(!TEST_DB)("property APIs (MySQL integration)", () => {
     expect(browse.json.data.map((x: { id: string }) => x.id)).toContain(ids.aptA);
     const listing = await call("tenant", "GET", `/browse/${ids.aptA}`);
     expect(listing.json.data.property.ownerId).toBeUndefined();
+    // Approving the listing approved its PENDING video tours: tenants see them, with the flat's unitId.
+    const tours = listing.json.data.property.videos as Array<{ id: string; url: string; status: string; unitId: string | null; durationSec: number }>;
+    expect(tours.length).toBeGreaterThan(0);
+    expect(tours.every((v) => v.status === "APPROVED")).toBe(true);
+    expect(tours.map((v) => v.unitId)).toContain(ids.flat101);
+    expect(tours[0]).toMatchObject({ durationSec: 10, url: expect.stringContaining("/api/v1/files/property-videos/") });
+    expect((await prisma.propertyVideo.count({ where: { propertyId: ids.aptA, status: "PENDING" } }))).toBe(0);
+    // Signed-in tenants can play it.
+    const play = await fetch(`${base}${tours[0].url}`, { headers: { Authorization: "Bearer t-tenant", "X-Client-Platform": "ANDROID" } });
+    expect(play.status).toBe(200);
+    // A new (PENDING) building video: hidden from tenants, visible to the owner.
+    const extra = new FormData();
+    extra.append("file", new Blob([MP4], { type: "video/mp4" }), "building.mp4");
+    expect((await call("landlordA", "POST", `/properties/${ids.aptA}/videos`, extra)).status).toBe(201);
+    const tenantView = await call("tenant", "GET", `/browse/${ids.aptA}`);
+    expect(tenantView.json.data.property.videos.some((v: { status: string }) => v.status === "PENDING")).toBe(false);
+    const ownerView = await call("landlordA", "GET", `/properties/${ids.aptA}`);
+    expect(ownerView.json.data.property.videos.some((v: { status: string; unitId: string | null }) => v.status === "PENDING" && v.unitId === null)).toBe(true);
     expect(listing.json.data.property.utilities.meterNumber).toBeUndefined();
     expect(listing.json.data.property.policy.petsAllowed).toBe("NO");
     // Super Admin cannot verify their own property.
@@ -369,6 +430,11 @@ describe.skipIf(!TEST_DB)("property APIs (MySQL integration)", () => {
     expect(detail.json.data.property.title).toBe(liveBefore.title);
     const draft = await call("landlordA", "GET", `/properties/${ids.aptA}?view=draft`);
     expect(draft.json.data.property.title).toBe("Sea-facing flats (renovated)");
+    // The wizard's change-request view includes the live listing's videos, keyed by the copy's flat ids.
+    const draftUnitIds = draft.json.data.property.units.map((u: { id: string }) => u.id);
+    expect(Array.isArray(draft.json.data.property.videos)).toBe(true);
+    expect(draft.json.data.property.videos.length).toBeGreaterThan(0);
+    for (const v of draft.json.data.property.videos) if (v.unitId) expect(draftUnitIds).toContain(v.unitId);
     // Moving between wizard steps doesn't save anything.
     expect((await call("landlordA", "PATCH", `/properties/${ids.aptA}`, { wizardStep: 5 })).status).toBe(200);
 

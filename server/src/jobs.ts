@@ -5,6 +5,10 @@ import { rebuildLocations } from "./properties/locations";
 import { sendRentNotifications } from "./services/rentNotifications";
 import { endExpiredLeases } from "./services/leaseExpiry";
 import { processHomeAlerts } from "./services/homeAlerts";
+import { processVisitReminders } from "./properties/controllers/visitBooking.controller";
+import { processSafetyReminders } from "./properties/controllers/safety.controller";
+import { processDocumentExpiry } from "./properties/controllers/compliance.controller";
+import { processSmartRentReminders } from "./properties/controllers/smart.controller";
 
 /** Search-suggestion places are rebuilt from the properties at most once an hour (safety net). */
 let lastLocationsRebuild = 0;
@@ -33,6 +37,10 @@ async function runOnce(): Promise<void> {
     ["rent-notifications", sendRentNotifications],
     ["home-alerts", processHomeAlerts],
     ["support-queue", dispatchSupportQueue],
+    ["visit-reminders", processVisitReminders],
+    ["safety-reminders", processSafetyReminders],
+    ["document-expiry", processDocumentExpiry],
+    ["smart-rent-reminders", () => processSmartRentReminders()],
   ] as const) {
     try {
       await job();

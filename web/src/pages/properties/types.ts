@@ -229,6 +229,18 @@ export interface PropertySummary {
 }
 
 export interface PropertyDetail extends PropertySummary {
+  /** Video tours (one per place): the building, a flat or a room. Owners / staff see every status. */
+  videos?: PropertyVideo[];
+  /** Private: owner / managers / staff only. */
+  ownership?: {
+    ownerType: "INDIVIDUAL" | "JOINT" | "COMPANY";
+    ownershipType: "SOLE" | "JOINT";
+    companyName: string | null;
+    ownerSharePercent: number | null;
+    coOwners: Array<{ name: string; phone?: string | null; email?: string | null; relation?: string | null; sharePercent: number }>;
+    representative: { name: string; phone: string; email?: string | null; relation: string; authorityType: string } | null;
+    updatedAt: string;
+  } | null;
   /** Whole-property lease (single-unit types). */
   occupancy?: Occupancy | null;
   pendingInvitation?: PendingInvitation | null;
@@ -313,3 +325,17 @@ export function unitPriced(p: { propertyType: string; building?: Record<string, 
   if (["APARTMENT", "INDEPENDENT_BUILDING", "COMMERCIAL_COMPLEX"].includes(p.propertyType)) return true;
   return p.propertyType === "VILLA" && p.building?.villaListing === "COMMUNITY";
 }
+
+export interface PropertyVideo {
+  id: string;
+  url: string;
+  thumbnailUrl: string | null;
+  durationSec: number;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  unitId: string | null;
+  roomId: string | null;
+  rejectionReason?: string | null;
+  createdAt?: string;
+}
+
+export const videoPath = (videoId: string) => `/files/property-videos/${videoId}`;

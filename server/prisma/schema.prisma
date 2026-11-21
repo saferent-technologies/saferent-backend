@@ -219,6 +219,173 @@ enum InspectionType {
   VERIFICATION
 }
 
+/// A landlord's rent reminder schedule (smart reminders). No row = defaults (on, 3 & 1 days before, 1/3/7 days late).
+model RentReminderSettings {
+  landlordId  String   @id @map("landlord_id") @db.Char(36)
+  enabled     Boolean  @default(true)
+  /// e.g. [3, 1]
+  beforeDays  Json     @map("before_days")
+  /// e.g. [1, 3, 7]
+  overdueDays Json     @map("overdue_days")
+  smartEarly  Boolean  @default(true) @map("smart_early")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("rent_reminder_settings")
+}
+
+/// One smart reminder sent (or skipped) for a rent due: kind BEFORE_3, BEFORE_1, BEFORE_5, OVERDUE_1, …
+model RentReminderLog {
+  id            String   @id @default(uuid()) @db.Char(36)
+  rentPaymentId String   @map("rent_payment_id") @db.Char(36)
+  kind          String   @db.VarChar(20)
+  sent          Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([rentPaymentId, kind])
+  @@map("rent_reminder_logs")
+}
+
+/// Society / association (apartment complexes, gated communities). One row per live property.
+model PropertySociety {
+  propertyId             String   @id @map("property_id") @db.Char(36)
+  isSociety              Boolean  @default(true) @map("is_society")
+  associationName        String?  @map("association_name") @db.VarChar(150)
+  registrationNumber     String?  @map("registration_number") @db.VarChar(60)
+  contactName            String?  @map("contact_name") @db.VarChar(120)
+  /// SECRETARY | PRESIDENT | MANAGER | FACILITY_MANAGER | OTHER
+  contactRole            String?  @map("contact_role") @db.VarChar(20)
+  contactPhone           String?  @map("contact_phone") @db.VarChar(20)
+  contactEmail           String?  @map("contact_email") @db.VarChar(254)
+  officeHours            String?  @map("office_hours") @db.VarChar(120)
+  maintenanceAmount      Decimal? @map("maintenance_amount") @db.Decimal(12, 2)
+  /// MONTHLY | QUARTERLY | HALF_YEARLY | YEARLY
+  maintenanceFrequency   String?  @map("maintenance_frequency") @db.VarChar(12)
+  /// INCLUDED_IN_RENT | TENANT | OWNER
+  maintenancePaidBy      String?  @map("maintenance_paid_by") @db.VarChar(20)
+  /// SOCIETY | OWNER — who the tenant pays (when the tenant pays)
+  maintenancePayTo       String?  @map("maintenance_pay_to") @db.VarChar(10)
+  /// [{ "title", "description" }]
+  rules                  Json?
+  visitorPolicy          String?  @map("visitor_policy") @db.VarChar(1000)
+  /// ["MYGATE", "NOBROKERHOOD", "ACCESS_CARD", …]
+  gateAccessMethods      Json?    @map("gate_access_methods")
+  gateContactName        String?  @map("gate_contact_name") @db.VarChar(120)
+  gateContactPhone       String?  @map("gate_contact_phone") @db.VarChar(20)
+  clubhouseRules         String?  @map("clubhouse_rules") @db.VarChar(1000)
+  /// [{ "name": "Gym", "timings": "6 AM – 10 PM", "notes" }]
+  commonAreas            Json?    @map("common_areas")
+  moveRequiresPermission Boolean? @map("move_requires_permission")
+  moveNoticeDays         Int?     @map("move_notice_days")
+  moveAllowedTimings     String?  @map("move_allowed_timings") @db.VarChar(120)
+  moveChargeAmount       Decimal? @map("move_charge_amount") @db.Decimal(12, 2)
+  moveDepositAmount      Decimal? @map("move_deposit_amount") @db.Decimal(12, 2)
+  moveLiftBooking        Boolean? @map("move_lift_booking")
+  moveNotes              String?  @map("move_notes") @db.VarChar(500)
+  updatedById            String   @map("updated_by_id") @db.Char(36)
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  @@map("property_society")
+}
+
+/// Parking slots of a property, allocated to a flat (unitId = live flat) or unallocated.
+model ParkingSlot {
+  id          String   @id @default(uuid()) @db.Char(36)
+  propertyId  String   @map("property_id") @db.Char(36)
+  unitId      String?  @map("unit_id") @db.Char(36)
+  slotNumber  String   @map("slot_number") @db.VarChar(20)
+  /// CAR | BIKE | BOTH
+  vehicleType String   @default("CAR") @map("vehicle_type") @db.VarChar(5)
+  covered     Boolean  @default(false)
+  notes       String?  @db.VarChar(200)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, slotNumber])
+  @@index([propertyId, unitId])
+  @@map("parking_slots")
+}
+
+/// India compliance details of a property (one row per live property). Documents are property documents.
+model PropertyCompliance {
+  propertyId                  String    @id @map("property_id") @db.Char(36)
+  /// The owner declared they own (or are authorized to rent out) the property.
+  ownershipDeclaredAt         DateTime? @map("ownership_declared_at")
+  ownershipDeclaredById       String?   @map("ownership_declared_by_id") @db.Char(36)
+  ownershipDeclarationVersion String?   @map("ownership_declaration_version") @db.VarChar(10)
+  /// Municipal assessment / property tax identification number (PTIN).
+  assessmentNumber            String?   @map("assessment_number") @db.VarChar(60)
+  /// PAID | PENDING | NOT_APPLICABLE
+  propertyTaxStatus           String?   @map("property_tax_status") @db.VarChar(15)
+  /// Financial year paid, e.g. "2025-26"
+  propertyTaxPaidYear         String?   @map("property_tax_paid_year") @db.VarChar(9)
+  propertyTaxAmount           Decimal?  @map("property_tax_amount") @db.Decimal(12, 2)
+  buildingApprovalNumber      String?   @map("building_approval_number") @db.VarChar(80)
+  buildingApprovalAuthority   String?   @map("building_approval_authority") @db.VarChar(120)
+  buildingApprovalDate        DateTime? @map("building_approval_date") @db.Date
+  updatedById                 String    @map("updated_by_id") @db.Char(36)
+  updatedAt                   DateTime  @updatedAt @map("updated_at")
+
+  @@map("property_compliance")
+}
+
+/// Safety & emergency information of a property (one row per live property).
+/// Tenants browsing see the features; contacts and instructions are for tenants with an active lease.
+model PropertySafety {
+  propertyId             String    @id @map("property_id") @db.Char(36)
+  fireExtinguisher       Boolean?  @map("fire_extinguisher")
+  fireExtinguisherCount  Int?      @map("fire_extinguisher_count")
+  fireExtinguisherExpiry DateTime? @map("fire_extinguisher_expiry") @db.Date
+  /// 0 = nothing sent, 1 = "expires in 30 days" sent, 2 = "expired" sent (reset when the expiry changes).
+  expiryNoticeStage      Int       @default(0) @map("expiry_notice_stage")
+  smokeDetectors         Boolean?  @map("smoke_detectors")
+  smokeDetectorLocations String?   @map("smoke_detector_locations") @db.VarChar(200)
+  emergencyExits         Int?      @map("emergency_exits")
+  emergencyStaircase     Boolean?  @map("emergency_staircase")
+  firstAidKit            Boolean?  @map("first_aid_kit")
+  firstAidLocation       String?   @map("first_aid_location") @db.VarChar(120)
+  securityName           String?   @map("security_name") @db.VarChar(120)
+  securityPhone          String?   @map("security_phone") @db.VarChar(20)
+  security24x7           Boolean?  @map("security_24x7")
+  /// [{ "label": "Building office", "phone": "+91…" }] (max 6)
+  emergencyContacts      Json?     @map("emergency_contacts")
+  /// { name, phone?, address?, distanceKm?, latitude?, longitude? }
+  nearestHospital        Json?     @map("nearest_hospital")
+  nearestPoliceStation   Json?     @map("nearest_police_station")
+  instructions           String?   @db.Text
+  updatedById            String    @map("updated_by_id") @db.Char(36)
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  @@map("property_safety")
+}
+
+/// Furniture / appliance register: where the item belongs.
+enum InventoryCategory {
+  BEDROOM
+  LIVING_ROOM
+  KITCHEN
+  BATHROOM
+  APPLIANCES
+  OTHER
+}
+
+enum WorkingStatus {
+  WORKING
+  NEEDS_REPAIR
+  NOT_WORKING
+}
+
+enum RepairStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+}
+
+enum RepairPaidBy {
+  OWNER
+  TENANT
+  SHARED
+}
+
 enum ConditionRating {
   GOOD
   FAIR
@@ -256,6 +423,14 @@ enum DocumentType {
   BUILDING_PERMISSION
   RENTAL_AGREEMENT
   LANDLORD_IDENTITY
+  POWER_OF_ATTORNEY
+  STRUCTURAL_SAFETY_CERTIFICATE
+  FIRE_NOC
+  OCCUPANCY_CERTIFICATE
+  TRADE_LICENSE
+  SOCIETY_NOC
+  POLICE_VERIFICATION
+  SOCIETY_RULES
   OTHER
 }
 
@@ -393,9 +568,18 @@ enum LeaseExitStatus {
   COMPLETED
 }
 
+enum LeaseExitUndoStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELLED
+}
+
 enum KycProvider {
   SETU
   MOCK
+  /// Owner uploaded an ID document (Aadhaar Offline eKYC ZIP, PAN, passport); see documentType.
+  DOCUMENT
 }
 
 enum IdentityVerificationStatus {
@@ -525,7 +709,11 @@ enum EnquiryStatus {
 }
 
 enum VisitStatus {
+  /// Booked by a tenant, waiting for the owner / host to confirm.
+  REQUESTED
+  /// Confirmed (or scheduled by an agent).
   SCHEDULED
+  REJECTED
   COMPLETED
   CANCELLED
   NO_SHOW
@@ -561,6 +749,14 @@ model User {
   email              String?       @unique @db.VarChar(254)
   pendingEmail       String?       @map("pending_email") @db.VarChar(254)
   phoneNumber        String?       @unique @map("phone_number") @db.VarChar(20)
+  /// Legal name verified (owner verification approved): the user can't change fullName; only a Super Admin can.
+  nameLocked         Boolean       @default(false) @map("name_locked")
+  nameLockedAt       DateTime?     @map("name_locked_at")
+  /// The app has shown (and the user finished / dismissed) the "verify as owner" prompt. Never reset on logout.
+  kycPromptDone      Boolean       @default(false) @map("kyc_prompt_done")
+  kycPromptDoneAt    DateTime?     @map("kyc_prompt_done_at")
+  /// Public SafeRent ID (e.g. SR-USER-000012): landlords find a tenant by it. Assigned on first sign-in / backfilled.
+  safeRentId         String?       @unique @map("safe_rent_id") @db.VarChar(20)
   profileImage       String?       @map("profile_image") @db.VarChar(255)
   /// Demographics (asked after sign-in; see lib/profileCompletion.ts).
   gender             Gender?
@@ -816,6 +1012,15 @@ model LandlordProfile {
   kycSubmittedAt DateTime? @map("kyc_submitted_at")
   /// Live selfie, compared by staff with the DigiLocker photo.
   selfiePath   String?  @map("selfie_path") @db.VarChar(255)
+  /// Owner contact details (GET/PUT /landlord/owner-details). address/city/state/pincode = communication address.
+  alternatePhone           String?  @map("alternate_phone") @db.VarChar(20)
+  /// ISO 639-1: en, te, hi, ta, kn, ml, mr, bn, gu, ur, or, pa
+  preferredLanguage        String?  @map("preferred_language") @db.VarChar(5)
+  /// CALL | SMS | WHATSAPP | EMAIL | IN_APP
+  preferredContactMethod   String?  @map("preferred_contact_method") @db.VarChar(15)
+  emergencyContactName     String?  @map("emergency_contact_name") @db.VarChar(120)
+  emergencyContactPhone    String?  @map("emergency_contact_phone") @db.VarChar(20)
+  emergencyContactRelation String?  @map("emergency_contact_relation") @db.VarChar(40)
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -960,6 +1165,9 @@ model Property {
   policy       PropertyPolicy?
   amenities    PropertyAmenity[]
   pricing      PropertyPricing[]
+  ownership    PropertyOwnership?
+  videos       PropertyVideo[]
+  inventory          InventoryItem[]
   images       PropertyImage[]
   documents    PropertyDocument[]
   assignments  PropertyAssignment[]
@@ -1294,6 +1502,8 @@ model PropertyDocument {
   description     String?      @db.VarChar(1000)
   documentDate    DateTime?    @map("document_date") @db.Date
   expiryDate      DateTime?    @map("expiry_date") @db.Date
+  /// 0 = nothing sent, 1 = "expires in 30 days" sent, 2 = "expired" sent (reset when the expiry changes).
+  expiryNoticeStage Int        @default(0) @map("expiry_notice_stage")
   sharedWithTenant Boolean     @default(false) @map("shared_with_tenant")
   /// First time tenants were notified about this document (no repeat notifications).
   sharedNotifiedAt DateTime?   @map("shared_notified_at")
@@ -1391,6 +1601,17 @@ model PropertyInspection {
   doorsAndWindows        ConditionRating  @default(NOT_INSPECTED) @map("doors_and_windows")
   electricalCondition    ConditionRating  @default(NOT_INSPECTED) @map("electrical_condition")
   plumbingCondition      ConditionRating  @default(NOT_INSPECTED) @map("plumbing_condition")
+  flooringCondition      ConditionRating  @default(NOT_INSPECTED) @map("flooring_condition")
+  bathroomCondition      ConditionRating  @default(NOT_INSPECTED) @map("bathroom_condition")
+  kitchenCondition       ConditionRating  @default(NOT_INSPECTED) @map("kitchen_condition")
+  /// Overall furniture condition (per item: furnitureInventory).
+  furnitureCondition     ConditionRating  @default(NOT_INSPECTED) @map("furniture_condition")
+  /// Overall appliance condition (per item: applianceInventory).
+  applianceCondition     ConditionRating  @default(NOT_INSPECTED) @map("appliance_condition")
+  /// [{ "item": string, "quantity": number, "condition": string }]
+  applianceInventory     Json?            @map("appliance_inventory")
+  /// [{ "item", "description"?, "priority": LOW|MEDIUM|HIGH|URGENT, "estimatedCost"?, "responsibility": OWNER|TENANT|SHARED, "status": OPEN|IN_PROGRESS|DONE }]
+  repairRequirements     Json?            @map("repair_requirements")
   /// [{ "item": string, "quantity": number, "condition": string }]
   furnitureInventory     Json?            @map("furniture_inventory")
   existingDamages        String?          @map("existing_damages") @db.Text
@@ -1512,6 +1733,22 @@ model Lease {
   depositRefundStatus     DepositRefundStatus? @map("deposit_refund_status")
   depositRefundAmount     Decimal?             @map("deposit_refund_amount") @db.Decimal(12, 2)
   depositRefundReportedAt DateTime?            @map("deposit_refund_reported_at")
+  // Rental agreement registration (India): REGISTERED | NOTARIZED | E_STAMP | UNREGISTERED
+  agreementType               String?   @map("agreement_type") @db.VarChar(15)
+  agreementRegistrationNumber String?   @map("agreement_registration_number") @db.VarChar(80)
+  agreementOffice             String?   @map("agreement_office") @db.VarChar(120)
+  agreementDate               DateTime? @map("agreement_date") @db.Date
+  stampDutyAmount             Decimal?  @map("stamp_duty_amount") @db.Decimal(12, 2)
+  // Tenant police verification: NOT_STARTED | SUBMITTED | VERIFIED | NOT_REQUIRED
+  policeVerificationStatus    String?   @map("police_verification_status") @db.VarChar(15)
+  policeVerificationRef       String?   @map("police_verification_ref") @db.VarChar(80)
+  policeVerificationSubmittedOn DateTime? @map("police_verification_submitted_on") @db.Date
+  policeVerificationVerifiedOn  DateTime? @map("police_verification_verified_on") @db.Date
+  complianceUpdatedById       String?   @map("compliance_updated_by_id") @db.Char(36)
+  // Society / association approval of this tenant: NOT_REQUIRED | PENDING | APPROVED | REJECTED
+  societyApprovalStatus       String?   @map("society_approval_status") @db.VarChar(15)
+  societyApprovalDate         DateTime? @map("society_approval_date") @db.Date
+  societyApprovalNote         String?   @map("society_approval_note") @db.VarChar(300)
   status          LeaseStatus @default(ACTIVE)
   endedAt         DateTime?   @map("ended_at")
   createdById     String      @map("created_by_id") @db.Char(36)
@@ -1553,6 +1790,33 @@ model LeaseDateChange {
 
 /// Landlord → tenant invitation link. Only the SHA-256 of the token is stored; the token itself is shown
 /// to the landlord once (when the link is made). Single-use, expiring and revocable.
+/// The tenant's answers when accepting an invitation (only what the owner asked; see lib/tenantDetails).
+/// Visible to the tenant, the landlord and lease managers of the property. References are encrypted.
+model TenantRentalDetails {
+  id                  String    @id @default(uuid()) @db.Char(36)
+  tenantId            String    @map("tenant_id") @db.Char(36)
+  invitationId        String    @unique @map("invitation_id") @db.Char(36)
+  leaseId             String?   @map("lease_id") @db.Char(36)
+  tenantType          String?   @map("tenant_type") @db.VarChar(30)
+  employmentType      String?   @map("employment_type") @db.VarChar(30)
+  companyName         String?   @map("company_name") @db.VarChar(120)
+  adults              Int?
+  children            Int?
+  hasPets             Boolean?  @map("has_pets")
+  petDetails          String?   @map("pet_details") @db.VarChar(120)
+  smokes              Boolean?
+  stayMonths          Int?      @map("stay_months")
+  /// Encrypted JSON [{ name, relation, phone }] (vault key).
+  referencesEnc       String?   @map("references_enc") @db.Text
+  backgroundConsentAt DateTime? @map("background_consent_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  @@index([tenantId])
+  @@index([leaseId])
+  @@map("tenant_rental_details")
+}
+
 model TenantInvitation {
   id                 String           @id @default(uuid()) @db.Char(36)
   code               String           @unique @db.VarChar(20)
@@ -1564,6 +1828,10 @@ model TenantInvitation {
   createdById        String           @map("created_by_id") @db.Char(36)
   recipientName      String           @map("recipient_name") @db.VarChar(120)
   recipientPhone     String?          @map("recipient_phone") @db.VarChar(20)
+  /// The SafeRent account the landlord picked (lookup by phone / SafeRent ID). Only that account can accept.
+  recipientUserId    String?          @map("recipient_user_id") @db.Char(36)
+  /// The current link token, encrypted (AES-256-GCM), so the invited tenant can open it from "My invitations".
+  tokenEnc           String?          @map("token_enc") @db.VarChar(255)
   recipientEmail     String?          @map("recipient_email") @db.VarChar(254)
   monthlyRent        Decimal          @map("monthly_rent") @db.Decimal(12, 2)
   securityDeposit    Decimal          @map("security_deposit") @db.Decimal(12, 2)
@@ -1576,6 +1844,8 @@ model TenantInvitation {
   noticePeriodDays   Int?             @map("notice_period_days")
   lockInMonths       Int?             @map("lock_in_months")
   additionalTerms    String?          @map("additional_terms") @db.Text
+  /// What the owner asks the tenant on accepting (lib/tenantDetails requirementsSchema). NULL = nothing (old invitations).
+  requirements       Json?
   status             InvitationStatus @default(PENDING)
   expiresAt          DateTime         @map("expires_at")
   respondedById      String?          @map("responded_by_id") @db.Char(36)
@@ -1591,6 +1861,7 @@ model TenantInvitation {
   @@index([landlordId, status])
   @@index([unitId, status])
   @@index([bedId, status])
+  @@index([recipientUserId, status])
   @@map("tenant_invitations")
 }
 
@@ -1839,10 +2110,36 @@ model LeaseExitRequest {
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
   lease Lease @relation(fields: [leaseId], references: [id])
+  undos LeaseExitUndo[]
 
   @@index([leaseId, createdAt])
   @@index([status, moveOutDate])
   @@map("lease_exit_requests")
+}
+
+/// Undo of an ACCEPTED (not yet completed) lease close: one side asks to keep the lease, the other agrees.
+/// Accepted → the close request becomes CANCELLED and the lease stays ACTIVE.
+model LeaseExitUndo {
+  id              String              @id @default(uuid()) @db.Char(36)
+  exitRequestId   String              @map("exit_request_id") @db.Char(36)
+  leaseId         String              @map("lease_id") @db.Char(36)
+  /// = exitRequestId while PENDING (unique → one open undo per close request), null afterwards.
+  openExitId      String?             @unique @map("open_exit_id") @db.Char(36)
+  requestedById   String              @map("requested_by_id") @db.Char(36)
+  requestedByRole ReviewerRole        @map("requested_by_role")
+  reason          String              @db.Text
+  status          LeaseExitUndoStatus @default(PENDING)
+  respondedById   String?             @map("responded_by_id") @db.Char(36)
+  respondedAt     DateTime?           @map("responded_at")
+  responseNote    String?             @map("response_note") @db.VarChar(1000)
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
+
+  exitRequest LeaseExitRequest @relation(fields: [exitRequestId], references: [id], onDelete: Cascade)
+
+  @@index([exitRequestId, createdAt])
+  @@index([leaseId])
+  @@map("lease_exit_undos")
 }
 
 /// Payment gateways the admin can switch on. Secrets never live here — only in server/.env.
@@ -2090,6 +2387,14 @@ model MaintenanceRequest {
   reminderCount      Int               @default(0) @map("reminder_count")
   resolvedAt         DateTime?         @map("resolved_at")
   resolvedById       String?           @map("resolved_by_id") @db.Char(36)
+  /// Technician outside SafeRent (name / phone) — or a SafeRent provider in assignedProviderId.
+  technicianName     String?           @map("technician_name") @db.VarChar(120)
+  technicianPhone    String?           @map("technician_phone") @db.VarChar(20)
+  estimatedCost      Decimal?          @map("estimated_cost") @db.Decimal(12, 2)
+  actualCost         Decimal?          @map("actual_cost") @db.Decimal(12, 2)
+  /// Asked only when the request is resolved: OWNER | TENANT | SHARED | NO_COST
+  paidBy             String?           @map("paid_by") @db.VarChar(10)
+  workStartedAt      DateTime?         @map("work_started_at")
   createdAt          DateTime          @default(now()) @map("created_at")
   updatedAt          DateTime          @updatedAt @map("updated_at")
 
@@ -2113,6 +2418,8 @@ model MaintenancePhoto {
   uploadedById String   @map("uploaded_by_id") @db.Char(36)
   /// Photo added with a status update (null = with the request itself).
   updateId     String?  @map("update_id") @db.Char(36)
+  /// PHOTO | VIDEO | INVOICE (invoice / receipt: image or PDF)
+  kind         String   @default("PHOTO") @db.VarChar(10)
   createdAt    DateTime @default(now()) @map("created_at")
 
   request MaintenanceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
@@ -2214,13 +2521,60 @@ model PropertyVisit {
   tenantId    String?     @map("tenant_id") @db.Char(36)
   scheduledAt DateTime    @map("scheduled_at")
   status      VisitStatus @default(SCHEDULED)
+  /// Host's notes / visit outcome.
   notes       String?     @db.VarChar(500)
   createdAt   DateTime    @default(now()) @map("created_at")
+  // Direct booking from the app (source TENANT) — see properties/controllers/visitBooking.controller.ts
+  unitId             String?   @map("unit_id") @db.Char(36)
+  bedId              String?   @map("bed_id") @db.Char(36)
+  endsAt             DateTime? @map("ends_at")
+  /// AGENT (scheduled by staff / agent) | TENANT (booked in the app)
+  source             String    @default("AGENT") @db.VarChar(10)
+  visitors           Int       @default(1)
+  visitorNote        String?   @map("visitor_note") @db.VarChar(300)
+  confirmedAt        DateTime? @map("confirmed_at")
+  confirmedById      String?   @map("confirmed_by_id") @db.Char(36)
+  rejectReason       String?   @map("reject_reason") @db.VarChar(300)
+  cancelledAt        DateTime? @map("cancelled_at")
+  cancelledById      String?   @map("cancelled_by_id") @db.Char(36)
+  cancelReason       String?   @map("cancel_reason") @db.VarChar(300)
+  completedAt        DateTime? @map("completed_at")
+  reminderSentAt     DateTime? @map("reminder_sent_at")
+  feedbackRating     Int?      @map("feedback_rating")
+  feedbackInterested Boolean?  @map("feedback_interested")
+  feedbackComment    String?   @map("feedback_comment") @db.VarChar(500)
+  feedbackAt         DateTime? @map("feedback_at")
 
   property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
 
   @@index([agentId, scheduledAt])
+  @@index([propertyId, scheduledAt])
+  @@index([tenantId, scheduledAt])
   @@map("property_visits")
+}
+
+/// When tenants can book visits of a property (times are India time, HH:MM).
+model PropertyVisitSettings {
+  propertyId      String   @id @map("property_id") @db.Char(36)
+  enabled         Boolean  @default(false)
+  /// AUTO: bookings are confirmed at once. MANUAL: the owner / host approves each one.
+  approvalMode    String   @default("MANUAL") @map("approval_mode") @db.VarChar(10)
+  slotMinutes     Int      @default(30) @map("slot_minutes")
+  capacityPerSlot Int      @default(1) @map("capacity_per_slot")
+  minNoticeHours  Int      @default(4) @map("min_notice_hours")
+  maxDaysAhead    Int      @default(14) @map("max_days_ahead")
+  /// [{ "day": 0-6 (Sunday = 0), "start": "10:00", "end": "13:00" }]
+  weekly          Json
+  /// ["2026-11-25", ...] days with no visits
+  blockedDates    Json     @map("blocked_dates")
+  /// Who shows the property (owner, or a manager / agent assigned to it). NULL = assigned manager / agent, else owner.
+  hostId          String?  @map("host_id") @db.Char(36)
+  /// Shown to the visitor after confirmation (gate, parking, whom to call).
+  instructions    String?  @db.VarChar(300)
+  updatedById     String   @map("updated_by_id") @db.Char(36)
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("property_visit_settings")
 }
 
 model FraudReport {
@@ -2292,6 +2646,16 @@ model IdentityVerification {
   state        String?                    @db.VarChar(80)
   pincode      String?                    @db.VarChar(10)
   photoPath    String?                    @map("photo_path") @db.VarChar(255)
+  /// DOCUMENT provider: AADHAAR_XML | PAN | PASSPORT.
+  documentType String?                    @map("document_type") @db.VarChar(20)
+  /// PAN / passport number, encrypted (vault envelope JSON). Deleted after staff decide; last 4 kept.
+  documentNumberEnc String?               @map("document_number_enc") @db.Text
+  documentLast4 String?                   @map("document_last4") @db.VarChar(4)
+  /// Encrypted document images (PAN / passport), deleted after staff decide.
+  frontPath    String?                    @map("front_path") @db.VarChar(255)
+  backPath     String?                    @map("back_path") @db.VarChar(255)
+  /// Encryption metadata per stored file: { photo?, front?, back? } → { iv, tag, wrappedKey, keyId, mime }.
+  fileMeta     Json?                      @map("file_meta")
   error        String?                    @db.VarChar(300)
   createdAt    DateTime                   @default(now()) @map("created_at")
   completedAt  DateTime?                  @map("completed_at")
@@ -2606,4 +2970,174 @@ model HomeAlertMatch {
   @@unique([userId, propertyId])
   @@index([userId, createdAt])
   @@map("home_alert_matches")
+}
+
+/// Video tour (MP4, ≤ 60 s). One per building / unit / room ("slot"): a new upload replaces the old one.
+/// Always attached to the LIVE property (not the change-request copy); moderated PENDING → APPROVED.
+/// Furniture & appliances of a furnished / semi-furnished property, per flat / PG room (or the building).
+/// unitId / roomId always point at the LIVE rows (a change-request copy's id is stored as its live source).
+model InventoryItem {
+  id            String            @id @default(uuid()) @db.Char(36)
+  propertyId    String            @map("property_id") @db.Char(36)
+  unitId        String?           @map("unit_id") @db.Char(36)
+  roomId        String?           @map("room_id") @db.Char(36)
+  name          String            @db.VarChar(80)
+  category      InventoryCategory @default(OTHER)
+  quantity      Int               @default(1)
+  brand         String?           @db.VarChar(80)
+  model         String?           @db.VarChar(80)
+  purchaseDate  DateTime?         @map("purchase_date") @db.Date
+  condition     ConditionRating   @default(GOOD)
+  workingStatus WorkingStatus     @default(WORKING) @map("working_status")
+  serialNumber  String?           @map("serial_number") @db.VarChar(80)
+  notes         String?           @db.VarChar(500)
+  displayOrder  Int               @default(0) @map("display_order")
+  createdById   String            @map("created_by_id") @db.Char(36)
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+
+  property Property              @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  photos   InventoryPhoto[]
+  repairs  InventoryRepair[]
+
+  @@index([propertyId, unitId])
+  @@index([propertyId, roomId])
+  @@map("inventory_items")
+}
+
+model InventoryPhoto {
+  id           String   @id @default(uuid()) @db.Char(36)
+  itemId       String   @map("item_id") @db.Char(36)
+  filePath     String   @map("file_path") @db.VarChar(255)
+  mimeType     String   @map("mime_type") @db.VarChar(50)
+  uploadedById String   @map("uploaded_by_id") @db.Char(36)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId])
+  @@map("inventory_photos")
+}
+
+model InventoryRepair {
+  id           String       @id @default(uuid()) @db.Char(36)
+  itemId       String       @map("item_id") @db.Char(36)
+  repairDate   DateTime     @map("repair_date") @db.Date
+  description  String       @db.VarChar(1000)
+  cost         Decimal?     @db.Decimal(12, 2)
+  paidBy       RepairPaidBy @default(OWNER) @map("paid_by")
+  doneBy       String?      @map("done_by") @db.VarChar(120)
+  status       RepairStatus @default(DONE)
+  createdById  String       @map("created_by_id") @db.Char(36)
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId, repairDate])
+  @@map("inventory_repairs")
+}
+
+model PropertyVideo {
+  id              String       @id @default(uuid()) @db.Char(36)
+  propertyId      String       @map("property_id") @db.Char(36)
+  unitId          String?      @map("unit_id") @db.Char(36)
+  roomId          String?      @map("room_id") @db.Char(36)
+  /// "BUILDING" | "UNIT:<unitId>" | "ROOM:<roomId>" (unique per property → one video per place).
+  slotKey         String       @map("slot_key") @db.VarChar(60)
+  filePath        String       @map("file_path") @db.VarChar(255)
+  mimeType        String       @default("video/mp4") @map("mime_type") @db.VarChar(50)
+  sizeBytes       Int          @map("size_bytes")
+  durationSec     Int          @map("duration_sec")
+  thumbnailPath   String?      @map("thumbnail_path") @db.VarChar(255)
+  thumbnailMime   String?      @map("thumbnail_mime") @db.VarChar(50)
+  status          ReviewStatus @default(PENDING)
+  rejectionReason String?      @map("rejection_reason") @db.VarChar(500)
+  uploadedById    String       @map("uploaded_by_id") @db.Char(36)
+  reviewedById    String?      @map("reviewed_by_id") @db.Char(36)
+  reviewedAt      DateTime?    @map("reviewed_at")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, slotKey])
+  @@index([status, createdAt])
+  @@map("property_videos")
+}
+
+/// Owner verification guides shown in the app (GET /kyc/me → tutorials), managed by Super Admin.
+/// url = public HTTPS file (uploaded here → our public file URL, or an external direct file link).
+model KycTutorial {
+  id          String   @id @default(uuid()) @db.Char(36)
+  /// Which ID document this guide is for: AADHAAR_XML, EAADHAAR_PDF, PAN, PASSPORT or any new ID type key.
+  idType      String?  @map("id_type") @db.VarChar(30)
+  title       String   @db.VarChar(120)
+  /// VIDEO | PDF | IMAGE
+  type        String   @db.VarChar(10)
+  /// External direct file link; null when the file is stored here (filePath).
+  externalUrl String?  @map("external_url") @db.VarChar(500)
+  filePath    String?  @map("file_path") @db.VarChar(255)
+  mimeType    String?  @map("mime_type") @db.VarChar(50)
+  sizeBytes   Int?     @map("size_bytes")
+  description String?  @db.VarChar(200)
+  order       Int      @default(0)
+  active      Boolean  @default(true)
+  createdById String?  @map("created_by_id") @db.Char(36)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([active, order])
+  @@index([idType])
+  @@map("kyc_tutorials")
+}
+
+/// Super Admin switch per owner-verification ID type (AADHAAR_XML, EAADHAAR_PDF, PAN, PASSPORT).
+/// No row = enabled. A type is offered only when it is enabled here AND the server can check it.
+model KycIdTypeSetting {
+  type        String   @id @db.VarChar(20)
+  enabled     Boolean  @default(true)
+  updatedById String?  @map("updated_by_id") @db.Char(36)
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("kyc_id_type_settings")
+}
+
+/// UIDAI Offline e-KYC public key certificates uploaded by Super Admin (Verification settings).
+/// Used together with UIDAI_OFFLINE_CERT_PATH: a file is accepted when ANY of these signed it.
+model UidaiCertificate {
+  id           String   @id @default(uuid()) @db.Char(36)
+  pem          String   @db.Text
+  fingerprint  String   @unique @db.VarChar(100)
+  subject      String   @db.VarChar(300)
+  validFrom    DateTime @map("valid_from")
+  validTo      DateTime @map("valid_to")
+  uploadedById String?  @map("uploaded_by_id") @db.Char(36)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("uidai_certificates")
+}
+
+/// Who owns a property and who may act for the owner (GET/PUT /properties/:id/ownership). Private: owner,
+/// assigned managers and SafeRent staff only. Locked once the listing is approved (staff change it).
+model PropertyOwnership {
+  propertyId        String   @id @map("property_id") @db.Char(36)
+  /// INDIVIDUAL | JOINT | COMPANY
+  ownerType         String   @map("owner_type") @db.VarChar(12)
+  /// SOLE | JOINT
+  ownershipType     String   @map("ownership_type") @db.VarChar(8)
+  companyName       String?  @map("company_name") @db.VarChar(150)
+  /// The listing owner's own share (joint ownership), 0.01..100.
+  ownerSharePercent Decimal? @map("owner_share_percent") @db.Decimal(5, 2)
+  /// [{ name, phone?, email?, relation?, sharePercent }]
+  coOwners          Json?    @map("co_owners")
+  /// { name, phone, email?, relation, authorityType: POWER_OF_ATTORNEY | BOARD_RESOLUTION | AUTHORIZATION_LETTER | OTHER }
+  representative    Json?
+  updatedById       String?  @map("updated_by_id") @db.Char(36)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@map("property_ownerships")
 }

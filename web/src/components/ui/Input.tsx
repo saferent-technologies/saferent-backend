@@ -13,7 +13,26 @@ export const inputBaseClass =
   "h-12 w-full rounded-control border bg-surface px-3.5 text-base text-ink placeholder:text-muted/70 transition-shadow " +
   "focus:border-brand focus:shadow-focus focus:outline-none disabled:bg-subtle disabled:text-muted sm:text-sm";
 
-export function Input({ label, error, hint, leftIcon, rightSlot, className, id, ...props }: InputProps) {
+/** Email fields: spaces are never typed or pasted in (an email address can't contain one). */
+function noSpaces(props: ComponentProps<"input">): ComponentProps<"input"> {
+  if (props.type !== "email") return props;
+  const { onChange, onKeyDown } = props;
+  return {
+    ...props,
+    onKeyDown: (e) => {
+      if (e.key === " ") e.preventDefault();
+      onKeyDown?.(e);
+    },
+    onChange: (e) => {
+      const clean = e.target.value.replace(/\s+/g, "");
+      if (clean !== e.target.value) e.target.value = clean;
+      onChange?.(e);
+    },
+  };
+}
+
+export function Input({ label, error, hint, leftIcon, rightSlot, className, id, ...rest }: InputProps) {
+  const props = noSpaces(rest);
   const autoId = useId();
   const inputId = id ?? autoId;
   const describedBy = error ? `${inputId}-error` : hint ? `${inputId}-hint` : undefined;

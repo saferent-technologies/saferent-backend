@@ -121,6 +121,8 @@ export function InviteTenantModal({ p, open, initialTarget, onClose, onCreated }
     additionalTerms: "",
     expiresInDays: "7",
   }));
+  // What the tenant answers / shares when accepting (minimum data only).
+  const [ask, setAsk] = useState({ askDetails: true, companyName: "OFF" as "OFF" | "OPTIONAL" | "REQUIRED", references: "0", backgroundVerification: false, documents: [] as string[] });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState<InviteLink | null>(null);
@@ -155,6 +157,7 @@ export function InviteTenantModal({ p, open, initialTarget, onClose, onCreated }
           lockInMonths: opt(v.lockInMonths) ? Number(v.lockInMonths) : undefined,
           additionalTerms: opt(v.additionalTerms),
           expiresInDays: Number(v.expiresInDays),
+          requirements: { ...ask, references: Number(ask.references) },
         },
       });
       setLink(res.link);
@@ -200,6 +203,24 @@ export function InviteTenantModal({ p, open, initialTarget, onClose, onCreated }
             <Input label="Lock-in (months)" type="number" min={0} value={v.lockInMonths} onChange={set("lockInMonths")} />
           </div>
           <Textarea label="Additional terms" rows={2} maxLength={5000} value={v.additionalTerms} onChange={set("additionalTerms")} />
+          <fieldset className="space-y-2 rounded-lg border border-line p-3">
+            <legend className="px-1 text-sm font-semibold">Ask the tenant</legend>
+            <p className="text-xs text-muted">Ask only what you need. SafeRent never asks religion, caste, food habits, marital status, salary or ID numbers.</p>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={ask.askDetails} onChange={(e) => setAsk({ ...ask, askDetails: e.target.checked })} /> Basic details: student / working / family, employment type, people staying, pets, smoking, planned stay</label>
+            <div className="grid grid-cols-2 gap-3">
+              <Select label="Company name" options={[{ value: "OFF", label: "Don't ask" }, { value: "OPTIONAL", label: "Optional" }, { value: "REQUIRED", label: "Required" }]} value={ask.companyName} onChange={(e) => setAsk({ ...ask, companyName: e.target.value as typeof ask.companyName })} />
+              <Select label="References" options={[{ value: "0", label: "None" }, { value: "1", label: "1 reference" }, { value: "2", label: "2 references" }]} value={ask.references} onChange={(e) => setAsk({ ...ask, references: e.target.value })} />
+            </div>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={ask.backgroundVerification} onChange={(e) => setAsk({ ...ask, backgroundVerification: e.target.checked })} /> Tenant must agree to a background verification</label>
+            <div>
+              <p className="mb-1 text-sm">Documents to share after accepting</p>
+              <div className="flex flex-wrap gap-3 text-sm">
+                {[["ID_PROOF", "Government ID (any one)"], ["PAN", "PAN card"], ["EMPLOYMENT_OR_STUDENT_ID", "Employee or student ID"], ["OTHER", "Other document"]].map(([k, label]) => (
+                  <label key={k} className="flex items-center gap-1.5"><input type="checkbox" checked={ask.documents.includes(k)} onChange={(e) => setAsk({ ...ask, documents: e.target.checked ? [...ask.documents, k] : ask.documents.filter((x) => x !== k) })} /> {label}</label>
+                ))}
+              </div>
+            </div>
+          </fieldset>
           <Select label="Link valid for" options={["1", "3", "7", "14", "30"].map((d) => ({ value: d, label: `${d} day${d === "1" ? "" : "s"}` }))} value={v.expiresInDays} onChange={set("expiresInDays")} />
           {error && <Alert kind="error">{error}</Alert>}
           <div className="flex justify-end gap-2 pt-1">
@@ -221,6 +242,7 @@ export function InvitationsTab({ p, canManage, canInvite = canManage, onInvite, 
   const { confirm, dialog } = useConfirm();
   const [shown, setShown] = useState<{ link: InviteLink; phone: string | null } | null>(null);
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [detailsOf, setDetailsOf] = useState<Invitation | null>(null);
 
   const newLink = async (inv: Invitation) => {
     setMsg(null);
@@ -260,6 +282,7 @@ export function InvitationsTab({ p, canManage, canInvite = canManage, onInvite, 
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={STATUS_TONE[inv.status]}>{inv.status === "PENDING" ? "Waiting for tenant" : inv.status.charAt(0) + inv.status.slice(1).toLowerCase()}</Badge>
+              {inv.status === "ACCEPTED" && <Button size="sm" variant="secondary" onClick={() => setDetailsOf(inv)}>Tenant details</Button>}
               {inv.leaseId && <Link className="text-sm font-semibold text-brand-dark hover:text-brand" to="/leases">View lease</Link>}
               {canManage && ["PENDING", "EXPIRED"].includes(inv.status) && (
                 <Button size="sm" variant="secondary" leftIcon={<RefreshCw className="size-4" />} onClick={() => void newLink(inv)}>New link</Button>
@@ -294,8 +317,73 @@ export function InvitationsTab({ p, canManage, canInvite = canManage, onInvite, 
         {shown && <ShareLink link={shown.link} phone={shown.phone} />}
         <div className="mt-4 flex justify-end"><Button onClick={() => setShown(null)}>Done</Button></div>
       </Modal>
+      {detailsOf && <TenantDetailsModal inv={detailsOf} onClose={() => setDetailsOf(null)} />}
       {dialog}
     </section>
+  );
+}
+
+interface TenantDetailsResponse {
+  details: null | {
+    tenantType: string | null;
+    employmentType: string | null;
+    companyName: string | null;
+    adults: number | null;
+    children: number | null;
+    hasPets: boolean | null;
+    petDetails: string | null;
+    smokes: boolean | null;
+    stayMonths: number | null;
+    references: Array<{ name: string; relation: string; phone: string }>;
+    backgroundConsentAt: string | null;
+    leaseActive: boolean;
+  };
+  documents: Array<{ key: string; label: string; shared: boolean }>;
+  conflicts: string[];
+}
+
+const nice = (s: string | null | undefined) => (s ? s.charAt(0) + s.slice(1).toLowerCase().replace(/_/g, " ") : "—");
+const yn = (b: boolean | null | undefined) => (b == null ? "—" : b ? "Yes" : "No");
+
+/** What the tenant answered when accepting (company and references only while the lease is active). */
+function TenantDetailsModal({ inv, onClose }: { inv: Invitation; onClose: () => void }) {
+  const { data, loading, error } = useQuery(() => request<TenantDetailsResponse>(`/invitations/${inv.id}/tenant-details`), [inv.id]);
+  const d = data?.details;
+  return (
+    <Modal open onClose={onClose} title={`Tenant details · ${inv.recipientName}`}>
+      {loading && !data && <div className="flex justify-center py-6"><Spinner className="size-6 text-brand" /></div>}
+      {error && <Alert kind="error">{error}</Alert>}
+      {data && !d && <p className="text-sm text-muted">Nothing was asked on this invitation.</p>}
+      {d && (
+        <div className="space-y-3 text-sm">
+          {data.conflicts.length > 0 && <Alert kind="warning">{data.conflicts.join(" ")}</Alert>}
+          <dl className="grid grid-cols-2 gap-2">
+            <dt className="text-muted">Tenant type</dt><dd>{nice(d.tenantType)}</dd>
+            <dt className="text-muted">Employment</dt><dd>{nice(d.employmentType)}</dd>
+            <dt className="text-muted">Company</dt><dd>{d.companyName ?? "—"}</dd>
+            <dt className="text-muted">People staying</dt><dd>{d.adults ?? "—"} adults{d.children ? `, ${d.children} children` : ""}</dd>
+            <dt className="text-muted">Pets</dt><dd>{yn(d.hasPets)}{d.petDetails ? ` (${d.petDetails})` : ""}</dd>
+            <dt className="text-muted">Smokes</dt><dd>{yn(d.smokes)}</dd>
+            <dt className="text-muted">Planned stay</dt><dd>{d.stayMonths ? `${d.stayMonths} months` : "—"}</dd>
+            <dt className="text-muted">Background check</dt><dd>{d.backgroundConsentAt ? `Agreed ${formatDate(d.backgroundConsentAt)}` : "Not asked"}</dd>
+          </dl>
+          {d.references.length > 0 && (
+            <div>
+              <p className="mb-1 font-semibold">References</p>
+              <ul>{d.references.map((r, i) => <li key={i}>{r.name} ({r.relation}) · {r.phone}</li>)}</ul>
+            </div>
+          )}
+          {!d.leaseActive && <p className="text-xs text-muted">Company name and references are hidden because the lease is not active.</p>}
+          {data.documents.length > 0 && (
+            <div>
+              <p className="mb-1 font-semibold">Documents</p>
+              <ul>{data.documents.map((x) => <li key={x.key}>{x.label}: {x.shared ? <Badge tone="success">Shared</Badge> : <Badge tone="warning">Not shared yet</Badge>}</li>)}</ul>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="mt-4 flex justify-end"><Button onClick={onClose}>Close</Button></div>
+    </Modal>
   );
 }
 

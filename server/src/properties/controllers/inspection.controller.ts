@@ -10,6 +10,7 @@ import { me } from "../../middleware/auth";
 import { imageUrl } from "../presenters";
 import { inspectionCreateSchema, inspectionUpdateSchema } from "../schemas";
 import { audit, diff, inScope, scopedProperty, withProperty } from "../service";
+import { syncInventoryFromInspection } from "./inventory.controller";
 
 /** Inspections are managed by inspectors (inspections.manage) or the people who manage the property. */
 async function inspectableProperty(req: Request) {
@@ -58,11 +59,19 @@ export async function updateInspection(req: Request, res: Response): Promise<voi
   if (inspection.landlordAcknowledgedAt || inspection.tenantAcknowledgedAt) fail("failed-precondition", REASONS.INVALID_STATE, "This inspection was acknowledged and can no longer be changed. Create a new inspection.");
   const input = parseInput(inspectionUpdateSchema, req.body);
   if (input.status === "COMPLETED" && !input.inspectionDate && !inspection.inspectionDate) fail("invalid-argument", REASONS.INVALID_INPUT, "Enter the inspection date to complete it.");
-  const { furnitureInventory, ...rest } = input;
-  const data: Prisma.PropertyInspectionUncheckedUpdateInput = { ...rest, ...(furnitureInventory !== undefined ? { furnitureInventory: (furnitureInventory ?? Prisma.JsonNull) as Prisma.InputJsonValue } : {}) };
+  const { furnitureInventory, applianceInventory, repairRequirements, ...rest } = input;
+  const json = (v: unknown) => (v === undefined ? undefined : ((v ?? Prisma.JsonNull) as Prisma.InputJsonValue));
+  const data: Prisma.PropertyInspectionUncheckedUpdateInput = {
+    ...rest,
+    ...(furnitureInventory !== undefined ? { furnitureInventory: json(furnitureInventory) } : {}),
+    ...(applianceInventory !== undefined ? { applianceInventory: json(applianceInventory) } : {}),
+    ...(repairRequirements !== undefined ? { repairRequirements: json(repairRequirements) } : {}),
+  };
   const delta = diff(inspection as unknown as Record<string, unknown>, input as Record<string, unknown>);
   const updated = await withProperty(property.id, async (tx) => {
     const row = await tx.propertyInspection.update({ where: { id: inspection.id }, data });
+    // Completed: the furniture register takes the condition the inspector recorded for its items.
+    if ((input.status ?? inspection.status) === "COMPLETED") await syncInventoryFromInspection(tx, property.id, [...(furnitureInventory ?? []), ...(applianceInventory ?? [])]);
     if (Object.keys(delta.new).length) await audit(tx, req, { propertyId: property.id, entityType: "INSPECTION", entityId: inspection.id, action: "inspection.update", oldValue: delta.old, newValue: delta.new });
     return row;
   });

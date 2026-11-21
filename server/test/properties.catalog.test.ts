@@ -88,7 +88,9 @@ describe("field validation (dynamic forms)", () => {
   it("allows drafts with missing fields but reports required ones", () => {
     expect(fieldsSchema(apartment.unitFields).safeParse({}).success).toBe(true);
     const missing = missingRequired(apartment.unitFields, { unitNumber: "101" });
-    expect(missing).toEqual(expect.arrayContaining(["Floor number", "BHK type", "Bedrooms", "Bathrooms", "Furnishing", "Availability"]));
+    expect(missing).toEqual(expect.arrayContaining(["Floor number", "BHK type", "Bedrooms", "Bathrooms", "Furnishing"]));
+    // Availability is no longer asked separately: "Available from" decides it.
+    expect(missing).not.toContain("Availability");
   });
 
   it("requires a custom configuration only when CUSTOM is chosen (villa)", () => {

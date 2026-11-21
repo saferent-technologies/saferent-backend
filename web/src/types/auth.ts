@@ -18,6 +18,8 @@ export type Permissions = Partial<Record<string, Scope[]>>;
 export interface UserProfile {
   id: string;
   fullName: string;
+  /** Verified legal name: read-only for the user. */
+  nameLocked?: boolean;
   email: string | null;
   pendingEmail: string | null;
   phoneNumber: string | null;

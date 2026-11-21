@@ -1,4 +1,4 @@
-import { Archive, ArrowLeft, CalendarPlus, CheckCircle2, Eye, EyeOff, Pencil, Power, Send, ShieldAlert, Trash2, UserPlus, XCircle } from "lucide-react";
+import { Archive, ArrowLeft, CheckCircle2, Eye, EyeOff, Pencil, Power, Send, ShieldAlert, Trash2, UserPlus, XCircle } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { Pagination } from "@/components/data/DataTable";
@@ -14,7 +14,6 @@ import { Modal } from "@/components/ui/Modal";
 import { Spinner } from "@/components/ui/Spinner";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Tabs } from "@/components/ui/Tabs";
-import { UploadButton } from "@/components/ui/UploadButton";
 import { useQuery } from "@/hooks/useQuery";
 import { request } from "@/services/api";
 import type { Paged } from "@/types/auth";
@@ -23,12 +22,20 @@ import { formatDate, formatMoney, formatTimestamp, labelize } from "@/utils/form
 import { CompletenessMeter, CostBreakdownView, Facts, ValueText } from "./components";
 import { InvitationsTab, InviteTenantModal, inviteTargets } from "./TenantInvites";
 import { PossibleDuplicates } from "./PossibleDuplicates";
+import { PropertyVideosTab } from "./PropertyVideos";
+import { PropertyFurnitureTab } from "./PropertyFurniture";
+import { PropertyVisitsTab } from "./PropertyVisits";
+import { PropertySafetyTab } from "./PropertySafety";
+import { PropertyComplianceTab } from "./PropertyCompliance";
+import { PropertySocietyTab } from "./PropertySociety";
+import { PropertyQrTab } from "./PropertyQr";
+import { InspectionsTab } from "./PropertyInspections";
 import { PropertyPhotosTab } from "./PropertyPhotos";
 import { PropertyDocumentsTab } from "./PropertyDocuments";
 import { PropertyReviewsTab } from "@/pages/reviews/ReviewsPages";
 import { rentRange, type Occupancy, type PendingRevision, type PropertyCan, type PropertyDetail } from "./types";
 
-type Tab = "overview" | "units" | "tenants" | "reviews" | "details" | "photos" | "documents" | "inspections" | "team" | "history";
+type Tab = "overview" | "units" | "tenants" | "reviews" | "details" | "photos" | "videos" | "furniture" | "visits" | "safety" | "compliance" | "society" | "qr" | "documents" | "inspections" | "team" | "history";
 
 export function PropertyDetailPage() {
   const { id = "" } = useParams();
@@ -70,6 +77,13 @@ export function PropertyDetailPage() {
     { value: "reviews", label: "Reviews" },
     { value: "details", label: "Utilities & terms" },
     { value: "photos", label: `Photos (${p.images.filter((i) => !i.inspectionId).length})` },
+    { value: "videos", label: `Videos (${p.videos?.length ?? 0})` },
+    { value: "furniture", label: "Furniture" },
+    { value: "safety", label: "Safety" },
+    { value: "qr", label: "QR codes" },
+    ...(p.type?.category !== "LAND" ? [{ value: "society" as Tab, label: "Society" }] : []),
+    ...(can.manage || can.verifyDocuments ? [{ value: "compliance" as Tab, label: "Compliance" }] : []),
+    ...(can.manage ? [{ value: "visits" as Tab, label: "Visits" }] : []),
     ...(can.manage || can.verifyDocuments ? [{ value: "documents" as Tab, label: "Documents" }] : []),
     { value: "inspections", label: "Inspections" },
     ...(can.assign || p.assignments.length ? [{ value: "team" as Tab, label: "Team" }] : []),
@@ -203,9 +217,7 @@ export function PropertyDetailPage() {
       {p.publicationStatus === "PENDING_VERIFICATION" && <Alert kind="info" className="mb-4">SafeRent is verifying this property. Editing is locked until the review is complete.</Alert>}
       {can.review && p.publicationStatus === "PENDING_VERIFICATION" && <PossibleDuplicates propertyId={p.id} />}
 
-      <div className="mb-5 overflow-x-auto">
-        <Tabs<Tab> idPrefix="prop" className="min-w-[44rem]" value={tab} onChange={(v) => setParams({ tab: v }, { replace: true })} items={tabs} />
-      </div>
+      <Tabs<Tab> idPrefix="prop" className="mb-5" value={tab} onChange={(v) => setParams({ tab: v }, { replace: true })} items={tabs} />
 
       {tab === "overview" && (
         <div className="grid gap-4 lg:grid-cols-3">
@@ -252,6 +264,7 @@ export function PropertyDetailPage() {
               <CompletenessMeter score={p.completeness.score} sections={p.completeness.sections} note={p.completeness.note} />
             </section>
             <StatusActions p={p} can={can} confirm={confirm} act={act} />
+            <OwnershipCard o={p.ownership ?? null} />
           </aside>
         </div>
       )}
@@ -279,6 +292,13 @@ export function PropertyDetailPage() {
       )}
       {tab === "details" && <DetailsTab p={p} />}
       {tab === "photos" && <PropertyPhotosTab p={p} editable={editable} onDone={(m) => void done(m)()} onError={fail} />}
+      {tab === "visits" && <PropertyVisitsTab p={p} canManage={can.manage} />}
+      {tab === "qr" && <PropertyQrTab p={p} />}
+      {tab === "society" && <PropertySocietyTab p={p} canManage={can.manage && p.activeStatus !== "ARCHIVED"} />}
+      {tab === "compliance" && <PropertyComplianceTab p={p} canManage={can.manage && p.activeStatus !== "ARCHIVED"} />}
+      {tab === "safety" && <PropertySafetyTab p={p} canManage={can.manage && p.activeStatus !== "ARCHIVED"} />}
+      {tab === "furniture" && <PropertyFurnitureTab p={p} canManage={can.manage && p.activeStatus !== "ARCHIVED"} />}
+      {tab === "videos" && <PropertyVideosTab p={p} editable={editable} canReview={can.review} onDone={(m) => void done(m)()} onError={fail} />}
       {tab === "documents" && <PropertyDocumentsTab p={p} canManage={can.manage && p.activeStatus !== "ARCHIVED"} canVerify={can.verifyDocuments} onChanged={() => void reload()} />}
       {tab === "inspections" && <InspectionsTab p={p} canInspect={can.inspect} onDone={done} />}
       {tab === "team" && <TeamTab p={p} canAssign={can.assign} onDone={done} />}
@@ -495,146 +515,6 @@ function DetailsTab({ p }: { p: PropertyDetail }) {
   );
 }
 
-interface Inspection {
-  id: string;
-  type: string;
-  status: string;
-  scheduledAt: string;
-  inspectionDate: string | null;
-  propertyCondition: string;
-  wallCondition: string;
-  doorsAndWindows: string;
-  electricalCondition: string;
-  plumbingCondition: string;
-  existingDamages: string | null;
-  handoverMeterReading: string | null;
-  keysHandedOver: number | null;
-  result: string | null;
-  notes: string | null;
-  leaseId: string | null;
-  landlordAcknowledgedAt: string | null;
-  tenantAcknowledgedAt: string | null;
-}
-
-const CONDITIONS = ["GOOD", "FAIR", "POOR", "NOT_APPLICABLE", "NOT_INSPECTED"];
-
-function InspectionsTab({ p, canInspect, onDone }: { p: PropertyDetail; canInspect: boolean; onDone: (t: string) => () => Promise<void> }) {
-  const { data, reload } = useQuery(() => request<Paged<Inspection>>(`/properties/${p.id}/inspections`), [p.id]);
-  const [open, setOpen] = useState(false);
-  const [record, setRecord] = useState<Inspection | null>(null);
-  const [form, setForm] = useState({ type: "ROUTINE", when: "", leaseId: "", notes: "" });
-  const [error, setError] = useState<string | null>(null);
-  const schedule = async () => {
-    setError(null);
-    try {
-      await request(`/properties/${p.id}/inspections`, { method: "POST", body: { type: form.type, scheduledAt: new Date(form.when).toISOString(), leaseId: form.leaseId || undefined, notes: form.notes || undefined } });
-      setOpen(false);
-      await reload();
-      await onDone("Inspection scheduled.")();
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  };
-  return (
-    <section className="card p-5 sm:p-6">
-      {canInspect && <div className="mb-4 flex justify-end"><Button leftIcon={<CalendarPlus className="size-4" />} onClick={() => setOpen(true)}>Schedule inspection</Button></div>}
-      <ul className="divide-y divide-line">
-        {data?.items.map((i) => (
-          <li key={i.id} className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="font-medium">{labelize(i.type)} · {formatTimestamp(i.inspectionDate ?? i.scheduledAt)}</p>
-              <p className="text-xs text-muted">Condition: {labelize(i.propertyCondition)}{i.result ? ` · ${labelize(i.result)}` : ""}{i.landlordAcknowledgedAt ? " · landlord acknowledged" : ""}{i.tenantAcknowledgedAt ? " · tenant acknowledged" : ""}</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <StatusBadge status={i.status} />
-              {canInspect && !i.landlordAcknowledgedAt && !i.tenantAcknowledgedAt && <Button size="sm" variant="secondary" onClick={() => setRecord(i)}>Record report</Button>}
-            </div>
-          </li>
-        ))}
-        {data?.items.length === 0 && <li className="py-3 text-sm text-muted">No inspections yet.</li>}
-      </ul>
-      <Modal open={open} onClose={() => setOpen(false)} title="Schedule inspection">
-        {error && <Alert kind="error" className="mb-3">{error}</Alert>}
-        <div className="space-y-3">
-          <Select label="Type" options={["ROUTINE", "VERIFICATION", "MOVE_IN", "MOVE_OUT"].map((t) => ({ value: t, label: labelize(t) }))} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} />
-          {(form.type === "MOVE_IN" || form.type === "MOVE_OUT") && <Input label="Lease ID" value={form.leaseId} onChange={(e) => setForm({ ...form, leaseId: e.target.value.trim() })} />}
-          <Input label="Date and time" type="datetime-local" value={form.when} onChange={(e) => setForm({ ...form, when: e.target.value })} />
-          <Input label="Notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-        </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
-          <Button disabled={!form.when} onClick={() => void schedule()}>Schedule</Button>
-        </div>
-      </Modal>
-      {record && <RecordInspection p={p} inspection={record} onClose={() => setRecord(null)} onSaved={async () => { setRecord(null); await reload(); await onDone("Inspection saved.")(); }} />}
-    </section>
-  );
-}
-
-function RecordInspection({ p, inspection, onClose, onSaved }: { p: PropertyDetail; inspection: Inspection; onClose: () => void; onSaved: () => Promise<void> }) {
-  const [v, setV] = useState({
-    inspectionDate: (inspection.inspectionDate ?? inspection.scheduledAt).slice(0, 16),
-    propertyCondition: inspection.propertyCondition,
-    wallCondition: inspection.wallCondition,
-    doorsAndWindows: inspection.doorsAndWindows,
-    electricalCondition: inspection.electricalCondition,
-    plumbingCondition: inspection.plumbingCondition,
-    existingDamages: inspection.existingDamages ?? "",
-    handoverMeterReading: inspection.handoverMeterReading ?? "",
-    keysHandedOver: inspection.keysHandedOver?.toString() ?? "",
-    result: inspection.result ?? "",
-    notes: inspection.notes ?? "",
-  });
-  const [error, setError] = useState<string | null>(null);
-  const save = async () => {
-    setError(null);
-    try {
-      await request(`/properties/${p.id}/inspections/${inspection.id}`, {
-        method: "PATCH",
-        body: {
-          status: "COMPLETED",
-          inspectionDate: new Date(v.inspectionDate).toISOString(),
-          propertyCondition: v.propertyCondition,
-          wallCondition: v.wallCondition,
-          doorsAndWindows: v.doorsAndWindows,
-          electricalCondition: v.electricalCondition,
-          plumbingCondition: v.plumbingCondition,
-          existingDamages: v.existingDamages || null,
-          handoverMeterReading: v.handoverMeterReading === "" ? null : String(v.handoverMeterReading),
-          keysHandedOver: v.keysHandedOver === "" ? null : Number(v.keysHandedOver),
-          result: v.result || null,
-          notes: v.notes || null,
-        },
-      });
-      await onSaved();
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  };
-  const cond = (k: keyof typeof v, label: string) => <Select label={label} options={CONDITIONS.map((c) => ({ value: c, label: labelize(c) }))} value={v[k]} onChange={(e) => setV({ ...v, [k]: e.target.value })} />;
-  return (
-    <Modal open onClose={onClose} title={`${labelize(inspection.type)} inspection report`}>
-      {error && <Alert kind="error" className="mb-3">{error}</Alert>}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Input label="Inspection date" type="datetime-local" value={v.inspectionDate} onChange={(e) => setV({ ...v, inspectionDate: e.target.value })} />
-        {cond("propertyCondition", "Overall condition")}
-        {cond("wallCondition", "Walls")}
-        {cond("doorsAndWindows", "Doors & windows")}
-        {cond("electricalCondition", "Electrical")}
-        {cond("plumbingCondition", "Plumbing")}
-        <Input label="Meter reading" type="number" min={0} value={v.handoverMeterReading} onChange={(e) => setV({ ...v, handoverMeterReading: e.target.value })} />
-        <Input label="Keys handed over" type="number" min={0} value={v.keysHandedOver} onChange={(e) => setV({ ...v, keysHandedOver: e.target.value })} />
-        <Select label="Result" placeholder="—" options={["PASSED", "NEEDS_REPAIRS", "FAILED"].map((r) => ({ value: r, label: labelize(r) }))} value={v.result} onChange={(e) => setV({ ...v, result: e.target.value })} />
-        <Input label="Existing damages" value={v.existingDamages} onChange={(e) => setV({ ...v, existingDamages: e.target.value })} />
-      </div>
-      <div className="mt-4 flex justify-end gap-2">
-        <UploadButton path={`/properties/${p.id}/images`} extra={{ inspectionId: inspection.id }} label="Add photos" onDone={() => undefined} onError={setError} />
-        <Button onClick={() => void save()}>Save report</Button>
-      </div>
-    </Modal>
-  );
-}
-
 function TeamTab({ p, canAssign, onDone }: { p: PropertyDetail; canAssign: boolean; onDone: (t: string) => () => Promise<void> }) {
   const [type, setType] = useState<"MANAGER" | "AGENT">("MANAGER");
   const [userId, setUserId] = useState("");
@@ -745,6 +625,7 @@ const SECTION_LABELS: Record<string, string> = {
   policies: "House rules",
   amenities: "Amenities",
   photos: "Photos",
+  videos: "Video tours",
 };
 export const sectionLabel = (k: string) => SECTION_LABELS[k] ?? k;
 
@@ -855,5 +736,41 @@ function DateChangeHistory({ occ }: { occ: Occupancy }) {
         ))}
       </ul>
     </div>
+  );
+}
+
+const OWNER_TYPE_LABEL: Record<string, string> = { INDIVIDUAL: "Individual", JOINT: "Joint owners", COMPANY: "Company" };
+const AUTHORITY_LABEL: Record<string, string> = { POWER_OF_ATTORNEY: "Power of Attorney", BOARD_RESOLUTION: "Board resolution", AUTHORIZATION_LETTER: "Authorization letter", OTHER: "Other" };
+
+/** Who owns the property and who may act for the owner (private: owner, managers, staff). */
+function OwnershipCard({ o }: { o: NonNullable<PropertyDetail["ownership"]> | null }) {
+  return (
+    <section className="card p-5 text-sm">
+      <h3 className="mb-2 font-semibold">Ownership</h3>
+      {!o ? (
+        <p className="text-muted">Not given yet.</p>
+      ) : (
+        <dl className="space-y-1.5">
+          <div className="flex justify-between gap-2"><dt className="text-muted">Owner type</dt><dd className="font-medium">{OWNER_TYPE_LABEL[o.ownerType] ?? o.ownerType}</dd></div>
+          <div className="flex justify-between gap-2"><dt className="text-muted">Ownership</dt><dd className="font-medium">{o.ownershipType === "JOINT" ? "Joint" : "Sole"}</dd></div>
+          {o.companyName && <div className="flex justify-between gap-2"><dt className="text-muted">Company</dt><dd className="font-medium">{o.companyName}</dd></div>}
+          {o.ownershipType === "JOINT" && (
+            <>
+              <div className="flex justify-between gap-2"><dt className="text-muted">Listing owner's share</dt><dd className="font-medium">{o.ownerSharePercent ?? 0}%</dd></div>
+              {o.coOwners.map((c, i) => (
+                <div key={i} className="flex justify-between gap-2"><dt className="text-muted">{c.name}{c.relation ? ` (${c.relation})` : ""}</dt><dd className="font-medium">{c.sharePercent}%</dd></div>
+              ))}
+            </>
+          )}
+          {o.representative && (
+            <div className="mt-2 rounded-control bg-subtle p-2">
+              <p className="font-medium">Authorized representative</p>
+              <p>{o.representative.name} ({o.representative.relation}) · {o.representative.phone}</p>
+              <p className="text-xs text-muted">Authority: {AUTHORITY_LABEL[o.representative.authorityType] ?? o.representative.authorityType}{o.representative.authorityType === "POWER_OF_ATTORNEY" ? ". Check the Power of Attorney in Documents." : ""}</p>
+            </div>
+          )}
+        </dl>
+      )}
+    </section>
   );
 }

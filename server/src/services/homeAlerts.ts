@@ -3,7 +3,7 @@ import { notify } from "../lib/notify";
 import { prisma } from "../lib/prisma";
 import { distanceMeters } from "../properties/nearby";
 import { normKey } from "../properties/locations";
-import { env } from "../config/env";
+import { publicApiUrl } from "../lib/publicUrl";
 
 /*
  * "Open to new homes" matching. A listing is queued (homeAlertPendingAt) when it goes live or a unit /
@@ -39,8 +39,7 @@ export function runHomeAlertsSoon(delayMs = 3000): void {
 
 /** Absolute, no-login URL of a listing photo (FCM / the app can load it without a token). */
 function publicPhotoUrl(imageId: string): string {
-  const origin = (env.PUBLIC_API_ORIGIN ?? env.APP_LINK_ORIGIN ?? env.APP_ORIGIN.split(",")[0]).trim().replace(/\/+$/, "");
-  return `${origin}/api/v1/public/images/${imageId}`;
+  return publicApiUrl(`/api/v1/public/images/${imageId}`);
 }
 
 type Offer = { rent: number | null; label: string };

@@ -93,7 +93,7 @@ export async function updateWithVersion(tx: Tx, id: string, version: number, dat
 
 export interface AuditInput {
   propertyId: string | null;
-  entityType: "PROPERTY" | "UNIT" | "ROOM" | "BED" | "UTILITY" | "POLICY" | "AMENITY" | "PRICING" | "DOCUMENT" | "IMAGE" | "INSPECTION" | "ASSIGNMENT" | "LEASE" | "INVITATION";
+  entityType: "PROPERTY" | "UNIT" | "ROOM" | "BED" | "UTILITY" | "POLICY" | "AMENITY" | "PRICING" | "DOCUMENT" | "IMAGE" | "INSPECTION" | "ASSIGNMENT" | "LEASE" | "INVITATION" | "VIDEO" | "INVENTORY";
   entityId: string;
   action: string;
   oldValue?: unknown;

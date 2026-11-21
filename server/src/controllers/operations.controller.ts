@@ -67,7 +67,7 @@ const maintenanceInclude = {
   property: { select: { id: true, title: true, addressLine: true, locality: true, city: true } },
   raisedBy: { select: { id: true, fullName: true, phoneNumber: true } },
   provider: { select: { id: true, fullName: true } },
-  photos: { select: { id: true, createdAt: true } },
+  photos: { select: { id: true, createdAt: true, kind: true, mimeType: true } },
 } satisfies Prisma.MaintenanceRequestInclude;
 
 /** GET /api/maintenance */

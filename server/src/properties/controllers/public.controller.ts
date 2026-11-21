@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { videosFor } from "./videos.controller";
 import { REASONS } from "../../config/constants";
 import { fail } from "../../lib/errors";
 import { found } from "../../lib/http";
@@ -35,6 +36,7 @@ export async function getPublicListing(req: Request, res: Response): Promise<voi
       longitude: null,
       images: view.images.map((i) => ({ ...i, url: publicImageUrl(i.id) })),
       ownerVerified,
+      videos: await videosFor(property.id, true, true),
     },
   });
 }

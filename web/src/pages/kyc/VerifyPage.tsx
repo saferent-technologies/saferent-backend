@@ -17,7 +17,14 @@ export type NameMatch = "EXACT" | "PARTIAL" | "MISMATCH";
 
 export interface KycIdentity {
   id: string;
-  provider: "SETU" | "MOCK";
+  provider: "SETU" | "MOCK" | "DOCUMENT";
+  /** DIGILOCKER (Setu / mock) | AADHAAR_XML | PAN | PASSPORT */
+  documentType: string;
+  documentLast4: string | null;
+  hasFront: boolean;
+  hasBack: boolean;
+  /** Staff only (GET /admin/kyc/:userId). */
+  documentNumber?: string | null;
   test: boolean;
   name: string | null;
   dob: string | null;
@@ -28,7 +35,8 @@ export interface KycIdentity {
   pincode: string | null;
   hasPhoto: boolean;
   verifiedAt: string | null;
-  nameMatch: NameMatch;
+  /** Null when the document gave no name (PAN / passport). */
+  nameMatch: NameMatch | null;
 }
 
 export interface KycProperty {
@@ -155,11 +163,11 @@ export function VerifyPage() {
             <div className="space-y-2 text-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">{id.name}</span>
-                <Badge tone={MATCH_LABEL[id.nameMatch].tone}>{MATCH_LABEL[id.nameMatch].text}</Badge>
+                {id.nameMatch && <Badge tone={MATCH_LABEL[id.nameMatch].tone}>{MATCH_LABEL[id.nameMatch].text}</Badge>}
                 {id.test && <Badge tone="warning">TEST — fake DigiLocker</Badge>}
               </div>
               <p className="text-muted">Aadhaar ••••{id.aadhaarLast4 ?? "????"} · {[id.city, id.state].filter(Boolean).join(", ")} · verified {formatTimestamp(id.verifiedAt)}</p>
-              {id.nameMatch !== "EXACT" && <p className="text-xs text-muted">Your profile name is “{profile.fullName}”. If it's different from Aadhaar, update it in Profile so staff can match it.</p>}
+              {id.nameMatch && id.nameMatch !== "EXACT" && <p className="text-xs text-muted">Your profile name is “{profile.fullName}”. If it's different from Aadhaar, update it in Profile so staff can match it.</p>}
             </div>
           ) : (
             <p className="text-sm text-muted">Sign in to DigiLocker with your Aadhaar OTP and allow SafeRent to read your Aadhaar. We keep only your name, date of birth, city and the last 4 digits — never the full Aadhaar number.</p>

@@ -65,6 +65,14 @@ const schema = z.object({
    * (never allowed in production). Default: setu when its keys are set, else mock in development.
    */
   KYC_PROVIDER: z.enum(["setu", "mock", "off"]).optional(),
+  // Aadhaar Paperless Offline e-KYC: UIDAI's signing certificate(s), PEM or DER file (pinned; download from UIDAI).
+  UIDAI_OFFLINE_CERT_PATH: z.string().trim().optional(),
+  // Reject Offline eKYC files generated longer ago than this.
+  AADHAAR_OFFLINE_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(30).default(3),
+  // PAN / passport photos checked by staff (owner verification). "false" hides them from the app.
+  // ffmpeg for video tour thumbnails (frame at ~1 s). Missing = no thumbnail unless the app sends one.
+  FFMPEG_PATH: z.string().trim().default("ffmpeg"),
+  KYC_MANUAL_ID_REVIEW: z.enum(["true", "false"]).default("true").transform((v) => v === "true"),
   SETU_DG_CLIENT_ID: z.string().trim().optional(),
   SETU_DG_CLIENT_SECRET: z.string().trim().optional(),
   SETU_DG_PRODUCT_INSTANCE_ID: z.string().trim().optional(),

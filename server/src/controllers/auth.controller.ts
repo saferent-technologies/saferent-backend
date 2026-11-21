@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { ensureSafeRentId } from "../lib/safeRentId";
 import { OTP, RATE_LIMITS, REASONS, SESSION } from "../config/constants";
 import { env } from "../config/env";
 import { requestMeta, writeAuditLog } from "../lib/audit";
@@ -54,6 +55,8 @@ export async function me(req: Request, res: Response): Promise<void> {
     await writeAuditLog({ action: "account.email.change", outcome: "success", userId: user.id, email: authEmail, ...requestMeta(req) });
   }
   void syncRoleClaim(token.uid, user.role, token.role);
+  // Public SafeRent ID (landlords find tenants by it): new accounts get one on their first /auth/me.
+  if (!user.safeRentId) user = { ...user, safeRentId: await ensureSafeRentId(user.id) };
 
   const session = await prisma.authSession.findUnique({ where: { userId: user.id } });
   const sessionValid = isSessionValid(session, token.auth_time, Date.now());

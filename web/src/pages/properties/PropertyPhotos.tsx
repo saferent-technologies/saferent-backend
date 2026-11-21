@@ -24,9 +24,9 @@ const SINGLE_CATEGORIES = ["FRONT_VIEW", "ENTRANCE", "LIVING_ROOM", "BEDROOM", "
 const NUMBERED = new Set(["BEDROOM", "BATHROOM", "BALCONY"]);
 
 type Img = PropertyDetail["images"][number];
-type Where = { key: string; label: string; unitId: string | null; roomId: string | null; categories: string[] };
+export type Where = { key: string; label: string; unitId: string | null; roomId: string | null; categories: string[] };
 
-function placesOf(p: PropertyDetail): Where[] {
+export function placesOf(p: PropertyDetail): Where[] {
   const unitWord = p.type?.unitLabel ?? "Unit";
   const multi = p.units.length > 1 || p.rooms.length > 0 || p.structure === "MULTI_UNIT" || p.structure === "ROOMS_BEDS";
   if (!multi) return [{ key: "common", label: "Property", unitId: null, roomId: null, categories: SINGLE_CATEGORIES }];

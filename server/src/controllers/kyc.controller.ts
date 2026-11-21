@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { decryptText, identityMethods, presentDocumentIdentity, readKycFile } from "./identityDocs.controller";
+import { availableIdTypes } from "./kycAdmin.controller";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { REASONS } from "../config/constants";
@@ -15,7 +17,8 @@ import { prisma } from "../lib/prisma";
 import { discardUploads, relativePath, removeStoredFile, sendStoredFile, sniffMime, UPLOAD_ROOT } from "../lib/uploads";
 import { parseInput } from "../lib/validation";
 import { notifyStaff } from "../lib/notifyStaff";
-import { can, hasRole, me } from "../middleware/auth";
+import { can, hasRole, isPortal, me } from "../middleware/auth";
+import { appLink } from "../lib/appLinks";
 
 /*
  * Owner verification ("Owner verified ✓").
@@ -50,22 +53,7 @@ async function ownershipOf(userId: string) {
 }
 
 function presentIdentity(v: Awaited<ReturnType<typeof latestIdentity>>, profileName: string) {
-  if (!v) return null;
-  return {
-    id: v.id,
-    provider: v.provider,
-    test: v.provider === "MOCK",
-    name: v.name,
-    dob: v.dob,
-    gender: v.gender,
-    aadhaarLast4: v.aadhaarLast4,
-    city: v.city,
-    state: v.state,
-    pincode: v.pincode,
-    hasPhoto: !!v.photoPath,
-    verifiedAt: v.completedAt,
-    nameMatch: v.name ? compareNames(profileName, v.name) : "MISMATCH",
-  };
+  return v ? presentDocumentIdentity(v, profileName) : null;
 }
 
 /** GET /api/v1/kyc/me — the owner's verification checklist. */
@@ -80,12 +68,18 @@ export async function myKyc(req: Request, res: Response): Promise<void> {
     submittedAt: profile?.kycSubmittedAt ?? null,
     reviewedAt: profile?.kycReviewedAt ?? null,
     provider: kycProviderKey(),
+    // How the owner can prove identity: DIGILOCKER (only when a provider is on), AADHAAR_XML, PAN, PASSPORT.
+    methods: await identityMethods(kycProviderKey() !== "off"),
+    // ID documents the app may offer: the server can check them AND Super Admin has them on.
+    idTypes: await availableIdTypes(),
     phoneVerified: user.phoneVerified,
     identity: presentIdentity(identity, user.fullName),
     selfie: !!profile?.selfiePath,
     properties,
     canEdit: stage === "NOT_STARTED" || stage === "IN_PROGRESS" || stage === "REJECTED",
     canSubmit: (stage === "IN_PROGRESS" || stage === "REJECTED") && !!identity && !!profile?.selfiePath,
+    // The app's "verify as owner" prompt was already handled (POST /kyc/prompt-done or a submit).
+    promptDone: await promptDoneOf(user.id),
   });
 }
 
@@ -103,10 +97,12 @@ export async function startDigiLocker(req: Request, res: Response): Promise<void
   assertEditable(await prisma.landlordProfile.findUnique({ where: { userId: user.id } }));
   const today = await prisma.identityVerification.count({ where: { userId: user.id, createdAt: { gte: new Date(Date.now() - 86_400_000) } } });
   if (today >= DIGILOCKER_DAILY_LIMIT) fail("resource-exhausted", REASONS.INVALID_STATE, "Too many DigiLocker attempts today. Please try again tomorrow.");
-  const redirectUrl = `${allowedOrigins[0] ?? "http://localhost:5173"}/kyc/digilocker/return`;
+  // Web portal: back to its return page. App: an App Link (/app/kyc/return) the app opens; if it doesn't,
+  // that public page just says "go back to the app" and the app finishes with sessionId when it resumes.
+  const redirectUrl = isPortal(req) ? `${allowedOrigins[0] ?? "http://localhost:5173"}/kyc/digilocker/return` : appLink("/app/kyc/return");
   const { ref, url } = await provider.start(redirectUrl);
   await prisma.identityVerification.create({ data: { userId: user.id, provider: provider.key, providerRef: ref } });
-  res.json({ url, test: provider.key === "MOCK" });
+  res.json({ url, sessionId: ref, returnUrl: redirectUrl, test: provider.key === "MOCK" });
 }
 
 const completeSchema = z.object({ id: z.string().trim().min(1).max(80), success: z.string().optional(), errMessage: z.string().max(300).optional() });
@@ -183,7 +179,8 @@ export async function uploadSelfie(req: Request, res: Response): Promise<void> {
     const stored = relativePath(req.file.path);
     await prisma.landlordProfile.upsert({ where: { userId: user.id }, create: { userId: user.id, selfiePath: stored }, update: { selfiePath: stored } });
     if (profile?.selfiePath) await removeStoredFile(profile.selfiePath);
-    res.json({ ok: true });
+    res.locals.message = "Selfie saved";
+    res.json({ ok: true, selfie: true });
   } catch (err) {
     await discardUploads(req);
     throw err;
@@ -196,12 +193,14 @@ export async function submitKyc(req: Request, res: Response): Promise<void> {
   const user = me(req);
   const profile = await prisma.landlordProfile.findUnique({ where: { userId: user.id } });
   assertEditable(profile);
-  if (!(await latestIdentity(user.id))) fail("failed-precondition", REASONS.INVALID_STATE, "Verify with DigiLocker first.");
+  if (!(await latestIdentity(user.id))) fail("failed-precondition", REASONS.INVALID_STATE, "Add your ID document first (Aadhaar, PAN or passport).");
   if (!profile?.selfiePath) fail("failed-precondition", REASONS.INVALID_STATE, "Take a selfie first.");
   await prisma.landlordProfile.update({ where: { userId: user.id }, data: { kycStatus: "PENDING", kycSubmittedAt: new Date(), kycNote: null } });
+  await markPromptDone(user.id);
   await logActivity(req, "kyc.submit", "user", user.id);
   await notifyStaff("users.manage", "Landlord verification to review", `${user.fullName} submitted their identity verification.`, `/users/${user.id}`, user.id);
-  res.json({ ok: true });
+  res.locals.message = "Sent for review. We'll let you know once SafeRent has checked it.";
+  res.json({ ok: true, stage: "SUBMITTED" });
 }
 
 /** GET /api/v1/kyc/files/:userId/:kind — DigiLocker photo or selfie; the owner or reviewers only. */
@@ -212,7 +211,19 @@ export async function kycFile(req: Request, res: Response): Promise<void> {
   if (userId !== user.id && !can(req, "users.manage")) fail("not-found", REASONS.NOT_FOUND, "Not found.");
   let file: string | null | undefined;
   if (kind === "selfie") file = (await prisma.landlordProfile.findUnique({ where: { userId }, select: { selfiePath: true } }))?.selfiePath;
-  else if (kind === "photo") file = (await latestIdentity(userId))?.photoPath;
+  else if (kind === "photo" || kind === "front" || kind === "back") {
+    // Identity photo (Aadhaar) / document images (PAN, passport): encrypted at rest, decrypted per request.
+    const idv = await latestIdentity(userId);
+    const path = kind === "photo" ? idv?.photoPath : kind === "front" ? idv?.frontPath : idv?.backPath;
+    if (!idv || !path) fail("not-found", REASONS.NOT_FOUND, "Not found.");
+    const meta = (idv.fileMeta as Record<string, Parameters<typeof readKycFile>[1]> | null)?.[kind];
+    const { data, mime } = await readKycFile(path, meta);
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Cache-Control", "no-store, private");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.send(data);
+    return;
+  }
   if (!file) fail("not-found", REASONS.NOT_FOUND, "Not found.");
   const ext = file.split(".").pop();
   sendStoredFile(res, file, ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg");
@@ -271,7 +282,7 @@ export async function kycDetail(req: Request, res: Response): Promise<void> {
     note: profile.kycNote,
     submittedAt: profile.kycSubmittedAt,
     reviewedAt: profile.kycReviewedAt,
-    identity: presentIdentity(identity, user.fullName),
+    identity: identity ? { ...presentIdentity(identity, user.fullName), documentNumber: decryptText(identity.documentNumberEnc) } : null,
     selfie: !!profile.selfiePath,
     properties,
   });
@@ -284,15 +295,40 @@ export async function afterKycDecision(tx: Prisma.TransactionClient, userId: str
       tx.identityVerification.findFirst({ where: { userId, status: "COMPLETED" } }),
       tx.landlordProfile.findUnique({ where: { userId }, select: { selfiePath: true } }),
     ]);
-    if (!identity || !profile?.selfiePath) fail("failed-precondition", REASONS.INVALID_STATE, "The owner hasn't finished DigiLocker and the selfie yet.");
+    if (!identity || !profile?.selfiePath) fail("failed-precondition", REASONS.INVALID_STATE, "The owner hasn't added an ID document and the selfie yet.");
   }
   await tx.landlordProfile.update({ where: { userId }, data: { kycSubmittedAt: null } });
-  const photos = await tx.identityVerification.findMany({ where: { userId, photoPath: { not: null } }, select: { photoPath: true } });
-  await tx.identityVerification.updateMany({ where: { userId, photoPath: { not: null } }, data: { photoPath: null } });
-  return photos.map((p) => p.photoPath!);
+  // Data minimisation: the identity photo, document images and full document number go once staff decide.
+  const rows = await tx.identityVerification.findMany({
+    where: { userId, OR: [{ photoPath: { not: null } }, { frontPath: { not: null } }, { backPath: { not: null } }, { documentNumberEnc: { not: null } }] },
+    select: { id: true, photoPath: true, frontPath: true, backPath: true },
+  });
+  if (rows.length) await tx.identityVerification.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { photoPath: null, frontPath: null, backPath: null, documentNumberEnc: null, fileMeta: Prisma.DbNull } });
+  return rows.flatMap((r) => [r.photoPath, r.frontPath, r.backPath]).filter((p): p is string => !!p);
 }
 
 /** Removes files after the decision has committed. */
 export async function removeKycPhotos(files: string[]): Promise<void> {
   for (const f of files) await removeStoredFile(f);
+}
+
+/* ─────────────── "Verify as owner" prompt ─────────────── */
+
+async function promptDoneOf(userId: string): Promise<boolean> {
+  return !!(await prisma.user.findUnique({ where: { id: userId }, select: { kycPromptDone: true } }))?.kycPromptDone;
+}
+
+/** Sets the flag once; the first timestamp is kept (idempotent). */
+export async function markPromptDone(userId: string): Promise<void> {
+  await prisma.user.updateMany({ where: { id: userId, kycPromptDone: false }, data: { kycPromptDone: true, kycPromptDoneAt: new Date() } });
+}
+
+/**
+ * POST /api/v1/kyc/prompt-done — the app showed the owner verification prompt; don't show it again.
+ * Any signed-in role, any KYC stage; the body is ignored. Never reset on logout.
+ */
+export async function promptDone(req: Request, res: Response): Promise<void> {
+  await markPromptDone(me(req).id);
+  res.locals.message = "Saved";
+  res.json({ promptDone: true });
 }

@@ -99,6 +99,7 @@ export const NAVIGATION: NavGroup[] = [
     items: [
       { to: "/users", label: "Users", icon: Users, anyOf: ["users.view", "payments.view", "rent.view", "wallet.adjust", "support.manage"], labelFor: { FINANCE_ADMIN: "Customers", SUPPORT: "Customers" } },
       { to: "/admin/kyc", label: "Owner verification", icon: UserCheck, anyOf: ["users.manage"] },
+      { to: "/admin/kyc-settings", label: "Verification settings", icon: UserCheck, anyOf: [], roles: ["SUPER_ADMIN"] },
       { to: "/roles", label: "Roles & permissions", icon: KeyRound, anyOf: ["roles.manage"] },
       { to: "/admin/referrals", label: "Referrals", icon: Gift, anyOf: ["referrals.manage"] },
       { to: "/admin/wallets", label: "Wallet adjustments", icon: Wallet, anyOf: ["wallet.adjust"] },

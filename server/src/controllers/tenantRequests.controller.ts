@@ -83,12 +83,25 @@ const createSchema = z
   })
   .strict();
 
-async function savePhotos(req: Request, requestId: string, updateId: string | null) {
+/** Saves the uploaded files: photos / videos, or (asInvoice) invoices / receipts (images or PDF). */
+async function savePhotos(req: Request, requestId: string, updateId: string | null, asInvoice = false) {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
   if (!files.length) return 0;
-  await prisma.maintenancePhoto.createMany({ data: files.map((f) => ({ requestId, updateId, filePath: relativePath(f.path), mimeType: f.mimetype, uploadedById: me(req).id })) });
+  if (!asInvoice && files.some((f) => f.mimetype === "application/pdf")) fail("invalid-argument", REASONS.INVALID_INPUT, "Add PDFs as an invoice / receipt.");
+  const kindOf = (f: Express.Multer.File) => (asInvoice ? "INVOICE" : f.mimetype === "video/mp4" ? "VIDEO" : "PHOTO");
+  if (asInvoice && files.some((f) => f.mimetype === "video/mp4")) fail("invalid-argument", REASONS.INVALID_INPUT, "An invoice / receipt must be a photo or a PDF.");
+  await prisma.maintenancePhoto.createMany({ data: files.map((f) => ({ requestId, updateId, filePath: relativePath(f.path), mimeType: f.mimetype, uploadedById: me(req).id, kind: kindOf(f) })) });
   return files.length;
 }
+
+export const PAID_BY = ["OWNER", "TENANT", "SHARED", "NO_COST"] as const;
+const money = z.coerce.number().min(0).max(10_000_000).multipleOf(0.01);
+const phone = z
+  .string()
+  .trim()
+  .transform((v) => v.replace(/[\s()-]/g, ""))
+  .refine((v) => /^\+?[1-9]\d{9,14}$/.test(v), "Enter a valid phone number.");
+const num = (d: Prisma.Decimal | null) => (d == null ? null : Number(d));
 async function dropUploads(req: Request) {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
   await Promise.all(files.map((f) => removeStoredFile(relativePath(f.path))));
@@ -161,7 +174,7 @@ const detailInclude = {
   property: { select: { id: true, title: true, code: true, addressLine: true, locality: true, city: true } },
   raisedBy: { select: { id: true, fullName: true } },
   provider: { select: { id: true, fullName: true } },
-  photos: { select: { id: true, updateId: true, uploadedById: true, createdAt: true }, orderBy: { createdAt: "asc" } },
+  photos: { select: { id: true, updateId: true, uploadedById: true, createdAt: true, kind: true, mimeType: true }, orderBy: { createdAt: "asc" } },
   updates: { orderBy: { createdAt: "asc" } },
 } satisfies Prisma.MaintenanceRequestInclude;
 type DetailRow = Prisma.MaintenanceRequestGetPayload<{ include: typeof detailInclude }>;
@@ -192,7 +205,15 @@ async function present(rows: DetailRow[], viewerId: string) {
       leaseId: r.leaseId,
       raisedBy: { id: r.raisedBy.id, fullName: r.raisedBy.fullName },
       provider: r.provider ? { id: r.provider.id, fullName: r.provider.fullName } : null,
-      photos: r.photos.map((ph) => ({ id: ph.id, url: `/api/v1/files/maintenance-photos/${ph.id}`, updateId: ph.updateId, byTenant: ph.uploadedById === r.raisedById, createdAt: ph.createdAt })),
+      // Photos and videos of the issue / the work (kind PHOTO | VIDEO); invoices are listed separately.
+      photos: r.photos.filter((ph) => ph.kind !== "INVOICE").map((ph) => ({ id: ph.id, kind: ph.kind, mimeType: ph.mimeType, url: `/api/v1/files/maintenance-photos/${ph.id}`, updateId: ph.updateId, byTenant: ph.uploadedById === r.raisedById, createdAt: ph.createdAt })),
+      invoices: r.photos.filter((ph) => ph.kind === "INVOICE").map((ph) => ({ id: ph.id, mimeType: ph.mimeType, url: `/api/v1/files/maintenance-photos/${ph.id}`, byTenant: ph.uploadedById === r.raisedById, createdAt: ph.createdAt })),
+      technician: r.provider ? { name: r.provider.fullName, phone: null, onSafeRent: true } : r.technicianName ? { name: r.technicianName, phone: r.technicianPhone, onSafeRent: false } : null,
+      estimatedCost: num(r.estimatedCost),
+      actualCost: num(r.actualCost ?? r.serviceCharge),
+      paidBy: r.paidBy,
+      workStartedAt: r.workStartedAt,
+      completedAt: r.resolvedAt ?? r.completedAt,
       timeline: r.updates.map((u) => ({
         id: u.id,
         kind: u.kind,
@@ -216,6 +237,7 @@ async function present(rows: DetailRow[], viewerId: string) {
         reopen: mine && r.status === "RESOLVED",
         cancel: mine && ["OPEN", "ASSIGNED", "DECLINED"].includes(r.status),
         addPhotos: (mine || landlordSide) && open,
+        addInvoice: (mine || landlordSide) && r.status !== "CANCELLED",
       },
     };
   });
@@ -288,13 +310,24 @@ export async function getRequest(req: Request, res: Response): Promise<void> {
   res.json({ request: await detail(r.id, me(req).id) });
 }
 
+const optText = (max: number) => z.string().trim().max(max).nullable().optional().or(z.literal("").transform(() => null));
 const updateSchema = z
   .object({
     status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED"]).optional(),
     remark: z.string().trim().max(1000).optional(),
+    // Work details (any time while open).
+    technicianName: optText(120),
+    technicianPhone: phone.nullable().optional().or(z.literal("").transform(() => null)),
+    estimatedCost: money.nullable().optional(),
+    workStartDate: z.coerce.date().nullable().optional(),
+    // Only when resolving (status RESOLVED).
+    actualCost: money.nullable().optional(),
+    paidBy: z.enum(PAID_BY).optional(),
   })
   .strict()
-  .refine((v) => v.status || (v.remark && v.remark.length >= 2), { message: "Change the status or add a remark." });
+  .refine((v) => v.status || (v.remark && v.remark.length >= 2) || v.technicianName !== undefined || v.technicianPhone !== undefined || v.estimatedCost !== undefined || v.workStartDate !== undefined, { message: "Change the status, add a remark or update the work details." })
+  .refine((v) => v.status === "RESOLVED" || (v.paidBy === undefined && v.actualCost === undefined), { message: "Who pays and the actual cost are asked when the request is resolved.", path: ["paidBy"] })
+  .refine((v) => !v.workStartDate || v.workStartDate.getTime() <= Date.now() + 86_400_000 * 60, { message: "Pick a start date within 60 days.", path: ["workStartDate"] });
 
 /** POST /api/v1/requests/:id/update { status?, remark? } (+ multipart photos "files") — landlord side. */
 export async function landlordUpdate(req: Request, res: Response): Promise<void> {
@@ -312,11 +345,17 @@ export async function landlordUpdate(req: Request, res: Response): Promise<void>
           ...(changes ? { status: input.status } : {}),
           ...(input.remark ? { lastRemark: input.remark } : {}),
           ...(input.status === "RESOLVED" && changes ? { resolvedAt: now, resolvedById: user.id } : {}),
+          ...(input.technicianName !== undefined ? { technicianName: input.technicianName } : {}),
+          ...(input.technicianPhone !== undefined ? { technicianPhone: input.technicianPhone } : {}),
+          ...(input.estimatedCost !== undefined ? { estimatedCost: input.estimatedCost } : {}),
+          ...(input.workStartDate !== undefined ? { workStartedAt: input.workStartDate } : input.status === "IN_PROGRESS" && changes && !r.workStartedAt ? { workStartedAt: now } : {}),
+          ...(input.actualCost !== undefined ? { actualCost: input.actualCost } : {}),
+          ...(input.paidBy !== undefined ? { paidBy: input.paidBy } : {}),
           landlordUpdatedAt: now,
         },
       });
       if (!done.count) fail("failed-precondition", REASONS.INVALID_STATE, "This request was just updated. Refresh and try again.");
-      return tx.maintenanceUpdate.create({ data: { requestId: r.id, byId: user.id, byRole: user.id === r.landlordId ? "LANDLORD" : "STAFF", kind: changes ? "STATUS" : "REMARK", fromStatus: changes ? r.status : null, toStatus: changes ? input.status! : null, remark: input.remark ?? null } });
+      return tx.maintenanceUpdate.create({ data: { requestId: r.id, byId: user.id, byRole: user.id === r.landlordId ? "LANDLORD" : "STAFF", kind: changes ? "STATUS" : "REMARK", fromStatus: changes ? r.status : null, toStatus: changes ? input.status! : null, remark: [input.remark, workNote(input)].filter(Boolean).join(" · ") || null } });
     });
     await savePhotos(req, r.id, update.id);
     const what = changes ? `${STATUS_LABEL[input.status!]}` : "New remark";
@@ -329,6 +368,17 @@ export async function landlordUpdate(req: Request, res: Response): Promise<void>
   }
 }
 
+/** Timeline text for work-detail changes (repair history). */
+function workNote(v: { technicianName?: string | null; estimatedCost?: number | null; workStartDate?: Date | null; actualCost?: number | null; paidBy?: string }) {
+  const parts: string[] = [];
+  if (v.technicianName) parts.push(`Technician: ${v.technicianName}`);
+  if (v.estimatedCost != null) parts.push(`Estimate: ₹${v.estimatedCost}`);
+  if (v.workStartDate) parts.push(`Work starts ${v.workStartDate.toISOString().slice(0, 10)}`);
+  if (v.actualCost != null) parts.push(`Cost: ₹${v.actualCost}`);
+  if (v.paidBy) parts.push(`Paid by: ${labelize(v.paidBy)}`);
+  return parts.join(" · ");
+}
+
 async function ownRequest(req: Request) {
   const r = await visible(req);
   if (r.raisedById !== me(req).id) fail("permission-denied", REASONS.PERMISSION_DENIED, "Only the person who raised this request can do that.");
@@ -337,20 +387,63 @@ async function ownRequest(req: Request) {
 
 const remarkSchema = z.object({ remark: z.string().trim().max(1000).optional() }).strict();
 
-/** POST /api/v1/requests/:id/resolve { remark? } — the tenant confirms the issue is fixed. */
+/** Resolving: who paid is asked only now (never when the request is raised). */
+const resolveSchema = z
+  .object({
+    remark: z.string().trim().max(1000).optional(),
+    paidBy: z.enum(PAID_BY, { message: "Choose who paid for the repair." }),
+    actualCost: money.nullable().optional(),
+  })
+  .strict()
+  .refine((v) => v.paidBy === "NO_COST" || v.actualCost == null || v.actualCost > 0, { message: "Enter the repair cost, or choose No cost.", path: ["actualCost"] })
+  .refine((v) => v.paidBy !== "NO_COST" || !v.actualCost, { message: "No cost means the amount is 0.", path: ["actualCost"] });
+
+/**
+ * POST /api/v1/requests/:id/resolve { paidBy, actualCost?, remark? } (+ multipart "files" = invoice / receipt)
+ * — the tenant confirms the issue is fixed and says who paid.
+ */
 export async function resolveRequest(req: Request, res: Response): Promise<void> {
   const user = me(req);
-  const r = await ownRequest(req);
-  if (FINAL.includes(r.status)) fail("failed-precondition", REASONS.INVALID_STATE, `This request is already ${r.status.toLowerCase()}.`);
-  const { remark } = parseInput(remarkSchema, req.body ?? {});
-  await prisma.$transaction(async (tx) => {
-    const done = await tx.maintenanceRequest.updateMany({ where: { id: r.id, status: r.status }, data: { status: "RESOLVED", resolvedAt: new Date(), resolvedById: user.id } });
-    if (!done.count) fail("failed-precondition", REASONS.INVALID_STATE, "This request was just updated. Refresh and try again.");
-    await tx.maintenanceUpdate.create({ data: { requestId: r.id, byId: user.id, byRole: "TENANT", kind: "RESOLVED", fromStatus: r.status, toStatus: "RESOLVED", remark: remark ?? null } });
-  });
-  await notify(r.landlordId, "Request resolved", `${user.fullName} marked "${r.title}" as resolved.${remark ? ` ${remark}` : ""}`, link(r.id), "MAINTENANCE", { requestId: r.id });
-  res.locals.message = "Marked as resolved";
-  res.json({ request: await detail(r.id, user.id) });
+  try {
+    const r = await ownRequest(req);
+    if (FINAL.includes(r.status)) fail("failed-precondition", REASONS.INVALID_STATE, `This request is already ${r.status.toLowerCase()}.`);
+    const input = parseInput(resolveSchema, req.body ?? {});
+    const update = await prisma.$transaction(async (tx) => {
+      const done = await tx.maintenanceRequest.updateMany({
+        where: { id: r.id, status: r.status },
+        data: { status: "RESOLVED", resolvedAt: new Date(), resolvedById: user.id, paidBy: input.paidBy, ...(input.actualCost !== undefined ? { actualCost: input.paidBy === "NO_COST" ? 0 : input.actualCost } : input.paidBy === "NO_COST" ? { actualCost: 0 } : {}) },
+      });
+      if (!done.count) fail("failed-precondition", REASONS.INVALID_STATE, "This request was just updated. Refresh and try again.");
+      return tx.maintenanceUpdate.create({ data: { requestId: r.id, byId: user.id, byRole: "TENANT", kind: "RESOLVED", fromStatus: r.status, toStatus: "RESOLVED", remark: [input.remark, workNote({ actualCost: input.actualCost ?? null, paidBy: input.paidBy })].filter(Boolean).join(" · ") || null } });
+    });
+    const receipts = await savePhotos(req, r.id, update.id, true);
+    const paid = input.paidBy === "NO_COST" ? "No cost." : `Paid by ${labelize(input.paidBy).toLowerCase()}${input.actualCost ? ` (₹${input.actualCost})` : ""}.`;
+    await notify(r.landlordId, "Request resolved", `${user.fullName} marked "${r.title}" as resolved. ${paid}${receipts ? " Receipt attached." : ""}${input.remark ? ` ${input.remark}` : ""}`, link(r.id), "MAINTENANCE", { requestId: r.id });
+    res.locals.message = "Marked as resolved";
+    res.json({ request: await detail(r.id, user.id) });
+  } catch (err) {
+    await dropUploads(req);
+    throw err;
+  }
+}
+
+/** POST /api/v1/requests/:id/invoice — tenant or landlord adds an invoice / receipt (multipart "files": photo or PDF). */
+export async function addInvoice(req: Request, res: Response): Promise<void> {
+  const user = me(req);
+  try {
+    const r = await visible(req);
+    if (r.raisedById !== user.id && r.landlordId !== user.id) fail("permission-denied", REASONS.PERMISSION_DENIED, "Only the tenant or landlord can add an invoice.");
+    if (r.status === "CANCELLED") fail("failed-precondition", REASONS.INVALID_STATE, "This request was cancelled.");
+    const n = await savePhotos(req, r.id, null, true);
+    if (!n) fail("invalid-argument", REASONS.INVALID_INPUT, "Choose the invoice or receipt (photo or PDF).");
+    await prisma.maintenanceUpdate.create({ data: { requestId: r.id, byId: user.id, byRole: user.id === r.raisedById ? "TENANT" : "LANDLORD", kind: "REMARK", remark: `Added ${n} invoice / receipt file${n > 1 ? "s" : ""}.` } });
+    await notify(r.raisedById === user.id ? r.landlordId : r.raisedById, "Invoice added", `${user.fullName} added an invoice / receipt to "${r.title}".`, link(r.id), "MAINTENANCE", { requestId: r.id });
+    res.locals.message = "Invoice added";
+    res.status(201).json({ request: await detail(r.id, user.id) });
+  } catch (err) {
+    await dropUploads(req);
+    throw err;
+  }
 }
 
 const reopenSchema = z.object({ remark: z.string().trim().min(5, "Tell your landlord what's still wrong (at least 5 characters).").max(1000) }).strict();
@@ -419,7 +512,7 @@ export async function addRequestPhotos(req: Request, res: Response): Promise<voi
     if (r.raisedById !== user.id && r.landlordId !== user.id) fail("permission-denied", REASONS.PERMISSION_DENIED, "Only the tenant or landlord can add photos.");
     if (FINAL.includes(r.status)) fail("failed-precondition", REASONS.INVALID_STATE, "This request is closed.");
     const n = await savePhotos(req, r.id, null);
-    if (!n) fail("invalid-argument", REASONS.INVALID_INPUT, "Choose at least one photo.");
+    if (!n) fail("invalid-argument", REASONS.INVALID_INPUT, "Choose at least one photo or video.");
     await notify(r.raisedById === user.id ? r.landlordId : r.raisedById, "New photos on a request", `${user.fullName} added ${n} photo${n > 1 ? "s" : ""} to "${r.title}".`, link(r.id), "MAINTENANCE", { requestId: r.id });
     res.locals.message = "Photos added";
     res.status(201).json({ request: await detail(r.id, user.id) });

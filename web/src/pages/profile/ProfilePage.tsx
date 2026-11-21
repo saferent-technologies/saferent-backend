@@ -151,7 +151,7 @@ export function ProfilePage() {
 
         <section className="card space-y-4 p-5 sm:p-6 lg:col-span-2">
           <h2 className="font-semibold">Personal details</h2>
-          <Input label="Full name" value={fullName} onChange={(e) => setFullName(e.target.value)} maxLength={120} />
+          <Input label="Full name" value={fullName} onChange={(e) => setFullName(e.target.value)} maxLength={120} disabled={!!u.nameLocked} hint={u.nameLocked ? "Your name is verified, so it can't be changed. Contact support." : undefined} />
           {staff ? (
             <Input label="Work email" value={u.email ?? ""} disabled hint="Change your sign-in email in Security settings." />
           ) : (

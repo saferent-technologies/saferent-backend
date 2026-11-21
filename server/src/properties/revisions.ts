@@ -230,6 +230,8 @@ export async function changedSectionsOf(liveId: string, draftId: string): Promis
     ["policies", !same(live.policy, draft.policy)],
     ["amenities", !same(live.amenities, draft.amenities)],
     ["photos", JSON.stringify(livePhotos) !== JSON.stringify(draftPhotos)],
+    // Video tours are stored on the live listing; a new one waits for review (PENDING) until the change is approved.
+    ["videos", (await prisma.propertyVideo.count({ where: { propertyId: liveId, status: "PENDING" } })) > 0],
   ];
   return sections.filter(([, changed]) => changed).map(([k]) => k);
 }
@@ -304,6 +306,9 @@ export async function mergeDraft(tx: Tx, liveId: string, draftId: string, review
     }
   }
 
+  // Videos picked a copy's flat in the wizard: point them at the live flat now.
+  for (const [did, lid] of unitMap) if (did !== lid) await tx.propertyVideo.updateMany({ where: { propertyId: liveId, unitId: did }, data: { unitId: lid } });
+
   // 3. Rooms and beds.
   const dRooms = await tx.propertyRoom.findMany({ where: { propertyId: draftId }, include: { beds: true } });
   const lRooms = await tx.propertyRoom.findMany({ where: { propertyId: liveId }, include: { beds: true } });
@@ -341,6 +346,8 @@ export async function mergeDraft(tx: Tx, liveId: string, draftId: string, review
       }
     }
   }
+
+  for (const [did, lid] of roomMap) if (did !== lid) await tx.propertyVideo.updateMany({ where: { propertyId: liveId, roomId: did }, data: { roomId: lid } });
 
   // 4. Photos.
   const dImages = await tx.propertyImage.findMany({ where: { propertyId: draftId } });

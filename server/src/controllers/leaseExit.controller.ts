@@ -1,4 +1,4 @@
-import type { LeaseExitRequest, Prisma } from "@prisma/client";
+import type { LeaseExitRequest, LeaseExitUndo, Prisma } from "@prisma/client";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { REASONS } from "../config/constants";
@@ -73,8 +73,8 @@ function present(x: LeaseExitRequest, viewerSide: Side | null, names: Map<string
   };
 }
 
-async function namesOf(rows: LeaseExitRequest[]) {
-  const ids = [...new Set(rows.flatMap((r) => [r.requestedById, r.respondedById ?? ""]).filter(Boolean))];
+async function namesOf(rows: LeaseExitRequest[], undo?: LeaseExitUndo | null) {
+  const ids = [...new Set([...rows.flatMap((r) => [r.requestedById, r.respondedById ?? ""]), undo?.requestedById ?? "", undo?.respondedById ?? ""].filter(Boolean))];
   const users = await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, fullName: true } });
   return new Map(users.map((u) => [u.id, u.fullName]));
 }
@@ -101,6 +101,8 @@ async function closeByAgreement(exitId: string): Promise<boolean> {
   const closed = await withProperty(lease.propertyId, async (tx) => {
     const claimed = await tx.leaseExitRequest.updateMany({ where: { id: x.id, status: "ACCEPTED" }, data: { status: "COMPLETED", completedAt: new Date(), openLeaseId: null } });
     if (!claimed.count) return false;
+    // The move-out date came before the other side answered an undo request: it lapses.
+    await tx.leaseExitUndo.updateMany({ where: { exitRequestId: x.id, status: "PENDING" }, data: { status: "CANCELLED", openExitId: null, responseNote: "The lease closed on the agreed date before this was answered." } });
     const l = await tx.lease.updateMany({ where: { id: lease.id, status: "ACTIVE" }, data: { status, endedAt: new Date() } });
     if (!l.count) return false;
     // The flat / bed is free again (AVAILABLE) unless another active lease holds it.
@@ -141,14 +143,23 @@ export async function getExit(req: Request, res: Response): Promise<void> {
   const lease = await loadLease(req);
   const side = await sideOf(req, lease);
   const rows = await prisma.leaseExitRequest.findMany({ where: { leaseId: lease.id }, orderBy: { createdAt: "desc" }, take: 20 });
-  const names = await namesOf(rows);
   const open = rows.find((r) => (OPEN as readonly string[]).includes(r.status)) ?? null;
+  const undo = open ? await prisma.leaseExitUndo.findFirst({ where: { exitRequestId: open.id }, orderBy: { createdAt: "desc" } }) : null;
+  const names = await namesOf(rows, undo);
+  const undoCount = open ? await prisma.leaseExitUndo.count({ where: { exitRequestId: open.id } }) : 0;
   res.json({
     leaseStatus: lease.status,
     side,
     noticePeriodDays: lease.noticePeriodDays,
     endDate: lease.endDate,
-    open: open ? present(open, side, names) : null,
+    open: open
+      ? {
+          ...present(open, side, names),
+          // Undo an agreed close (before the move-out date): either side asks, the other side agrees.
+          canUndo: open.status === "ACCEPTED" && lease.status === "ACTIVE" && side !== null && undo?.status !== "PENDING" && undoCount < UNDO_LIMIT,
+          undo: undo ? presentUndo(undo, side, names) : null,
+        }
+      : null,
     history: rows.filter((r) => r.id !== open?.id).map((r) => present(r, side, names)),
     canRequest: lease.status === "ACTIVE" && side !== null && !open,
   });
@@ -249,6 +260,118 @@ export async function cancelExit(req: Request, res: Response): Promise<void> {
   const done = await prisma.leaseExitRequest.updateMany({ where: { id: x.id, status: "PENDING" }, data: { status: "CANCELLED", openLeaseId: null } });
   if (!done.count) fail("failed-precondition", REASONS.INVALID_STATE, "This request was just answered. Refresh and check.");
   await notify(side === "TENANT" ? lease.landlordId : lease.tenantId, "Close request withdrawn", `The request to close the lease for "${lease.property.title ?? lease.property.code}" was withdrawn.`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
+  res.locals.message = "Request cancelled";
+  res.json({ ok: true });
+}
+
+/* ─────────────── Undo an agreed close ─────────────── */
+
+/** Undo requests per close request (each one pings the other side). */
+const UNDO_LIMIT = 3;
+
+function presentUndo(u: LeaseExitUndo, viewerSide: Side | null, names: Map<string, string>) {
+  const mine = viewerSide === u.requestedByRole;
+  return {
+    id: u.id,
+    requestedByRole: u.requestedByRole,
+    requestedBy: names.get(u.requestedById) ?? null,
+    reason: u.reason,
+    status: u.status,
+    respondedBy: u.respondedById ? (names.get(u.respondedById) ?? null) : null,
+    respondedAt: u.respondedAt,
+    responseNote: u.responseNote,
+    createdAt: u.createdAt,
+    canRespond: u.status === "PENDING" && viewerSide !== null && !mine,
+    canCancel: u.status === "PENDING" && mine,
+  };
+}
+
+/** The ACCEPTED close request of an active lease (the one an undo is about). */
+async function acceptedExit(req: Request) {
+  await finalizeDueExits();
+  const lease = await loadLease(req);
+  const side = await sideOf(req, lease);
+  if (!side) fail("permission-denied", REASONS.PERMISSION_DENIED, "Only the tenant or the landlord can do this.");
+  if (lease.status !== "ACTIVE") fail("failed-precondition", REASONS.INVALID_STATE, "This lease is already closed.");
+  const x = await prisma.leaseExitRequest.findFirst({ where: { leaseId: lease.id, status: "ACCEPTED" } });
+  if (!x) fail("failed-precondition", REASONS.INVALID_STATE, "There's no agreed close for this lease to undo.");
+  return { lease, side, x };
+}
+
+const leaseName = (lease: { property: { title: string | null; code: string } }) => lease.property.title ?? lease.property.code;
+const otherSide = (lease: { tenantId: string; landlordId: string }, side: Side) => (side === "TENANT" ? lease.landlordId : lease.tenantId);
+
+const undoSchema = z.object({ reason: z.string().trim().min(10, "Tell the other side why (at least 10 characters).").max(2000) }).strict();
+
+/** POST /api/v1/leases/:id/exit/undo — ask to keep the lease after a close was agreed (either side). */
+export async function requestUndo(req: Request, res: Response): Promise<void> {
+  const user = me(req);
+  const { lease, side, x } = await acceptedExit(req);
+  const { reason } = parseInput(undoSchema, req.body);
+  if ((await prisma.leaseExitUndo.count({ where: { exitRequestId: x.id } })) >= UNDO_LIMIT) fail("resource-exhausted", REASONS.RATE_LIMITED, "You can't ask to undo this close again.");
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.leaseExitUndo.create({ data: { exitRequestId: x.id, leaseId: lease.id, openExitId: x.id, requestedById: user.id, requestedByRole: side, reason } });
+      await audit(tx, req, { propertyId: lease.propertyId, entityType: "LEASE", entityId: lease.id, action: "lease.exit_undo_request", newValue: { by: side, exitRequestId: x.id } });
+    });
+  } catch (err) {
+    if ((err as { code?: string }).code === "P2002") fail("already-exists", REASONS.CONFLICT, "There's already a pending request to keep this lease.");
+    throw err;
+  }
+  await notify(otherSide(lease, side), "Request to keep the lease", `${user.fullName} wants to keep the lease for "${leaseName(lease)}" instead of closing it. Reason: ${reason}`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
+  res.locals.message = "Request sent. The lease stays open only if the other side agrees.";
+  res.status(201).json({ ok: true });
+}
+
+async function pendingUndo(req: Request) {
+  const { lease, side, x } = await acceptedExit(req);
+  const u = await prisma.leaseExitUndo.findFirst({ where: { exitRequestId: x.id, status: "PENDING" } });
+  if (!u) fail("not-found", REASONS.NOT_FOUND, "There's no pending request to keep this lease.");
+  return { lease, side, x, u };
+}
+
+/** POST /api/v1/leases/:id/exit/undo/accept — the other side agrees: the close is cancelled, the lease stays ACTIVE. */
+export async function acceptUndo(req: Request, res: Response): Promise<void> {
+  const user = me(req);
+  const { lease, side, x, u } = await pendingUndo(req);
+  if (side === u.requestedByRole) fail("permission-denied", REASONS.PERMISSION_DENIED, "The other side has to agree to your request.");
+  const ok = await prisma.$transaction(async (tx) => {
+    const a = await tx.leaseExitUndo.updateMany({ where: { id: u.id, status: "PENDING" }, data: { status: "ACCEPTED", openExitId: null, respondedById: user.id, respondedAt: new Date() } });
+    if (!a.count) return false;
+    const b = await tx.leaseExitRequest.updateMany({ where: { id: x.id, status: "ACCEPTED" }, data: { status: "CANCELLED", openLeaseId: null } });
+    if (!b.count) return false;
+    await audit(tx, req, { propertyId: lease.propertyId, entityType: "LEASE", entityId: lease.id, action: "lease.exit_undo_accept", newValue: { exitRequestId: x.id, undoId: u.id } });
+    return true;
+  });
+  if (!ok) fail("failed-precondition", REASONS.INVALID_STATE, "This request was just changed. Refresh and try again.");
+  await notify(u.requestedById, "The lease stays active", `${user.fullName} agreed to keep the lease for "${leaseName(lease)}". The close is cancelled.`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
+  res.locals.message = "Done. The lease stays active.";
+  res.json({ ok: true });
+}
+
+const undoDeclineSchema = z.object({ note: z.string().trim().min(5, "Tell them why (at least 5 characters).").max(1000) }).strict();
+
+/** POST /api/v1/leases/:id/exit/undo/decline — the close stays agreed. */
+export async function declineUndo(req: Request, res: Response): Promise<void> {
+  const user = me(req);
+  const { lease, side, u } = await pendingUndo(req);
+  if (side === u.requestedByRole) fail("permission-denied", REASONS.PERMISSION_DENIED, "Use Cancel to withdraw your own request.");
+  const { note } = parseInput(undoDeclineSchema, req.body);
+  const done = await prisma.leaseExitUndo.updateMany({ where: { id: u.id, status: "PENDING" }, data: { status: "DECLINED", openExitId: null, respondedById: user.id, respondedAt: new Date(), responseNote: note } });
+  if (!done.count) fail("failed-precondition", REASONS.INVALID_STATE, "This request was just changed. Refresh and try again.");
+  await logActivity(req, "lease.exit_undo_decline", "lease", lease.id, { undoId: u.id });
+  await notify(u.requestedById, "Request to keep the lease declined", `${user.fullName} declined keeping the lease for "${leaseName(lease)}": ${note}. The lease still closes as agreed.`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
+  res.locals.message = "Declined. The lease still closes as agreed.";
+  res.json({ ok: true });
+}
+
+/** POST /api/v1/leases/:id/exit/undo/cancel — the requester withdraws it. */
+export async function cancelUndo(req: Request, res: Response): Promise<void> {
+  const { lease, side, u } = await pendingUndo(req);
+  if (side !== u.requestedByRole) fail("permission-denied", REASONS.PERMISSION_DENIED, "Only the side that asked can cancel.");
+  const done = await prisma.leaseExitUndo.updateMany({ where: { id: u.id, status: "PENDING" }, data: { status: "CANCELLED", openExitId: null } });
+  if (!done.count) fail("failed-precondition", REASONS.INVALID_STATE, "This request was just answered. Refresh and check.");
+  await notify(otherSide(lease, side), "Request to keep the lease withdrawn", `The request to keep the lease for "${leaseName(lease)}" was withdrawn. The lease closes as agreed.`, `/leases/${lease.id}`, undefined, { leaseId: lease.id });
   res.locals.message = "Request cancelled";
   res.json({ ok: true });
 }

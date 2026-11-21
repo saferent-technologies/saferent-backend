@@ -434,6 +434,33 @@ export const inspectionCreateSchema = z
     if ((v.type === "MOVE_IN" || v.type === "MOVE_OUT") && !v.leaseId) ctx.addIssue({ code: "custom", path: ["leaseId"], message: "Move-in and move-out inspections belong to a lease." });
   });
 
+const inventorySchema = z
+  .array(
+    z
+      .object({
+        item: z.string().trim().min(1).max(80),
+        quantity: z.coerce.number().int().min(0).max(1000),
+        condition: condition.default("NOT_INSPECTED"),
+        /** The furniture register item this row checks (its condition is updated when the inspection completes). */
+        inventoryItemId: z.string().uuid().nullable().optional(),
+        workingStatus: z.enum(["WORKING", "NEEDS_REPAIR", "NOT_WORKING"]).nullable().optional(),
+      })
+      .strict(),
+  )
+  .max(200);
+
+/** One repair the inspector found: what, how urgent, rough cost, who pays, progress. */
+export const repairSchema = z
+  .object({
+    item: z.string().trim().min(2).max(120),
+    description: z.string().trim().max(1000).nullable().optional().or(z.literal("").transform(() => null)),
+    priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).default("MEDIUM"),
+    estimatedCost: z.coerce.number().min(0).max(10_000_000).nullable().optional(),
+    responsibility: z.enum(["OWNER", "TENANT", "SHARED"]).default("OWNER"),
+    status: z.enum(["OPEN", "IN_PROGRESS", "DONE"]).default("OPEN"),
+  })
+  .strict();
+
 export const inspectionUpdateSchema = z
   .object({
     status: z.enum(["SCHEDULED", "COMPLETED", "CANCELLED"]).optional(),
@@ -443,11 +470,14 @@ export const inspectionUpdateSchema = z
     doorsAndWindows: condition.optional(),
     electricalCondition: condition.optional(),
     plumbingCondition: condition.optional(),
-    furnitureInventory: z
-      .array(z.object({ item: z.string().trim().min(1).max(80), quantity: z.coerce.number().int().min(0).max(1000), condition: condition.default("NOT_INSPECTED") }).strict())
-      .max(200)
-      .nullable()
-      .optional(),
+    flooringCondition: condition.optional(),
+    bathroomCondition: condition.optional(),
+    kitchenCondition: condition.optional(),
+    furnitureCondition: condition.optional(),
+    applianceCondition: condition.optional(),
+    furnitureInventory: inventorySchema.nullable().optional(),
+    applianceInventory: inventorySchema.nullable().optional(),
+    repairRequirements: z.array(repairSchema).max(100).nullable().optional(),
     existingDamages: optText(5000),
     handoverMeterReading: decimalSchema(0, 100_000_000).nullable().optional(),
     keysHandedOver: optInt(0, 100),

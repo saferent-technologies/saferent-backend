@@ -1,4 +1,8 @@
 import type { Prisma } from "@prisma/client";
+import { videosFor } from "./videos.controller";
+import { furnishingsForListing } from "./inventory.controller";
+import { safetyForListing } from "./safety.controller";
+import { societyForListing } from "./society.controller";
 import type { Request, Response } from "express";
 import { found, paged, pagination } from "../../lib/http";
 import { prisma } from "../../lib/prisma";
@@ -6,7 +10,7 @@ import { parseInput } from "../../lib/validation";
 import { me } from "../../middleware/auth";
 import { presentPublic, propertySummary } from "../presenters";
 import { browseQuery } from "../schemas";
-import { loadAggregate, propertyKey } from "../service";
+import { isModerator, loadAggregate, propertyKey } from "../service";
 import { suggestLocations } from "../locations";
 import { boundingBox, distanceMeters } from "../nearby";
 import { fail } from "../../lib/errors";
@@ -120,7 +124,9 @@ export async function browseProperty(req: Request, res: Response): Promise<void>
   const agg = await loadAggregate(prisma, property.id);
   const myApplications = await prisma.rentalApplication.findMany({ where: { propertyId: property.id, tenantId: me(req).id }, orderBy: { createdAt: "desc" }, select: { id: true, status: true, unitId: true, bedId: true, createdAt: true }, take: 5 });
   const ownerVerified = (await prisma.landlordProfile.findUnique({ where: { userId: agg.ownerId }, select: { kycStatus: true } }))?.kycStatus === "APPROVED";
-  res.json({ property: { ...presentPublic(agg), ownerVerified }, myApplications, myApplication: myApplications[0] ?? null });
+  // Video tours: tenants get APPROVED ones; the owner and moderators see all (PENDING / REJECTED too).
+  const seeAllVideos = agg.ownerId === me(req).id || isModerator(req);
+  res.json({ property: { ...presentPublic(agg), ownerVerified, videos: await videosFor(property.id, !seeAllVideos), furnishings: await furnishingsForListing(property.id), safety: await safetyForListing(property.id), society: await societyForListing(property.id) }, myApplications, myApplication: myApplications[0] ?? null });
 }
 
 /**

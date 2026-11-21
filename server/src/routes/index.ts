@@ -12,6 +12,7 @@ import * as homeAlerts from "../controllers/homeAlerts.controller";
 import * as userArea from "../controllers/userArea.controller";
 import * as badges from "../controllers/badges.controller";
 import * as profile from "../controllers/profile.controller";
+import * as ownerDetails from "../controllers/ownerDetails.controller";
 import * as assignments from "../controllers/properties.controller";
 import * as rentals from "../controllers/rentals.controller";
 import * as rent from "../controllers/rent.controller";
@@ -24,6 +25,8 @@ import * as referrals from "../controllers/referrals.controller";
 import * as leaseExit from "../controllers/leaseExit.controller";
 import * as pan from "../controllers/pan.controller";
 import * as kyc from "../controllers/kyc.controller";
+import * as identityDocs from "../controllers/identityDocs.controller";
+import * as kycAdmin from "../controllers/kycAdmin.controller";
 import * as appCfg from "../controllers/appConfig.controller";
 import * as consents from "../controllers/consents.controller";
 import * as demographicsCtl from "../controllers/demographics.controller";
@@ -32,10 +35,19 @@ import * as documents from "../controllers/documents.controller";
 import * as roles from "../controllers/roles.controller";
 import * as userOverview from "../controllers/userOverview.controller";
 import * as users from "../controllers/users.controller";
-import { uploadAnnouncementImage, uploadVaultPages, uploadAvatar, uploadDocument, uploadImages, uploadPaymentProof, uploadSelfie } from "../lib/uploads";
+import * as tenantLookup from "../controllers/tenantLookup.controller";
+import { uploadAnnouncementImage, uploadVaultPages, uploadAvatar, uploadDocument, uploadImages, uploadPaymentProof, uploadSelfie, uploadVideo, uploadMaintenanceMedia } from "../lib/uploads";
 import { verifyAppCheck } from "../middleware/appCheck";
 import { authenticate, authenticateAllowBlocked, loadUser, protect as p, requireAnyPermission } from "../middleware/auth";
 import * as browse from "../properties/controllers/browse.controller";
+import * as videos from "../properties/controllers/videos.controller";
+import * as inventory from "../properties/controllers/inventory.controller";
+import * as safety from "../properties/controllers/safety.controller";
+import * as compliance from "../properties/controllers/compliance.controller";
+import * as society from "../properties/controllers/society.controller";
+import * as smart from "../properties/controllers/smart.controller";
+import * as visitBooking from "../properties/controllers/visitBooking.controller";
+import { MAX_PHOTOS_PER_ITEM } from "../lib/inventory";
 import * as publicSite from "../properties/controllers/public.controller";
 import * as appAssets from "../controllers/appAssets.controller";
 import * as details from "../properties/controllers/details.controller";
@@ -68,6 +80,9 @@ api.get("/public/locations", verifyAppCheck, publicReads, browse.locationSuggest
 api.get("/public/listings", verifyAppCheck, publicReads, publicSite.listPublicListings);
 api.get("/public/listings/:propertyId", verifyAppCheck, publicReads, publicSite.getPublicListing);
 api.get("/public/images/:imageId", publicPhotos, publicSite.getPublicImage);
+api.get("/public/kyc-tutorials/:id/file", publicPhotos, kycAdmin.tutorialFile);
+api.get("/public/videos/:videoId", publicPhotos, videos.getPublicVideo);
+api.get("/public/videos/:videoId/thumbnail", publicPhotos, videos.getPublicVideoThumbnail);
 
 /* ─── App configuration (public, no login): what the Android app needs before / without signing in ─── */
 api.get("/app/config", verifyAppCheck, appCfg.getPublicConfig);
@@ -93,6 +108,9 @@ api.post("/auth/session/rebind", account_, auth.rebindSession);
 /* ─── Own account ─── */
 api.get("/profile", p("profile.manage"), profile.getProfile);
 api.put("/profile", p("profile.manage"), profile.updateProfile);
+// Owner contact details (landlords): alternate number, address, language, contact method, emergency contact.
+api.get("/landlord/owner-details", p(), ownerDetails.getOwnerDetails);
+api.put("/landlord/owner-details", p(), ownerDetails.putOwnerDetails);
 // User profile screen (after OTP): one call for first-time users (creates the account) and existing users
 // (updates it); also records the Terms / Privacy / WhatsApp consents sent with it.
 api.post("/userProfile", verifyAppCheck, authenticate, demographicsCtl.demographics);
@@ -115,7 +133,9 @@ api.post("/notifications/read", p("notifications.view"), ops.markNotificationsRe
 /* ─── Users, roles & permissions ─── */
 // Finance / support roles can look users up too; what they see per user depends on their permissions.
 api.get("/users", p(), requireAnyPermission("users.view", "payments.view", "rent.view", "wallet.adjust", "support.manage"), users.listUsers);
-api.get("/users/lookup", p(), requireAnyPermission("users.view", "assignments.manage", "maintenance.manage", "support.manage"), users.lookupUsers);
+// ?phone= / ?safeRentId= → landlord finds a tenant to invite; ?role=&q= → staff pick lists (permissions checked inside).
+api.get("/users/lookup", p(), users.lookupUsers);
+api.get("/tenants/report", p(), tenantLookup.tenantReport);
 api.post("/users", p("users.manage"), users.createUser);
 api.get("/users/:id/overview", p(), requireAnyPermission("users.view", "payments.view", "rent.view", "wallet.adjust", "support.manage"), userOverview.userOverview);
 api.get("/users/:id", p(), requireAnyPermission("users.view", "payments.view", "rent.view", "wallet.adjust", "support.manage"), users.getUser);
@@ -124,6 +144,7 @@ api.post("/users/:id/status", p("users.deactivate"), users.setUserStatus);
 api.delete("/users/:id", p("users.delete"), users.deleteUser);
 api.post("/users/:id/restore", p("users.delete"), users.restoreUser);
 api.post("/users/:id/revoke-sessions", p("users.manage"), users.revokeSessions);
+api.post("/users/:id/reset-profile", p("users.manage"), users.resetProfile);
 api.post("/users/:id/role", p("roles.manage"), users.assignRole);
 api.post("/users/:id/roles", p("users.manage"), users.addUserRole);
 api.delete("/users/:id/roles/:role", p("users.manage"), users.removeUserRole);
@@ -211,8 +232,54 @@ api.put("/properties/:propertyId/pricing", p("properties.manage"), write, detail
 api.post("/properties/:propertyId/images", p("properties.manage"), write, uploadImages("property-images"), media.uploadImages);
 api.patch("/properties/:propertyId/images/:imageId", p("properties.manage"), write, media.updateImage);
 api.delete("/properties/:propertyId/images/:imageId", p("properties.manage"), write, media.deleteImage);
+// Video tours (MP4 ≤ 60 s, ≤ 40 MB; one per building / unit / room; moderated)
+api.post("/properties/:propertyId/videos", p("properties.manage"), write, uploadVideo, videos.uploadVideo);
+api.delete("/properties/:propertyId/videos/:videoId", p("properties.manage"), write, videos.deleteVideo);
+api.get("/files/property-videos/:videoId", p(), videos.getVideoFile);
+/* Smart features: inspection comparison, QR codes, smart rent reminders */
+api.get("/leases/:leaseId/inspection-comparison", p(), smart.inspectionComparison);
+api.get("/properties/:propertyId/qr", p("properties.view"), smart.qrLinks);
+api.get("/properties/:propertyId/qr.svg", p("properties.view"), smart.qrImage);
+api.get("/qr/resolve", p(), smart.resolveQr);
+api.get("/rent/reminder-settings", p(), smart.getReminderSettings);
+api.put("/rent/reminder-settings", p(), write, smart.putReminderSettings);
+/* Society / association */
+api.get("/properties/:propertyId/society", p("properties.view"), society.getSociety);
+api.put("/properties/:propertyId/society", p("properties.manage"), write, society.putSociety);
+api.post("/properties/:propertyId/parking-slots", p("properties.manage"), write, society.createSlot);
+api.patch("/properties/:propertyId/parking-slots/:slotId", p("properties.manage"), write, society.updateSlot);
+api.delete("/properties/:propertyId/parking-slots/:slotId", p("properties.manage"), write, society.deleteSlot);
+api.get("/leases/:leaseId/society", p(), society.leaseSociety);
+api.put("/leases/:leaseId/society-approval", p(), write, society.putSocietyApproval);
+/* India compliance */
+api.get("/properties/:propertyId/compliance", p("properties.view"), compliance.getCompliance);
+api.put("/properties/:propertyId/compliance", p("properties.manage"), write, compliance.putCompliance);
+api.post("/properties/:propertyId/ownership-declaration", p("properties.manage"), write, compliance.declareOwnership);
+api.get("/leases/:leaseId/compliance", p(), compliance.getLeaseCompliance);
+api.put("/leases/:leaseId/compliance", p(), write, compliance.putLeaseCompliance);
+/* safety & emergency */
+api.get("/properties/:propertyId/safety", p("properties.view"), safety.getSafety);
+api.put("/properties/:propertyId/safety", p("properties.manage"), write, safety.putSafety);
+api.get("/leases/:leaseId/emergency", p(), safety.leaseEmergency);
+/* furniture & appliance register */
+api.get("/properties/:propertyId/inventory", p(), inventory.listInventory);
+api.post("/properties/:propertyId/inventory", p("properties.manage"), write, inventory.createItem);
+api.patch("/properties/:propertyId/inventory/:itemId", p("properties.manage"), write, inventory.updateItem);
+api.delete("/properties/:propertyId/inventory/:itemId", p("properties.manage"), write, inventory.deleteItem);
+api.post("/properties/:propertyId/inventory/:itemId/photos", p("properties.manage"), write, uploadImages("inventory-photos", MAX_PHOTOS_PER_ITEM), inventory.uploadItemPhotos);
+api.delete("/properties/:propertyId/inventory/:itemId/photos/:photoId", p("properties.manage"), write, inventory.deleteItemPhoto);
+api.post("/properties/:propertyId/inventory/:itemId/repairs", p("properties.manage"), write, inventory.addRepair);
+api.patch("/properties/:propertyId/inventory/:itemId/repairs/:repairId", p("properties.manage"), write, inventory.updateRepair);
+api.delete("/properties/:propertyId/inventory/:itemId/repairs/:repairId", p("properties.manage"), write, inventory.deleteRepair);
+api.get("/files/inventory-photos/:photoId", p(), inventory.getItemPhoto);
+api.get("/files/property-videos/:videoId/thumbnail", p(), videos.getVideoThumbnail);
+api.get("/moderation/videos", p("listings.approve"), videos.listVideosForModeration);
+api.post("/moderation/videos/:videoId", p("listings.approve"), videos.moderateVideo);
 api.post("/properties/:propertyId/documents", p("properties.manage"), write, uploadDocument("property-documents"), documents.uploadDocument);
 api.get("/properties/:propertyId/documents", p("properties.view"), documents.listDocuments);
+// Ownership: owner type, sole / joint, shares, co-owners, authorized representative (private).
+api.get("/properties/:propertyId/ownership", p("properties.view"), ownerDetails.getOwnership);
+api.put("/properties/:propertyId/ownership", p("properties.manage"), write, ownerDetails.putOwnership);
 api.patch("/documents/:docId", p("properties.manage"), write, documents.updateDocument);
 api.post("/documents/:docId/replace", p("properties.manage"), write, uploadDocument("property-documents"), documents.replaceDocument);
 api.get("/documents/:docId/versions", p("properties.manage"), documents.documentVersions);
@@ -251,8 +318,10 @@ api.post("/applications/:id/withdraw", p("applications.create"), rentals.withdra
 /* Tenant invitation links: landlord creates → tenant opens /invite/:token, signs in, accepts. */
 api.post("/properties/:propertyId/invitations", p("leases.manage"), invitations.createInvitation);
 api.get("/invitations", p("leases.manage"), invitations.listInvitations);
+api.get("/invitations/mine", p(), invitations.myInvitations);
 api.post("/invitations/:id/revoke", p("leases.manage"), invitations.revokeInvitation);
 api.post("/invitations/:id/link", p("leases.manage"), invitations.renewInvitationLink);
+api.get("/invitations/:id/tenant-details", p("leases.manage"), invitations.invitationTenantDetails);
 api.get("/invitations/token/:token", p(), invitations.viewInvitation);
 api.post("/invitations/token/:token/accept", p(), invitations.acceptInvitation);
 api.post("/invitations/token/:token/reject", p(), invitations.rejectInvitation);
@@ -275,11 +344,27 @@ api.get("/wallet/transactions", p(), referrals.myWalletTransactions);
 api.post("/wallet/redeem", p(), referrals.redeem);
 api.post("/users/:id/kyc", p("users.manage"), referrals.decideKyc);
 api.post("/users/:id/kyc/manual-verify", p("kyc.verify_manual"), referrals.manualVerifyKyc);
+api.post("/users/:id/kyc/revoke", p("users.manage"), referrals.revokeKyc);
+api.post("/users/:id/kyc/restore", p("users.manage"), referrals.restoreKyc);
 api.get("/kyc/me", p("profile.manage"), kyc.myKyc);
 api.post("/kyc/digilocker/start", p("profile.manage"), kyc.startDigiLocker);
 api.post("/kyc/digilocker/complete", p("profile.manage"), kyc.completeDigiLocker);
 api.post("/kyc/selfie", p("profile.manage"), uploadSelfie, kyc.uploadSelfie);
+api.post("/kyc/identity", p("profile.manage"), identityDocs.uploadIdentityDocument, identityDocs.uploadIdentity);
+// Owner verification settings (Super Admin, checked inside): ID types on / off + app guides.
+// Owner verification guides for the app: any signed-in user, active only.
+api.get("/kyc/tutorials", p(), kycAdmin.myTutorials);
+api.get("/admin/kyc-settings", p(), kycAdmin.getKycSettings);
+api.put("/admin/kyc-settings", p(), kycAdmin.putKycSettings);
+api.post("/admin/kyc-settings/uidai-certificates", p(), kycAdmin.superAdminOnly, kycAdmin.uploadCertificateFile, kycAdmin.addUidaiCertificate);
+api.delete("/admin/kyc-settings/uidai-certificates/:id", p(), kycAdmin.deleteUidaiCertificate);
+api.get("/admin/kyc-tutorials", p(), kycAdmin.listTutorials);
+api.post("/admin/kyc-tutorials", p(), kycAdmin.superAdminOnly, kycAdmin.uploadTutorialFile, kycAdmin.createTutorial);
+api.patch("/admin/kyc-tutorials/:id", p(), kycAdmin.superAdminOnly, kycAdmin.uploadTutorialFile, kycAdmin.updateTutorial);
+api.delete("/admin/kyc-tutorials/:id", p(), kycAdmin.deleteTutorial);
 api.post("/kyc/submit", p("profile.manage"), kyc.submitKyc);
+// Any signed-in user (no role / stage needed): the app has shown the "verify as owner" prompt.
+api.post("/kyc/prompt-done", p(), kyc.promptDone);
 api.get("/kyc/files/:userId/:kind", p(), kyc.kycFile);
 api.get("/admin/kyc", p("users.manage"), kyc.kycQueue);
 /* App configuration — Admin (app_config.manage) */
@@ -327,6 +412,10 @@ api.post("/leases/:id/exit", p("leases.view"), leaseExit.requestExit);
 api.post("/leases/:id/exit/accept", p("leases.view"), leaseExit.acceptExit);
 api.post("/leases/:id/exit/decline", p("leases.view"), leaseExit.declineExit);
 api.post("/leases/:id/exit/cancel", p("leases.view"), leaseExit.cancelExit);
+api.post("/leases/:id/exit/undo", p("leases.view"), leaseExit.requestUndo);
+api.post("/leases/:id/exit/undo/accept", p("leases.view"), leaseExit.acceptUndo);
+api.post("/leases/:id/exit/undo/decline", p("leases.view"), leaseExit.declineUndo);
+api.post("/leases/:id/exit/undo/cancel", p("leases.view"), leaseExit.cancelUndo);
 api.get("/leases/:id/payments", p("leases.view"), rentDues.leasePayments);
 api.post("/leases/:id/deposit", p("leases.view"), rentDues.recordDeposit);
 api.post("/leases/:id/deposit-refund", p("leases.view"), rentDues.reportDepositRefund);
@@ -338,7 +427,21 @@ api.post("/leases/:id/terminate", p("leases.manage"), rentals.terminateLease);
 api.patch("/leases/:id/terms", p("leases.manage"), rentals.updateLeaseTerms);
 api.get("/enquiries", p(), requireAnyPermission("enquiries.manage", "enquiries.create"), ops.listEnquiries);
 api.patch("/enquiries/:id", p("enquiries.manage"), ops.updateEnquiry);
-api.get("/visits", p(), requireAnyPermission("visits.manage", "enquiries.create"), ops.listVisits);
+/* Property visits: availability (owner / manager), booking (tenant), approval & outcome (host side). */
+api.get("/visits", p(), visitBooking.listManagedVisits);
+api.post("/visits/:id/confirm", p(), write, visitBooking.confirmVisit);
+api.post("/visits/:id/reject", p(), write, visitBooking.rejectVisit);
+api.post("/visits/:id/cancel", p(), write, visitBooking.cancelManagedVisit);
+api.post("/visits/:id/complete", p(), write, visitBooking.completeVisit);
+api.post("/visits/:id/no-show", p(), write, visitBooking.noShowVisit);
+api.post("/visits/:id/host", p(), write, visitBooking.changeVisitHost);
+api.get("/properties/:propertyId/visit-settings", p("properties.manage"), visitBooking.getVisitSettings);
+api.put("/properties/:propertyId/visit-settings", p("properties.manage"), write, visitBooking.putVisitSettings);
+api.get("/browse/:propertyId/visit-slots", p("properties.browse"), visitBooking.visitSlots);
+api.post("/browse/:propertyId/visits", p("properties.browse"), write, visitBooking.bookVisit);
+api.get("/my/visits", p(), visitBooking.myVisits);
+api.post("/my/visits/:id/cancel", p(), write, visitBooking.cancelMyVisit);
+api.post("/my/visits/:id/feedback", p(), write, visitBooking.visitFeedback);
 api.post("/visits", p("visits.manage"), ops.scheduleVisit);
 api.patch("/visits/:id", p("visits.manage"), ops.updateVisit);
 
@@ -376,7 +479,7 @@ api.get("/finance/reports", p("finance.reports"), finance.financeReport);
 
 /* ─── Maintenance ─── */
 api.get("/maintenance", p("maintenance.view"), ops.listMaintenance);
-api.post("/maintenance", p("maintenance.create"), uploadImages("maintenance-photos"), tenantReq.createRequest);
+api.post("/maintenance", p("maintenance.create"), uploadMaintenanceMedia(), tenantReq.createRequest);
 /* Tenant requests (maintenance / service / complaint): tenant ↔ landlord, with timeline. Aliases under /requests. */
 api.get("/maintenance/options", p("maintenance.view"), tenantReq.requestOptions);
 api.get("/requests/options", p("maintenance.view"), tenantReq.requestOptions);
@@ -403,14 +506,15 @@ api.post("/announcements/:id/view", p(), announcements.viewAnnouncement);
 api.get("/files/announcements/:id", p(), announcements.announcementImage);
 api.get("/requests/summary", p("maintenance.view"), tenantReq.requestsSummary);
 api.get("/requests", p("maintenance.view"), tenantReq.listRequests);
-api.post("/requests", p("maintenance.create"), uploadImages("maintenance-photos"), tenantReq.createRequest);
+api.post("/requests", p("maintenance.create"), uploadMaintenanceMedia(), tenantReq.createRequest);
 api.get("/requests/:id", p("maintenance.view"), tenantReq.getRequest);
-api.post("/requests/:id/update", p("maintenance.manage"), uploadImages("maintenance-photos"), tenantReq.landlordUpdate);
-api.post("/requests/:id/resolve", p("maintenance.view"), tenantReq.resolveRequest);
-api.post("/requests/:id/reopen", p("maintenance.view"), uploadImages("maintenance-photos"), tenantReq.reopenRequest);
+api.post("/requests/:id/update", p("maintenance.manage"), uploadMaintenanceMedia(), tenantReq.landlordUpdate);
+api.post("/requests/:id/resolve", p("maintenance.view"), uploadMaintenanceMedia(true), tenantReq.resolveRequest);
+api.post("/requests/:id/invoice", p("maintenance.view"), uploadMaintenanceMedia(true), tenantReq.addInvoice);
+api.post("/requests/:id/reopen", p("maintenance.view"), uploadMaintenanceMedia(), tenantReq.reopenRequest);
 api.post("/requests/:id/remind", p("maintenance.view"), tenantReq.remindRequest);
 api.post("/requests/:id/cancel", p("maintenance.view"), tenantReq.cancelRequest);
-api.post("/requests/:id/photos", p("maintenance.view"), uploadImages("maintenance-photos"), tenantReq.addRequestPhotos);
+api.post("/requests/:id/photos", p("maintenance.view"), uploadMaintenanceMedia(), tenantReq.addRequestPhotos);
 api.post("/maintenance/:id/assign", p("maintenance.manage"), ops.assignProvider);
 api.post("/maintenance/:id/respond", p("maintenance.work"), ops.respondToJob);
 api.post("/maintenance/:id/work", p("maintenance.work"), ops.updateJob);

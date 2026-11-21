@@ -1,4 +1,4 @@
-import { ArrowLeft, Ban, CheckCircle2, LogOut, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeft, Ban, CheckCircle2, Eraser, LogOut, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { PageHeader } from "@/components/PageHeader";
@@ -22,7 +22,20 @@ import { errorMessage } from "@/utils/errors";
 import { formatTimestamp, labelize } from "@/utils/format";
 
 interface UserDetail {
-  user: UserProfile & { deletion?: UserDeletion | null };
+  user: UserProfile & { deletion?: UserDeletion | null; gender?: string | null; dateOfBirth?: string | null; city?: string | null; state?: string | null; isProfileCompleted?: boolean };
+  ownerDetails?: {
+    address: string | null;
+    city: string | null;
+    state: string | null;
+    pincode: string | null;
+    alternatePhone: string | null;
+    preferredLanguage: string | null;
+    preferredContactMethod: string | null;
+    emergencyContactName: string | null;
+    emergencyContactPhone: string | null;
+    emergencyContactRelation: string | null;
+  } | null;
+  profileResets?: Array<{ at: string; by: { id: string; fullName: string | null }; reason: string | null; cleared: string[] }>;
   permissions: Permissions;
   overrides: Array<{ permissionKey: string; granted: boolean; scope: Scope }>;
   session: { method: string; verifiedAt: string; expiresAt: string; revoked: boolean } | null;
@@ -34,8 +47,11 @@ interface UserDetail {
     manual?: boolean;
     digilockerDone?: boolean;
     selfieDone?: boolean;
+    canRevoke?: boolean;
+    canRestore?: boolean;
+    history?: Array<{ action: string; at: string; by: { id: string; fullName: string | null }; reason: string | null; unpublishedListings: number | null }>;
   } | null;
-  can: { manage: boolean; deactivate: boolean; delete: boolean; restore?: boolean; assignRole: boolean; setPermissions: boolean; addRoles: string[]; removeRoles: string[] };
+  can: { manage: boolean; resetProfile?: boolean; deactivate: boolean; delete: boolean; restore?: boolean; assignRole: boolean; setPermissions: boolean; addRoles: string[]; removeRoles: string[] };
 }
 
 interface Catalog {
@@ -43,6 +59,8 @@ interface Catalog {
 }
 
 type Tab = "overview" | "data" | "permissions" | "activity";
+
+const LANGUAGE_LABEL: Record<string, string> = { en: "English", te: "Telugu", hi: "Hindi", ta: "Tamil", kn: "Kannada", ml: "Malayalam", mr: "Marathi", bn: "Bengali", gu: "Gujarati", ur: "Urdu", or: "Odia", pa: "Punjabi" };
 
 export function UserDetailPage() {
   const { id = "" } = useParams();
@@ -98,6 +116,24 @@ export function UserDetailPage() {
               ) : (
                 <Button variant="secondary" leftIcon={<CheckCircle2 className="size-4" />} onClick={() => act("Activate account", `${u.fullName} will be able to sign in again.`, `/users/${u.id}/status`, { status: "ACTIVE" }, "primary", true)}>
                   Activate
+                </Button>
+              )}
+              {data.can.resetProfile && (
+                <Button
+                  variant="secondary"
+                  leftIcon={<Eraser className="size-4" />}
+                  onClick={() =>
+                    act(
+                      "Reset user details",
+                      `${u.fullName}'s gender, date of birth, city and state will be removed and the app will ask for them again. Name, phone, email, roles, properties, leases, payments, reviews and all history stay as they are.`,
+                      `/users/${u.id}/reset-profile`,
+                      {},
+                      "danger",
+                      "Reason (recorded with your name and the time)",
+                    )
+                  }
+                >
+                  Reset details
                 </Button>
               )}
               {data.can.manage && (
@@ -181,7 +217,37 @@ export function UserDetailPage() {
               <Item label="Email verified" value={u.emailVerified ? "Yes" : "No"} />
               <Item label="Phone verified" value={u.phoneVerified ? "Yes" : "No"} />
               <Item label="Current session" value={data.session && !data.session.revoked ? `${labelize(data.session.method)} · until ${formatTimestamp(data.session.expiresAt)}` : "None"} />
+              <Item label="Gender" value={u.gender ? labelize(u.gender) : "Not given"} />
+              <Item label="Date of birth" value={u.dateOfBirth ?? "Not given"} />
+              <Item label="City / State" value={[u.city, u.state].filter(Boolean).join(", ") || "Not given"} />
+              <Item label="Profile details" value={u.isProfileCompleted ? "Complete" : "Not complete"} />
             </dl>
+            {data.ownerDetails && (
+              <div className="mt-6 border-t border-line pt-5">
+                <h3 className="mb-2 text-sm font-semibold text-ink">Owner details</h3>
+                <dl className="grid gap-4 text-sm sm:grid-cols-2">
+                  <Item label="Communication address" value={[data.ownerDetails.address, data.ownerDetails.city, data.ownerDetails.state, data.ownerDetails.pincode].filter(Boolean).join(", ") || "Not given"} />
+                  <Item label="Alternate number" value={data.ownerDetails.alternatePhone ?? "Not given"} />
+                  <Item label="Preferred language" value={LANGUAGE_LABEL[data.ownerDetails.preferredLanguage ?? ""] ?? "Not given"} />
+                  <Item label="Preferred contact" value={data.ownerDetails.preferredContactMethod ? labelize(data.ownerDetails.preferredContactMethod) : "Not given"} />
+                  <Item label="Emergency contact" value={data.ownerDetails.emergencyContactName ? `${data.ownerDetails.emergencyContactName}${data.ownerDetails.emergencyContactRelation ? ` (${data.ownerDetails.emergencyContactRelation})` : ""} · ${data.ownerDetails.emergencyContactPhone ?? ""}` : "Not given"} />
+                </dl>
+              </div>
+            )}
+            {!!data.profileResets?.length && (
+              <div className="mt-6 border-t border-line pt-5">
+                <h3 className="mb-2 text-sm font-semibold text-ink">Details reset history</h3>
+                <ul className="space-y-2 text-sm">
+                  {data.profileResets.map((r) => (
+                    <li key={r.at} className="rounded-control bg-subtle p-3">
+                      <p className="font-medium">{formatTimestamp(r.at)} by {r.by.fullName ?? "a staff member"}</p>
+                      <p className="text-muted">Reason: {r.reason ?? "Not given"}</p>
+                      {r.cleared.length > 0 && <p className="text-xs text-muted">Removed: {r.cleared.map((f) => (f === "dateOfBirth" ? "date of birth" : f)).join(", ")}</p>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="mt-6 border-t border-line pt-5">
               <h3 className="mb-2 text-sm font-semibold text-ink">All roles</h3>
               <div className="flex flex-wrap items-center gap-2">
@@ -390,6 +456,8 @@ function ActivityTab({ userId }: { userId: string }) {
 }
 
 /** Owner (landlord) identity verification: status, checklist and the staff decisions. */
+const KYC_ACTION_LABEL: Record<string, string> = { APPROVE: "Verified", REJECT: "Rejected", MANUAL_APPROVE: "Verified manually", REVOKE: "Verification removed", RESTORE: "Verification restored" };
+
 function LandlordKycCard({
   kyc,
   user,
@@ -433,7 +501,84 @@ function LandlordKycCard({
             {approved ? "Verified" : "Reviewed"} {kyc.reviewedBy ? `by ${kyc.reviewedBy} ` : ""}on {formatTimestamp(kyc.kycReviewedAt)}
           </p>
         )}
+        {!!kyc.history?.length && (
+          <details className="mt-2 text-sm">
+            <summary className="cursor-pointer font-medium text-brand-dark">Verification history ({kyc.history.length})</summary>
+            <ul className="mt-2 space-y-1.5">
+              {kyc.history.map((h) => (
+                <li key={`${h.action}-${h.at}`} className="rounded-control bg-subtle p-2">
+                  <span className="font-medium">{KYC_ACTION_LABEL[h.action] ?? h.action}</span> · {formatTimestamp(h.at)} by {h.by.fullName ?? "a staff member"}
+                  {h.reason && <span className="block text-muted">Reason: {h.reason}</span>}
+                  {!!h.unpublishedListings && <span className="block text-xs text-muted">{h.unpublishedListings} listing(s) taken off</span>}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </div>
+      {canDecide && user.accountStatus === "ACTIVE" && (kyc.canRevoke || kyc.canRestore) && (
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {kyc.canRevoke && (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  confirm({
+                    title: "Remove verification",
+                    message: `${user.fullName} will no longer be "Owner verified". Their live listings stay live. You can restore it later.`,
+                    tone: "danger",
+                    confirmLabel: "Remove",
+                    reason: { label: "Reason (shown to the landlord and recorded)", required: true, minLength: 5 },
+                    onConfirm: async (r) => {
+                      await request(`/users/${user.id}/kyc/revoke`, { method: "POST", body: { reason: r } });
+                      await onDone("Verification removed.");
+                    },
+                  })
+                }
+              >
+                Remove verification
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  confirm({
+                    title: "Remove verification and take listings off",
+                    message: `${user.fullName} will no longer be "Owner verified" and all their live listings are taken off (tenants can't see them). Restoring later does not put the listings back; the owner publishes them again.`,
+                    tone: "danger",
+                    confirmLabel: "Remove and take off",
+                    reason: { label: "Reason (shown to the landlord and recorded)", required: true, minLength: 5 },
+                    onConfirm: async (r) => {
+                      await request(`/users/${user.id}/kyc/revoke`, { method: "POST", body: { reason: r, unpublishListings: true } });
+                      await onDone("Verification removed and listings taken off.");
+                    },
+                  })
+                }
+              >
+                Remove + take listings off
+              </Button>
+            </>
+          )}
+          {kyc.canRestore && (
+            <Button
+              leftIcon={<RotateCcw className="size-4" />}
+              onClick={() =>
+                confirm({
+                  title: "Restore verification",
+                  message: `${user.fullName} will be "Owner verified" again, as before the removal. Listings taken off are not put back automatically.`,
+                  confirmLabel: "Restore",
+                  reason: { label: "Reason (recorded)", required: true, minLength: 5 },
+                  onConfirm: async (r) => {
+                    await request(`/users/${user.id}/kyc/restore`, { method: "POST", body: { reason: r } });
+                    await onDone("Verification restored.");
+                  },
+                })
+              }
+            >
+              Restore verification
+            </Button>
+          )}
+        </div>
+      )}
       {!approved && (canDecide || canManual) && user.accountStatus === "ACTIVE" && (
         <div className="flex shrink-0 flex-wrap gap-2">
           {canDecide && (

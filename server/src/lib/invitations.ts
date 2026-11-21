@@ -24,10 +24,12 @@ export function isExpired(expiresAt: Date, now = new Date()): boolean {
  * when one was given) must match the recipient. Phones are compared in E.164 form.
  */
 export function recipientMatches(
-  invite: { recipientPhone: string | null; recipientEmail: string | null },
-  user: { phoneNumber: string | null; email: string | null },
+  invite: { recipientPhone: string | null; recipientEmail: string | null; recipientUserId?: string | null },
+  user: { id?: string; phoneNumber: string | null; email: string | null },
 ): boolean {
-  if (!invite.recipientPhone && !invite.recipientEmail) return true;
+  // Sent to a specific account (landlord picked it by phone / SafeRent ID): that account, or its phone.
+  if (invite.recipientUserId && user.id && invite.recipientUserId === user.id) return true;
+  if (!invite.recipientPhone && !invite.recipientEmail) return !invite.recipientUserId;
   if (invite.recipientPhone && user.phoneNumber && invite.recipientPhone === user.phoneNumber) return true;
   if (invite.recipientEmail && user.email && invite.recipientEmail.toLowerCase() === user.email.toLowerCase()) return true;
   return false;
@@ -46,7 +48,7 @@ export type InviteDecision = { ok: true } | { ok: false; reason: "NOT_PENDING" |
 
 /** Can this signed-in user accept (or reject) the invitation right now? */
 export function canRespond(
-  invite: { status: string; expiresAt: Date; landlordId: string; recipientPhone: string | null; recipientEmail: string | null },
+  invite: { status: string; expiresAt: Date; landlordId: string; recipientPhone: string | null; recipientEmail: string | null; recipientUserId?: string | null },
   user: { id: string; phoneNumber: string | null; email: string | null; isStaff: boolean },
   now = new Date(),
 ): InviteDecision {

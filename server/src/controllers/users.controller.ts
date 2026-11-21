@@ -1,4 +1,7 @@
 import { Prisma } from "@prisma/client";
+import { sameName } from "../lib/nameLock";
+import { kycHistoryOf, kycRemovalState } from "./referrals.controller";
+import { landlordUserLookup } from "./tenantLookup.controller";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { phoneHash } from "../lib/accountBlock";
@@ -12,7 +15,7 @@ import { enumQuery, found, idParam, paged, pagination } from "../lib/http";
 import { notify } from "../lib/notify";
 import { prisma } from "../lib/prisma";
 import { companyEmailSchema, parseInput, passwordSchema, phoneE164Schema } from "../lib/validation";
-import { can, me, syncRoleClaim } from "../middleware/auth";
+import { can, hasRole, me, syncRoleClaim } from "../middleware/auth";
 import { ROLES, ROLE_INFO, type RoleKey } from "../rbac/catalog";
 import {
   ADDITIONAL_ROLES,
@@ -92,6 +95,9 @@ async function landlordKycView(
     l.kycReviewedById ? prisma.user.findUnique({ where: { id: l.kycReviewedById }, select: { fullName: true } }) : null,
   ]);
   return {
+    ...(await kycRemovalState(userId, l.kycStatus)),
+    // Every verify / reject / remove / restore: who, when, why.
+    history: await kycHistoryOf(userId),
     kycStatus: l.kycStatus,
     kycNote: l.kycNote,
     kycReviewedAt: l.kycReviewedAt,
@@ -170,7 +176,7 @@ export async function getUser(req: Request, res: Response): Promise<void> {
     effectivePermissionsFor(target, target.roles),
     prisma.userPermission.findMany({ where: { userId: target.id } }),
     prisma.authSession.findUnique({ where: { userId: target.id } }),
-    prisma.landlordProfile.findUnique({ where: { userId: target.id }, select: { kycStatus: true, kycNote: true, kycReviewedAt: true, kycReviewedById: true, kycManual: true, selfiePath: true } }),
+    prisma.landlordProfile.findUnique({ where: { userId: target.id }, select: { kycStatus: true, kycNote: true, kycReviewedAt: true, kycReviewedById: true, kycManual: true, selfiePath: true, address: true, city: true, state: true, pincode: true, alternatePhone: true, preferredLanguage: true, preferredContactMethod: true, emergencyContactName: true, emergencyContactPhone: true, emergencyContactRelation: true } }),
   ]);
   const actor = actorOf(req);
   const t = targetOf(target);
@@ -185,9 +191,28 @@ export async function getUser(req: Request, res: Response): Promise<void> {
     overrides: overrides.map((o) => ({ permissionKey: o.permissionKey, granted: o.granted, scope: o.scope })),
     // Landlord identity verification (unlocks referral rewards).
     landlordKyc: target.roles.includes("LANDLORD") && landlord ? await landlordKycView(target.id, landlord) : null,
+    // Owner contact details (communication address, alternate number, preferences, emergency contact).
+    ownerDetails:
+      target.roles.includes("LANDLORD") && landlord
+        ? {
+            address: landlord.address,
+            city: landlord.city,
+            state: landlord.state,
+            pincode: landlord.pincode,
+            alternatePhone: landlord.alternatePhone,
+            preferredLanguage: landlord.preferredLanguage,
+            preferredContactMethod: landlord.preferredContactMethod,
+            emergencyContactName: landlord.emergencyContactName,
+            emergencyContactPhone: landlord.emergencyContactPhone,
+            emergencyContactRelation: landlord.emergencyContactRelation,
+          }
+        : null,
     session: session ? { method: session.method, verifiedAt: session.verifiedAt.toISOString(), expiresAt: session.expiresAt.toISOString(), revoked: session.revoked } : null,
+    // "Reset profile" history: who, when and why (newest first).
+    profileResets: await profileResetsOf(target.id),
     can: {
       manage: canManageUser(actor, t).allowed && target.accountStatus !== "DELETED",
+      resetProfile: canManageUser(actor, t).allowed && target.accountStatus !== "DELETED",
       deactivate: canDeactivateUser(actor, t).allowed && target.accountStatus !== "DELETED",
       delete: canDeleteUser(actor, t).allowed && target.accountStatus !== "DELETED",
       restore: canDeleteUser(actor, t).allowed && target.accountStatus === "DELETED" && !isLegacyErased(target),
@@ -303,8 +328,16 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
   const target = await loadTarget(req);
   enforce(canManageUser(actorOf(req), targetOf(target)));
   const input = parseInput(updateSchema, req.body);
+  const lockedChange = target.nameLocked && !sameName(target.fullName, input.fullName);
+  // A verified (locked) name: only a Super Admin can change it; the change is audited without the names.
+  if (lockedChange && !hasRole(req, "SUPER_ADMIN")) fail("failed-precondition", REASONS.NAME_LOCKED, "This name is verified. Only a Super Admin can change it.");
   const updated = await prisma.user.update({ where: { id: target.id }, data: input });
-  await logActivity(req, "user.update", "user", target.id, { from: { fullName: target.fullName }, to: input });
+  if (lockedChange) {
+    await logActivity(req, "user.locked_name_change", "user", target.id, { field: "fullName" });
+    await writeAuditLog({ action: "account.name.locked_change", outcome: "success", userId: target.id, metadata: { by: me(req).id }, ...requestMeta(req) });
+  } else {
+    await logActivity(req, "user.update", "user", target.id, { from: { fullName: target.fullName }, to: input });
+  }
   res.json({ user: toProfile(updated) });
 }
 
@@ -338,6 +371,37 @@ export async function setUserStatus(req: Request, res: Response): Promise<void> 
   await logActivity(req, "user.status", "user", target.id, { from: target.accountStatus, to: status, reason });
   await writeAuditLog({ action: "account.status.change", outcome: "success", userId: target.id, metadata: { status, by: me(req).id }, ...requestMeta(req) });
   res.json({ ok: true });
+}
+
+const resetSchema = z.object({ reason: reasonSchema }).strict();
+
+/**
+ * POST /api/v1/users/:id/reset-profile — "Reset user details": clears the demographic details (gender,
+ * date of birth, city, state) and marks the profile incomplete, so the app asks for them again on next open.
+ * Name, phone, email, roles, properties, leases, payments, reviews and all history stay as they are.
+ * Who / when / why is recorded (activity log, shown on the user's page). The old values are not logged.
+ */
+export async function resetProfile(req: Request, res: Response): Promise<void> {
+  const target = await loadTarget(req);
+  enforce(canManageUser(actorOf(req), targetOf(target)));
+  if (target.accountStatus === "DELETED") fail("failed-precondition", REASONS.INVALID_STATE, "This account has been deleted.");
+  const { reason } = parseInput(resetSchema, req.body);
+  const cleared = (["gender", "dateOfBirth", "city", "state"] as const).filter((f) => target[f] !== null);
+  await prisma.user.update({ where: { id: target.id }, data: { gender: null, dateOfBirth: null, city: null, state: null, profileCompleted: false } });
+  await logActivity(req, "user.profile_reset", "user", target.id, { reason, cleared });
+  await writeAuditLog({ action: "account.profile.reset", outcome: "success", userId: target.id, metadata: { by: me(req).id }, ...requestMeta(req) });
+  await notify(target.id, "Please update your profile", "SafeRent reset your profile details. Open the app and fill them in again.", "/profile", undefined, { type: "PROFILE_RESET" });
+  res.locals.message = "User details reset. They'll be asked to fill them in again.";
+  res.json({ ok: true, cleared, profileResets: await profileResetsOf(target.id) });
+}
+
+async function profileResetsOf(userId: string) {
+  const rows = await prisma.adminActivityLog.findMany({ where: { action: "user.profile_reset", targetType: "user", targetId: userId }, orderBy: { createdAt: "desc" }, take: 20 });
+  const names = await namesById(rows.map((r) => r.actorId));
+  return rows.map((r) => {
+    const c = (r.changes ?? {}) as { reason?: string; cleared?: string[] };
+    return { at: r.createdAt.toISOString(), by: { id: r.actorId, fullName: names.get(r.actorId) ?? null }, reason: c.reason ?? null, cleared: c.cleared ?? [] };
+  });
 }
 
 /** POST /api/users/:id/revoke-sessions — sign the user out everywhere. */
@@ -433,6 +497,11 @@ export async function userActivity(req: Request, res: Response): Promise<void> {
 
 /** GET /api/users/lookup?role=SERVICE_PROVIDER&q= — name-only picker for assigning managers, agents, providers and support staff. */
 export async function lookupUsers(req: Request, res: Response): Promise<void> {
+  // Landlord: find one tenant by phone / SafeRent ID (to invite them).
+  if (req.query.phone !== undefined || req.query.safeRentId !== undefined) return landlordUserLookup(req, res);
+  if (!["users.view", "assignments.manage", "maintenance.manage", "support.manage"].some((perm) => can(req, perm as Parameters<typeof can>[1]))) {
+    fail("permission-denied", REASONS.PERMISSION_DENIED, "You don't have permission to do that.");
+  }
   const role = enumQuery(req, "role", ["PROPERTY_MANAGER", "PROPERTY_AGENT", "SERVICE_PROVIDER", "SUPPORT"] as const);
   if (!role) fail("invalid-argument", REASONS.INVALID_INPUT, "Choose a role.");
   const q = typeof req.query.q === "string" ? req.query.q.slice(0, 60) : "";

@@ -1,4 +1,7 @@
 import type { ReactNode } from "react";
+import { KycSettingsPage } from "@/pages/admin/KycSettingsPage";
+import { AppKycReturnPage } from "@/pages/kyc/AppKycReturnPage";
+import { QrLandingPage } from "@/pages/public/QrLandingPage";
 import { createBrowserRouter, RouterProvider, type RouteObject } from "react-router";
 import { DashboardLayout } from "@/layouts/DashboardLayout";
 import { PropertyTypesPage } from "@/pages/admin/PropertyTypesPage";
@@ -60,6 +63,7 @@ const appPages: RouteObject[] = [
   { path: "/verify", element: <RequireRole anyOf={["LANDLORD"]}><VerifyPage /></RequireRole> },
   { path: "/kyc/digilocker/return", element: <RequireRole anyOf={["LANDLORD"]}><DigiLockerReturnPage /></RequireRole> },
   { path: "/admin/kyc", element: gate(["users.manage"], <OwnerVerificationPage />) },
+  { path: "/admin/kyc-settings", element: gate(["users.manage"], <KycSettingsPage />) },
   { path: "/admin/app-config", element: gate(["app_config.manage"], <AppConfigPage />) },
   { path: "/wallet", element: <RequireRole anyOf={["LANDLORD", "TENANT"]}><WalletPage /></RequireRole> },
   { path: "/admin/wallets", element: gate(["wallet.adjust"], <AdminWalletsPage />) },
@@ -124,6 +128,10 @@ const router = createBrowserRouter([
   { path: PATHS.authAction, element: <AuthActionPage /> },
   // Shared referral link: works signed in or out (stores the code for registration).
   { path: "/ref/:code", element: <RefLandingPage /> },
+  // DigiLocker → app hand-off page (public; the app opens this App Link itself when installed).
+  { path: "/app/kyc/return", element: <AppKycReturnPage /> },
+  { path: "/p/:code", element: <QrLandingPage /> },
+  { path: "/p/:code/u/:unit", element: <QrLandingPage /> },
   {
     element: <ProtectedRoute />,
     children: [

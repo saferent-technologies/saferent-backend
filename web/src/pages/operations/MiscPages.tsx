@@ -23,6 +23,7 @@ import { cn } from "@/utils/cn";
 import { ALL_ROLES, ROLE_LABELS } from "@/utils/constants";
 import { errorMessage } from "@/utils/errors";
 import { playNotificationSound, setSoundEnabled, soundEnabled } from "@/utils/notificationSound";
+import { VisitsList } from "@/pages/properties/PropertyVisits";
 import { formatMoney, formatTimestamp, labelize, timeAgo, toOptions } from "@/utils/format";
 
 /* ═══════════ Enquiries & visits ═══════════ */
@@ -36,13 +37,6 @@ interface Enquiry {
   createdAt: string;
   property: { id: string; title: string; city: string };
   tenant?: { id: string; fullName?: string; phoneNumber?: string | null };
-}
-interface Visit {
-  id: string;
-  scheduledAt: string;
-  status: string;
-  notes: string | null;
-  property: { id: string; title: string; addressLine: string; city: string };
 }
 
 export function EnquiriesPage() {
@@ -135,31 +129,7 @@ function EnquiryModal({ enquiry, onClose, onDone }: { enquiry: Enquiry; onClose:
 }
 
 function VisitsTab() {
-  const list = useListParams(["upcoming"]);
-  const { data, loading, error, reload } = useQuery(() => request<Paged<Visit>>("/visits", { query: list.query }), [list.query]);
-  const { confirm, dialog } = useConfirm();
-  const set = (v: Visit, status: string) =>
-    confirm({ title: `Mark as ${labelize(status).toLowerCase()}`, message: v.property.title, confirmLabel: "Save", reason: { label: "Notes (optional)" }, onConfirm: async (notes) => { await request(`/visits/${v.id}`, { method: "PATCH", body: { status, notes: notes || undefined } }); await reload(); } });
-  return (
-    <>
-      <ListToolbar filters={[{ name: "upcoming", label: "When", options: [{ value: "true", label: "Upcoming only" }] }]} values={list.filters} onFilter={list.setFilter} />
-      <DataTable
-        rows={data?.items}
-        loading={loading}
-        error={error}
-        rowKey={(v) => v.id}
-        empty="No visits scheduled."
-        columns={[
-          { key: "when", header: "When", render: (v) => <span className="font-semibold">{formatTimestamp(v.scheduledAt)}</span> },
-          { key: "property", header: "Property", render: (v) => <span>{v.property.title}<span className="block text-xs text-muted">{v.property.addressLine}, {v.property.city}</span></span> },
-          { key: "status", header: "Status", render: (v) => <StatusBadge status={v.status} /> },
-          { key: "actions", header: "", className: "text-right", render: (v) => v.status === "SCHEDULED" ? <span className="flex flex-wrap justify-end gap-2"><Button size="sm" onClick={() => set(v, "COMPLETED")}>Done</Button><Button size="sm" variant="ghost" onClick={() => set(v, "NO_SHOW")}>No-show</Button><Button size="sm" variant="ghost" onClick={() => set(v, "CANCELLED")}>Cancel</Button></span> : null },
-        ]}
-      />
-      {data && <Pagination page={data.page} totalPages={data.totalPages} total={data.total} onPage={list.setPage} />}
-      {dialog}
-    </>
-  );
+  return <VisitsList />;
 }
 
 /* ═══════════ Notifications ═══════════ */

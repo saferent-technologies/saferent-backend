@@ -1,4 +1,8 @@
 import type { Prisma } from "@prisma/client";
+import { ownershipProblems, presentOwnership } from "../../controllers/ownerDetails.controller";
+import { declarationProblems } from "./compliance.controller";
+import { REVIEWABLE_PROPERTY } from "../docQueue";
+import { flatsWithoutVideo, videosFor } from "./videos.controller";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { logActivity } from "../../lib/activity";
@@ -249,13 +253,13 @@ export async function getProperty(req: Request, res: Response): Promise<void> {
   const lastRevision = !rev && latest ? revisionSummary(latest) : null;
   // ?view=draft → the listing as the wizard should show it (live data with the change applied).
   if (req.query.view === "draft" && rev?.draftPropertyId) {
-    res.json({ property: await draftView(property, rev.draftPropertyId), can, pendingRevision, lastRevision });
+    res.json({ property: { ...(await draftView(property, rev.draftPropertyId)), videos: await videosFor(property.id, false, false, "draft"), ownership: presentOwnership(await prisma.propertyOwnership.findUnique({ where: { propertyId: property.id } })) }, can, pendingRevision, lastRevision, approval: await approvalInfo(req, property, can.review) });
     return;
   }
   const agg = await loadAggregate(prisma, property.id);
   const completeness = computeCompleteness(completenessInput(agg), await completenessWeights());
   const presented = presentProperty(agg, completeness);
-  res.json({ property: await withOccupancy(presented), can, pendingRevision, lastRevision });
+  res.json({ property: { ...(await withOccupancy(presented)), videos: await videosFor(property.id, false), ownership: presentOwnership(await prisma.propertyOwnership.findUnique({ where: { propertyId: property.id } })) }, can, pendingRevision, lastRevision, approval: await approvalInfo(req, property, can.review) });
 }
 
 /**
@@ -468,8 +472,11 @@ export async function submitProperty(req: Request, res: Response): Promise<void>
   const decision = canSubmit(property);
   if (!decision.ok) fail("failed-precondition", REASONS.INVALID_STATE, decision.reason);
   const agg = await loadAggregate(prisma, property.id);
-  const problems = submissionProblems(completenessInput(agg));
+  const problems = [...submissionProblems(completenessInput(agg)), ...(await ownershipProblems(property.id)), ...(await declarationProblems(property.id))];
   if (problems.length) fail("failed-precondition", REASONS.INVALID_STATE, "Complete the required details before submitting.", { problems });
+  // Every flat needs a video tour (waiting for review or approved). Building / PG room videos are optional.
+  const noVideo = await flatsWithoutVideo(property.id, property.id);
+  if (noVideo.length) fail("failed-precondition", REASONS.VIDEO_REQUIRED, "Add a video tour for every flat before submitting.", { unitIds: noVideo });
   await withProperty(property.id, async (tx) => {
     await updateWithVersion(tx, property.id, property.version, { publicationStatus: "PENDING_VERIFICATION", verificationStatus: "PENDING", submittedAt: new Date(), moderationNote: null, wizardStep: 12 });
     await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "publicationStatus", from: property.publicationStatus, to: "PENDING_VERIFICATION" });
@@ -484,12 +491,47 @@ export async function submitProperty(req: Request, res: Response): Promise<void>
  * Fraud gate: a listing goes live only for a verified owner (DigiLocker + selfie, approved by staff)
  * and — at approval — with a verified ownership document (sale deed / tax receipt / power bill).
  */
+const OWNER_NOT_VERIFIED_MSG = "The owner isn't verified yet. Verify the owner first (Owner verification).";
+const PROOF_REQUIRED_MSG = "Verify an ownership document (sale deed, property tax receipt or electricity bill) for this property first.";
+const APPROVE_CONFIRM_MSG = "Confirm the details, photos and documents match. Pending photos are approved too, and the listing goes live for tenants right away.";
+
+async function ownerChecks(property: { id: string; ownerId: string }) {
+  const [owner, proof] = await Promise.all([
+    prisma.landlordProfile.findUnique({ where: { userId: property.ownerId }, select: { kycStatus: true, kycSubmittedAt: true } }),
+    prisma.propertyDocument.count({ where: { propertyId: property.id, needsVerification: true, status: "APPROVED", isCurrent: true, archivedAt: null } }),
+  ]);
+  return { ownerVerified: owner?.kycStatus === "APPROVED", ownerKycSubmitted: !!owner?.kycSubmittedAt, proofVerified: proof > 0 };
+}
+
 async function assertOwnerVerified(property: { id: string; ownerId: string }, needProof: boolean): Promise<void> {
-  const owner = await prisma.landlordProfile.findUnique({ where: { userId: property.ownerId }, select: { kycStatus: true } });
-  if (owner?.kycStatus !== "APPROVED") fail("failed-precondition", REASONS.INVALID_STATE, "The owner isn't verified yet. Verify the owner first (Owner verification).");
-  if (!needProof) return;
-  const proof = await prisma.propertyDocument.count({ where: { propertyId: property.id, needsVerification: true, status: "APPROVED", isCurrent: true, archivedAt: null } });
-  if (!proof) fail("failed-precondition", REASONS.INVALID_STATE, "Verify an ownership document (sale deed, property tax receipt or electricity bill) for this property first.");
+  const c = await ownerChecks(property);
+  if (!c.ownerVerified) fail("failed-precondition", REASONS.OWNER_NOT_VERIFIED, OWNER_NOT_VERIFIED_MSG, { ownerId: property.ownerId });
+  if (needProof && !c.proofVerified) fail("failed-precondition", REASONS.OWNERSHIP_PROOF_REQUIRED, PROOF_REQUIRED_MSG, { propertyId: property.id });
+}
+
+/**
+ * What approving this listing needs, for the property screens (moderator approve dialog, owner banner).
+ * blockers: OWNER_NOT_VERIFIED (owner must finish Owner verification), OWNERSHIP_PROOF_REQUIRED (verify a
+ * proof document; moderators with listings.approve_manual may approve without it).
+ */
+async function approvalInfo(req: Request, property: { id: string; ownerId: string; publicationStatus: string }, canReviewIt: boolean) {
+  const c = await ownerChecks(property);
+  const blockers = [
+    ...(c.ownerVerified ? [] : [{ code: "OWNER_NOT_VERIFIED", message: OWNER_NOT_VERIFIED_MSG, ownerKycSubmitted: c.ownerKycSubmitted }]),
+    ...(c.proofVerified ? [] : [{ code: "OWNERSHIP_PROOF_REQUIRED", message: PROOF_REQUIRED_MSG }]),
+  ];
+  const pending = property.publicationStatus === "PENDING_VERIFICATION";
+  return {
+    ownerVerified: c.ownerVerified,
+    ownerKycSubmitted: c.ownerKycSubmitted,
+    ownershipProofVerified: c.proofVerified,
+    blockers,
+    canApprove: pending && canReviewIt && c.ownerVerified && c.proofVerified,
+    // Approve without a verified proof document (owner still has to be verified).
+    canApproveWithoutProof: pending && canReviewIt && c.ownerVerified && !c.proofVerified && can(req, "listings.approve_manual"),
+    confirmTitle: "Approve and go live",
+    confirmMessage: APPROVE_CONFIRM_MSG,
+  };
 }
 
 /** POST /api/v1/properties/:propertyId/review — approve or reject (moderators; never your own property). */
@@ -518,6 +560,8 @@ export async function reviewProperty(req: Request, res: Response): Promise<void>
       reviewedAt: new Date(),
     });
     if (approve) await tx.propertyImage.updateMany({ where: { propertyId: property.id, status: "PENDING" }, data: { status: "APPROVED", reviewedById: user.id } });
+    // Video tours are approved with the listing, so tenants see them as soon as it's live.
+    if (approve) await tx.propertyVideo.updateMany({ where: { propertyId: property.id, status: "PENDING" }, data: { status: "APPROVED", reviewedById: user.id, reviewedAt: new Date() } });
     if (goLive) await flagHomeAlertsTx(tx, property.id);
     await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "publicationStatus", from: property.publicationStatus, to: approve ? approvedStatus : "REJECTED", reason });
     await recordStatus(tx, req, { propertyId: property.id, entityType: "PROPERTY", entityId: property.id, field: "verificationStatus", from: property.verificationStatus, to: approve ? "VERIFIED" : "REJECTED", reason });
@@ -637,7 +681,7 @@ export async function reviewQueue(req: Request, res: Response): Promise<void> {
         })
       : [],
     docScope
-      ? prisma.propertyDocument.findMany({ where: { status: "PENDING", needsVerification: true, isCurrent: true, archivedAt: null, property: docScope }, include: { property: { select: { id: true, code: true, title: true } } }, orderBy: { createdAt: "asc" }, take: 50 })
+      ? prisma.propertyDocument.findMany({ where: { status: "PENDING", needsVerification: true, isCurrent: true, archivedAt: null, property: { AND: [docScope, REVIEWABLE_PROPERTY] } }, include: { property: { select: { id: true, code: true, title: true } } }, orderBy: { createdAt: "asc" }, take: 50 })
       : [],
     isModerator(req)
       ? prisma.propertyImage.findMany({ where: { status: "PENDING", property: { publicationStatus: { in: ["APPROVED", "PUBLISHED"] } } }, include: { property: { select: { id: true, code: true, title: true } } }, orderBy: { createdAt: "asc" }, take: 60 })

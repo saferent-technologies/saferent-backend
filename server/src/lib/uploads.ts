@@ -24,6 +24,7 @@ const EXT: Record<string, string> = {
   "image/png": ".png",
   "image/webp": ".webp",
   "application/pdf": ".pdf",
+  "video/mp4": ".mp4",
 };
 
 function uploader(folder: string, allowed: readonly string[]) {
@@ -146,4 +147,63 @@ export function sendStoredFile(res: Response, relative: string, mimeType: string
 export async function removeStoredFile(relative: string): Promise<void> {
   const absolute = path.resolve(UPLOAD_ROOT, relative);
   if (absolute.startsWith(UPLOAD_ROOT + path.sep)) await unlink(absolute).catch(() => undefined);
+}
+
+/**
+ * Video tour upload: field "file" (video/mp4, ≤ 40 MB) + optional "thumbnail" (JPG / PNG / WEBP, ≤ 5 MB).
+ * The controller checks the MP4 itself (real MP4, ≤ 60 s) and the thumbnail bytes.
+ */
+export const VIDEO_MAX_BYTES = 40 * 1024 * 1024;
+export const uploadVideo: RequestHandler = (() => {
+  const dir = path.join(UPLOAD_ROOT, "property-videos");
+  mkdirSync(dir, { recursive: true });
+  return multer({
+    storage: multer.diskStorage({ destination: dir, filename: (_req, file, cb) => cb(null, `${randomUUID()}${EXT[file.mimetype] ?? ""}`) }),
+    limits: { fileSize: VIDEO_MAX_BYTES, files: 2 },
+    fileFilter: (_req, file, cb) => {
+      if (file.fieldname === "file" && file.mimetype === "video/mp4") cb(null, true);
+      else if (file.fieldname === "thumbnail" && (UPLOADS.IMAGE_TYPES as readonly string[]).includes(file.mimetype)) cb(null, true);
+      else cb(new AppError("invalid-argument", REASONS.INVALID_INPUT, file.fieldname === "file" ? "Upload an MP4 video." : "The thumbnail must be a JPG, PNG or WEBP image."));
+    },
+  }).fields([
+    { name: "file", maxCount: 1 },
+    { name: "thumbnail", maxCount: 1 },
+  ]);
+})();
+
+/**
+ * Maintenance request media, multipart "files" (≤ 10): photos (JPG / PNG / WEBP ≤ 10 MB), MP4 videos
+ * (≤ 40 MB, at most 2), and — when `withPdf` — PDF invoices / receipts (≤ 10 MB). Bytes are checked.
+ */
+export function uploadMaintenanceMedia(withPdf = false): RequestHandler[] {
+  const dir = path.join(UPLOAD_ROOT, "maintenance-photos");
+  mkdirSync(dir, { recursive: true });
+  const allowed: string[] = [...UPLOADS.IMAGE_TYPES, "video/mp4", ...(withPdf ? ["application/pdf"] : [])];
+  const receive = multer({
+    storage: multer.diskStorage({ destination: dir, filename: (_req, file, cb) => cb(null, `${randomUUID()}${EXT[file.mimetype] ?? ""}`) }),
+    limits: { fileSize: VIDEO_MAX_BYTES, files: 10 },
+    fileFilter: (_req, file, cb) => (allowed.includes(file.mimetype) ? cb(null, true) : cb(new AppError("invalid-argument", REASONS.INVALID_INPUT, withPdf ? "Upload photos (JPG, PNG, WEBP), MP4 videos or PDF files." : "Upload photos (JPG, PNG, WEBP) or MP4 videos."))),
+  }).array("files", 10);
+  const check = async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const drop = async (message: string) => {
+      await Promise.all(files.map((f) => unlink(f.path).catch(() => undefined)));
+      next(new AppError("invalid-argument", REASONS.INVALID_INPUT, message));
+    };
+    let videos = 0;
+    for (const f of files) {
+      const head = await readHead(f.path);
+      if (f.mimetype === "video/mp4") {
+        videos++;
+        // ISO-BMFF: bytes 4..7 = "ftyp".
+        if (!(head.length >= 8 && head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70)) return drop("That video isn't a real MP4. Record or export it as MP4.");
+      } else {
+        if (sniffMime(head) !== f.mimetype) return drop("The file content does not match its type.");
+        if (f.size > 10 * 1024 * 1024) return drop("Photos and PDFs can be up to 10 MB.");
+      }
+    }
+    if (videos > 2) return drop("Add at most 2 videos at a time.");
+    next();
+  };
+  return [receive, check];
 }

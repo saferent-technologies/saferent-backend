@@ -6,6 +6,7 @@ import { ListToolbar } from "@/components/data/ListToolbar";
 import { PageHeader } from "@/components/PageHeader";
 import { Alert } from "@/components/ui/Alert";
 import { AuthImage } from "@/components/ui/AuthImage";
+import { AuthVideo } from "@/components/ui/AuthVideo";
 import { Button } from "@/components/ui/Button";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { Select, Textarea } from "@/components/ui/Field";
@@ -16,7 +17,7 @@ import { UploadButton } from "@/components/ui/UploadButton";
 import { useAuth } from "@/hooks/useAuth";
 import { useListParams } from "@/hooks/useListParams";
 import { useQuery } from "@/hooks/useQuery";
-import { request } from "@/services/api";
+import { openProtected, request } from "@/services/api";
 import type { Paged } from "@/types/auth";
 import { errorMessage } from "@/utils/errors";
 import { formatMoney, formatTimestamp, labelize, toOptions } from "@/utils/format";
@@ -34,7 +35,14 @@ interface Job {
   property: { id: string; title: string; addressLine: string; locality: string | null; city: string };
   raisedBy: { id: string; fullName: string; phoneNumber: string | null };
   provider: { id: string; fullName: string } | null;
-  photos: Array<{ id: string }>;
+  photos: Array<{ id: string; kind?: string; mimeType?: string }>;
+  technicianName?: string | null;
+  technicianPhone?: string | null;
+  estimatedCost?: string | null;
+  actualCost?: string | null;
+  paidBy?: string | null;
+  workStartedAt?: string | null;
+  resolvedAt?: string | null;
   isMine: boolean;
   isAssignedToMe: boolean;
 }
@@ -160,14 +168,33 @@ function JobModal({ job, onClose, onChanged }: { job: Job; onClose: () => void; 
           <div><dt className="text-muted">Raised by</dt><dd>{job.raisedBy.fullName}{job.raisedBy.phoneNumber ? ` · ${job.raisedBy.phoneNumber}` : ""}</dd></div>
           <div><dt className="text-muted">Provider</dt><dd>{job.provider?.fullName ?? "Not assigned"}</dd></div>
           <div><dt className="text-muted">Service charge</dt><dd>{job.serviceCharge ? formatMoney(job.serviceCharge) : "—"}</dd></div>
+          <div><dt className="text-muted">Technician</dt><dd>{job.technicianName ? `${job.technicianName}${job.technicianPhone ? ` · ${job.technicianPhone}` : ""}` : "—"}</dd></div>
+          <div><dt className="text-muted">Estimated cost</dt><dd>{job.estimatedCost ? formatMoney(job.estimatedCost) : "—"}</dd></div>
+          <div><dt className="text-muted">Work started</dt><dd>{job.workStartedAt ? formatTimestamp(job.workStartedAt) : "—"}</dd></div>
+          <div><dt className="text-muted">Completed</dt><dd>{job.resolvedAt ? formatTimestamp(job.resolvedAt) : "—"}</dd></div>
+          <div><dt className="text-muted">Actual cost</dt><dd>{job.actualCost ? formatMoney(job.actualCost) : "—"}</dd></div>
+          <div><dt className="text-muted">Paid by</dt><dd>{job.paidBy ? labelize(job.paidBy) : "Asked when resolved"}</dd></div>
         </dl>
         {job.providerNote && <Alert kind="info">Provider note: {job.providerNote}</Alert>}
 
-        {job.photos.length > 0 && (
+        {job.photos.some((ph) => ph.kind !== "INVOICE") && (
           <div className="grid grid-cols-3 gap-2">
-            {job.photos.map((ph) => <AuthImage key={ph.id} path={`/files/maintenance-photos/${ph.id}`} alt="Completion photo" className="aspect-square w-full rounded-lg" />)}
+            {job.photos.filter((ph) => ph.kind !== "INVOICE").map((ph) =>
+              ph.kind === "VIDEO" ? <AuthVideo key={ph.id} path={`/files/maintenance-photos/${ph.id}`} className="aspect-square w-full rounded-lg object-contain" /> : <AuthImage key={ph.id} path={`/files/maintenance-photos/${ph.id}`} alt="Request photo" className="aspect-square w-full rounded-lg" />,
+            )}
           </div>
         )}
+        {job.photos.some((ph) => ph.kind === "INVOICE") && (
+          <div>
+            <p className="mb-1 font-semibold">Invoices / receipts</p>
+            <div className="flex flex-wrap gap-2">
+              {job.photos.filter((ph) => ph.kind === "INVOICE").map((ph, i) => (
+                <Button key={ph.id} size="sm" variant="secondary" onClick={() => void openProtected(`/files/maintenance-photos/${ph.id}`)}>Receipt {i + 1}{ph.mimeType === "application/pdf" ? " (PDF)" : ""}</Button>
+              ))}
+            </div>
+          </div>
+        )}
+        {canManage && !["RESOLVED", "CLOSED", "CANCELLED"].includes(job.status) && <WorkDetails job={job} onSaved={onChanged} onError={setError} />}
 
         {canManage && ["OPEN", "DECLINED", "ASSIGNED"].includes(job.status) && (
           <div className="flex flex-col gap-2 border-t border-line pt-4 sm:flex-row sm:items-end">
@@ -207,5 +234,37 @@ function JobModal({ job, onClose, onChanged }: { job: Job; onClose: () => void; 
       </div>
       {dialog}
     </Modal>
+  );
+}
+
+/** Technician (outside SafeRent), estimated cost and work start. Who pays is asked only when resolving. */
+function WorkDetails({ job, onSaved, onError }: { job: Job; onSaved: (text: string) => Promise<void> | void; onError: (m: string) => void }) {
+  const [v, setV] = useState({ technicianName: job.technicianName ?? "", technicianPhone: job.technicianPhone ?? "", estimatedCost: job.estimatedCost ?? "", workStartDate: job.workStartedAt?.slice(0, 10) ?? "" });
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await request(`/requests/${job.id}/update`, {
+        method: "POST",
+        body: { technicianName: v.technicianName || null, technicianPhone: v.technicianPhone || null, estimatedCost: v.estimatedCost === "" ? null : Number(v.estimatedCost), workStartDate: v.workStartDate || null },
+      });
+      await onSaved("Work details saved.");
+    } catch (err) {
+      onError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-2 border-t border-line pt-4">
+      <p className="font-semibold">Work details</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Input label="Technician name" maxLength={120} value={v.technicianName} onChange={(e) => setV({ ...v, technicianName: e.target.value })} />
+        <Input label="Technician phone" value={v.technicianPhone} onChange={(e) => setV({ ...v, technicianPhone: e.target.value })} />
+        <Input label="Estimated cost (₹)" type="number" min={0} value={v.estimatedCost} onChange={(e) => setV({ ...v, estimatedCost: e.target.value })} />
+        <Input label="Work start date" type="date" value={v.workStartDate} onChange={(e) => setV({ ...v, workStartDate: e.target.value })} />
+      </div>
+      <div className="flex justify-end"><Button size="sm" loading={busy} onClick={() => void save()}>Save work details</Button></div>
+    </div>
   );
 }

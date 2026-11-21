@@ -16,6 +16,7 @@ import { request } from "@/services/api";
 import type { Paged } from "@/types/auth";
 import { errorMessage } from "@/utils/errors";
 import { formatTimestamp, labelize } from "@/utils/format";
+import { AuthVideo } from "@/components/ui/AuthVideo";
 import { sectionLabel } from "../properties/PropertyDetailPage";
 import { imagePath, type PendingRevision, type PropertyDetail, type PropertySummary } from "../properties/types";
 
@@ -50,8 +51,18 @@ export function ChangesTab() {
   );
 }
 
+interface ReviewVideo {
+  id: string;
+  durationSec: number;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  unitId: string | null;
+  roomId: string | null;
+  rejectionReason?: string | null;
+}
+
 interface RevisionDetail {
   revision: PendingRevision;
+  videos?: ReviewVideo[];
   live: PropertyDetail;
   changed: PropertyDetail | null;
   changedSections: string[];
@@ -163,6 +174,42 @@ function SectionDiff({ section, live, changed }: { section: string; live: Proper
   );
 }
 
+/** Where a video tour is: the building, a flat or a room (names from the changed listing, else the live one). */
+function videoPlace(v: ReviewVideo, changed: PropertyDetail, live: PropertyDetail): string {
+  const any = (p: PropertyDetail) => p as unknown as { units: Array<{ id: string; sourceId?: string | null; unitNumber?: string | null }>; rooms: Array<{ id: string; sourceId?: string | null; roomNumber?: string | null; name?: string | null }> };
+  if (v.unitId) {
+    const u = [...any(changed).units, ...any(live).units].find((x) => x.id === v.unitId || x.sourceId === v.unitId);
+    return `Flat ${u?.unitNumber ?? ""}`.trim();
+  }
+  if (v.roomId) {
+    const r = [...any(changed).rooms, ...any(live).rooms].find((x) => x.id === v.roomId || x.sourceId === v.roomId);
+    return `Room ${r?.roomNumber ?? r?.name ?? ""}`.trim();
+  }
+  return "Building";
+}
+
+const VIDEO_TONE = { PENDING: "brand", APPROVED: "success", REJECTED: "danger" } as const;
+
+/** New video tours (waiting) next to the ones already live. Approving the change approves the waiting ones. */
+function VideosDiff({ videos, live, changed }: { videos: ReviewVideo[]; live: PropertyDetail; changed: PropertyDetail }) {
+  if (!videos.length) return <p className="text-sm text-muted">No video tours.</p>;
+  const sorted = [...videos].sort((a, b) => (a.status === "PENDING" ? 0 : 1) - (b.status === "PENDING" ? 0 : 1));
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {sorted.map((v) => (
+        <figure key={v.id} className={v.status === "PENDING" ? "rounded-lg ring-2 ring-warning/50" : ""}>
+          <AuthVideo path={`/files/property-videos/${v.id}`} className="aspect-video w-full rounded-lg object-contain" />
+          <figcaption className="mt-1 flex items-center justify-between gap-2 px-1 text-xs">
+            <span className="font-semibold">{videoPlace(v, changed, live)} · {Math.round(v.durationSec)}s</span>
+            <Badge tone={VIDEO_TONE[v.status]}>{v.status === "PENDING" ? "New" : labelize(v.status)}</Badge>
+          </figcaption>
+          {v.status === "REJECTED" && v.rejectionReason && <p className="px-1 text-[11px] text-danger">{v.rejectionReason}</p>}
+        </figure>
+      ))}
+    </div>
+  );
+}
+
 /** /moderation/changes/:revisionId — live listing vs changed listing, approve or reject. */
 export function PropertyChangeReviewPage() {
   const { revisionId = "" } = useParams();
@@ -227,7 +274,7 @@ export function PropertyChangeReviewPage() {
         changedSections.map((s) => (
           <section key={s} className="card mb-4 p-5">
             <h2 className="mb-3 font-semibold">{sectionLabel(s)}</h2>
-            <SectionDiff section={s} live={live} changed={changed} />
+            {s === "videos" ? <VideosDiff videos={data.videos ?? []} live={live} changed={changed} /> : <SectionDiff section={s} live={live} changed={changed} />}
           </section>
         ))}
       {dialog}
